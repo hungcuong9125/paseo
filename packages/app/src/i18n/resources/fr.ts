@@ -169,6 +169,11 @@ export const fr: TranslationResources = {
       fallback: "Fournisseur",
       select: "Sélectionnez le fournisseur d'agent",
     },
+    role: {
+      fallback: "Rôle",
+      select: "Sélectionner le rôle Paseo",
+      title: "Rôle Paseo",
+    },
     thinking: {
       title: "Pensée",
       unknown: "Inconnu",
@@ -194,6 +199,7 @@ export const fr: TranslationResources = {
       thinking: "Mode réflexion",
       model: "Changer de modèle",
       mode: "Changer de mode",
+      role: "Lier un rôle de base (Lead, Peer, Supervisor)",
     },
   },
   agentStream: {

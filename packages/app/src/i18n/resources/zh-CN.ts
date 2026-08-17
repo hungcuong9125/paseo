@@ -167,6 +167,11 @@ export const zhCN: TranslationResources = {
       fallback: "Provider",
       select: "选择 Agent Provider",
     },
+    role: {
+      fallback: "角色",
+      select: "选择 Paseo 角色",
+      title: "Paseo 角色",
+    },
     thinking: {
       title: "Thinking",
       unknown: "未知",
@@ -192,6 +197,7 @@ export const zhCN: TranslationResources = {
       thinking: "Thinking mode",
       model: "切换 Model",
       mode: "更改模式",
+      role: "绑定基础角色（Lead、Peer、Supervisor）",
     },
   },
   agentStream: {

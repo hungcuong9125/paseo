@@ -33,6 +33,8 @@ import {
   type ProviderDefinition,
 } from "./provider-registry.js";
 import { BUILTIN_PROVIDER_IDS } from "@getpaseo/protocol/provider-manifest";
+import type { ProviderRoleBindingSupport } from "@getpaseo/protocol/role-binding";
+import { detectLegacyProviderRole, resolveProviderRoleBindingSupport } from "./role-binding.js";
 import { applyMutableProviderConfigToOverrides } from "../daemon-config-store.js";
 import {
   formatProviderDiagnostic,
@@ -172,6 +174,7 @@ export interface AgentManagerProviderState {
       >
     >
   >;
+  roleBindingSupport: Partial<Record<AgentProvider, ProviderRoleBindingSupport>>;
   clients: Partial<Record<AgentProvider, AgentClient>>;
 }
 
@@ -289,6 +292,7 @@ export class ProviderSnapshotManager {
 
   getAgentManagerProviderState(): AgentManagerProviderState {
     const providerDefinitions: AgentManagerProviderState["providerDefinitions"] = {};
+    const roleBindingSupport: AgentManagerProviderState["roleBindingSupport"] = {};
     const clients: AgentManagerProviderState["clients"] = {};
     for (const [provider, definition] of Object.entries(this.providerRegistry)) {
       providerDefinitions[provider] = {
@@ -298,6 +302,7 @@ export class ProviderSnapshotManager {
         applyOptions: definition.applyOptions,
         applyToolPolicy: definition.applyToolPolicy,
       };
+      roleBindingSupport[provider] = this.getRoleBindingSupport(provider);
       if (definition.enabled) {
         clients[provider] = this.ensureClient(provider, definition);
       }
@@ -307,7 +312,16 @@ export class ProviderSnapshotManager {
         clients[provider] = client;
       }
     }
-    return { providerDefinitions, clients };
+    return { providerDefinitions, roleBindingSupport, clients };
+  }
+
+  private getRoleBindingSupport(provider: AgentProvider): ProviderRoleBindingSupport {
+    const legacyRoleId = detectLegacyProviderRole(this.providerOverrides?.[provider]?.command);
+    return resolveProviderRoleBindingSupport(
+      provider,
+      this.providerRegistry[provider]?.derivedFromProviderId ?? null,
+      legacyRoleId,
+    );
   }
 
   private ensureClient(provider: AgentProvider, definition: ProviderDefinition): AgentClient {
@@ -597,6 +611,7 @@ export class ProviderSnapshotManager {
         label: definition.label,
         description: definition.description,
         defaultModeId: definition.defaultModeId,
+        roleBinding: this.getRoleBindingSupport(provider),
         error: toErrorMessage(error),
       };
     }
@@ -644,6 +659,7 @@ export class ProviderSnapshotManager {
         label: definition?.label,
         description: definition?.description,
         defaultModeId: definition?.defaultModeId ?? null,
+        roleBinding: this.getRoleBindingSupport(provider),
       });
     }
     return entries;
@@ -663,6 +679,7 @@ export class ProviderSnapshotManager {
         label: definition?.label,
         description: definition?.description,
         defaultModeId: definition?.defaultModeId ?? null,
+        roleBinding: this.getRoleBindingSupport(provider),
       };
 
       if (!definition?.enabled || !current || current.status === "loading") {
@@ -827,6 +844,7 @@ export class ProviderSnapshotManager {
       label: definition.label,
       description: definition.description,
       defaultModeId: definition.defaultModeId,
+      roleBinding: this.getRoleBindingSupport(provider),
     };
     const setEntry = (entry: ProviderSnapshotEntry) => {
       if (!this.isCurrentProviderLoad(snapshotCwd, provider, load)) {

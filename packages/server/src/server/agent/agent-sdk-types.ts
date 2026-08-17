@@ -5,6 +5,7 @@ import type {
   ToolPolicy,
 } from "@getpaseo/protocol/agent-types";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
+import type { PaseoRoleId, ProviderRoleBindingSupport } from "@getpaseo/protocol/role-binding";
 import type { PaseoToolCatalog } from "./tools/types.js";
 
 export type { AgentProviderNotice, AgentTaskItem };
@@ -125,6 +126,7 @@ export interface ProviderSnapshotEntry {
   label?: string;
   description?: string;
   defaultModeId?: string | null;
+  roleBinding?: ProviderRoleBindingSupport;
 }
 
 export interface AgentCreateConfigParent {
@@ -593,6 +595,15 @@ export interface AgentSessionConfig {
 export interface AgentLaunchContext {
   agentId?: string;
   env?: Record<string, string>;
+  /**
+   * Daemon-owned, immutable role instructions materialized at create. Providers
+   * inject them through their native durable instruction channel on create and
+   * resume; callers can neither read nor override these bytes.
+   */
+  roleBinding?: {
+    roleId: PaseoRoleId;
+    instructions: string;
+  };
   /**
    * Runtime-only internal Paseo tools. This must never be persisted into
    * AgentSessionConfig; providers may adapt it to their native tool surface.

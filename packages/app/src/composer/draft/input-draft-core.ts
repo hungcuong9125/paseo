@@ -1,5 +1,6 @@
 import type { UserComposerAttachment } from "@/attachments/types";
 import type { DraftAgentControlsProps } from "@/composer/agent-controls";
+import type { PaseoRoleId } from "@getpaseo/protocol/role-binding";
 import type { UseAgentFormStateResult } from "@/hooks/use-agent-form-state";
 
 export interface DraftKeyContext {
@@ -24,8 +25,22 @@ export function buildDraftAgentControls(input: {
   onSetFeature?: DraftAgentControlsProps["onSetFeature"];
   onApplyAgentProfile: DraftAgentControlsProps["onApplyAgentProfile"];
   onDropdownClose?: DraftAgentControlsProps["onDropdownClose"];
+  roleOptions?: DraftAgentControlsProps["roleOptions"];
+  selectedRoleId?: PaseoRoleId | null;
+  onSelectRole?: DraftAgentControlsProps["onSelectRole"];
+  modelSelectorProviders?: DraftAgentControlsProps["modelSelectorProviders"];
 }): DraftAgentControlsProps {
-  const { formState, features, onSetFeature, onApplyAgentProfile, onDropdownClose } = input;
+  const {
+    formState,
+    features,
+    onSetFeature,
+    onApplyAgentProfile,
+    onDropdownClose,
+    roleOptions,
+    selectedRoleId,
+    onSelectRole,
+    modelSelectorProviders,
+  } = input;
   return {
     providerDefinitions: formState.providerDefinitions,
     selectedProvider: formState.selectedProvider,
@@ -36,13 +51,16 @@ export function buildDraftAgentControls(input: {
     selectedModel: formState.selectedModel,
     onSelectModel: formState.setModelFromUser,
     isModelLoading: formState.isModelLoading,
-    modelSelectorProviders: formState.modelSelectorProviders,
+    modelSelectorProviders: modelSelectorProviders ?? formState.modelSelectorProviders,
     isAllModelsLoading: formState.isAllModelsLoading,
     onSelectProviderAndModel: formState.setProviderAndModelFromUser,
     thinkingOptions: formState.availableThinkingOptions,
     selectedThinkingOptionId: formState.selectedThinkingOptionId,
     onSelectThinkingOption: formState.setThinkingOptionFromUser,
     onApplyAgentProfile,
+    roleOptions,
+    selectedRoleId,
+    onSelectRole,
     features,
     onSetFeature,
     onDropdownClose,

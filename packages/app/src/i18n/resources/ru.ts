@@ -167,6 +167,11 @@ export const ru: TranslationResources = {
       fallback: "Поставщик",
       select: "Выберите поставщика агентов",
     },
+    role: {
+      fallback: "Роль",
+      select: "Выбрать роль Paseo",
+      title: "Роль Paseo",
+    },
     thinking: {
       title: "мышление",
       unknown: "Неизвестный",
@@ -192,6 +197,7 @@ export const ru: TranslationResources = {
       thinking: "Режим мышления",
       model: "Изменить модель",
       mode: "Изменить режим",
+      role: "Привязать базовую роль (Lead, Peer, Supervisor)",
     },
   },
   agentStream: {

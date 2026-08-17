@@ -3115,6 +3115,7 @@ export class Session {
       images,
       attachments,
       env,
+      roleId,
     } = msg;
     this.sessionLogger.info(
       { cwd: config.cwd, provider: config.provider, worktreeName },
@@ -3182,6 +3183,7 @@ export class Session {
           git,
           labels: resolvedIntent.intent.labels,
           env,
+          roleId,
           provisionalTitle,
           firstAgentContext,
           buildSessionConfig: (sessionConfig, gitOptions, legacyWorktreeName, ctx) =>
@@ -3340,7 +3342,12 @@ export class Session {
         : overrides;
       let snapshot: ManagedAgent;
       try {
-        snapshot = await this.agentManager.resumeAgentFromPersistence(handle, effectiveOverrides);
+        snapshot = await this.agentManager.resumeAgentFromPersistence(
+          handle,
+          effectiveOverrides,
+          undefined,
+          matched?.record.roleBinding ? { roleBinding: matched.record.roleBinding } : undefined,
+        );
       } catch (error) {
         if (matched?.didUnarchive && matched.originalArchivedAt) {
           await this.agentManager.archiveSnapshot(matched.record.id, matched.originalArchivedAt);

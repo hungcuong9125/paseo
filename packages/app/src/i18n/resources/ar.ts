@@ -167,6 +167,11 @@ export const ar: TranslationResources = {
       fallback: "مزود",
       select: "حدد مزود الوكيل",
     },
+    role: {
+      fallback: "الدور",
+      select: "اختر دور Paseo",
+      title: "دور Paseo",
+    },
     thinking: {
       title: "التفكير",
       unknown: "مجهول",
@@ -192,6 +197,7 @@ export const ar: TranslationResources = {
       thinking: "وضع التفكير",
       model: "تغيير النموذج",
       mode: "تغيير الوضع",
+      role: "اربط دورًا أساسيًا (Lead, Peer, Supervisor)",
     },
   },
   agentStream: {

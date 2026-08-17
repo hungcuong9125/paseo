@@ -11,6 +11,7 @@ import type {
   CreatePaseoWorktreeWorkflowResult,
 } from "../../worktree-session.js";
 import type { AgentAttachment, FirstAgentContext, GitSetupOptions } from "../../messages.js";
+import type { PaseoRoleId } from "@getpaseo/protocol/role-binding";
 import type { AgentManager, CreateAgentOptions, ManagedAgent } from "../agent-manager.js";
 import type { AgentPromptInput, AgentRunOptions, AgentSessionConfig } from "../agent-sdk-types.js";
 import type { AgentStorage } from "../agent-storage.js";
@@ -66,6 +67,7 @@ export interface CreateAgentFromSessionInput {
   git?: GitSetupOptions;
   labels: Record<string, string>;
   env?: Record<string, string>;
+  roleId?: PaseoRoleId;
   provisionalTitle: string | null;
   firstAgentContext: FirstAgentContext;
   buildSessionConfig: (
@@ -87,6 +89,7 @@ export interface CreateAgentFromMcpInput {
   thinking?: string;
   features?: Record<string, unknown>;
   labels?: Record<string, string>;
+  roleId?: PaseoRoleId;
   mode?: string;
   unattended?: boolean;
   promptFailure?: CreateAgentPromptFailureMode;
@@ -282,6 +285,7 @@ async function resolveSessionCreateAgent(
       labels: input.labels,
       initialPrompt: trimmedPrompt,
       env: input.env,
+      roleId: input.roleId,
       initialTitle: input.provisionalTitle,
       // A legacy git/worktreeName worktree creates a fresh workspace, so the
       // agent belongs to that workspace, not the source one. createdWorkspaceId
@@ -358,6 +362,7 @@ async function resolveMcpCreateAgent(
       workspaceId: intent.workspaceId,
       owner: input.owner,
       env: input.env,
+      roleId: input.roleId,
     },
     prompt: trimmedPrompt ? trimmedPrompt : undefined,
     setupContinuation,

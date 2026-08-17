@@ -6,6 +6,11 @@ import { MAX_EXPLICIT_AGENT_TITLE_CHARS } from "./agent-title-limits.js";
 import { AgentProviderSchema } from "./provider-manifest.js";
 import { TOOL_CALL_ICON_NAMES } from "./agent-types.js";
 import {
+  PaseoRoleIdSchema,
+  ProviderRoleBindingSupportSchema,
+  RoleBindingReceiptSchema,
+} from "./role-binding.js";
+import {
   ChatCreateRequestSchema,
   ChatListRequestSchema,
   ChatInspectRequestSchema,
@@ -313,6 +318,8 @@ export const ProviderSnapshotEntrySchema = z.object({
   label: z.string().optional(),
   description: z.string().optional(),
   defaultModeId: z.string().nullable().optional(),
+  // Daemon-computed native role binding support; absence on old daemons hides the role picker.
+  roleBinding: ProviderRoleBindingSupportSchema.optional(),
 });
 
 export const CompactProviderSnapshotModelSchema = AgentModelDefinitionSchema.omit({
@@ -797,6 +804,8 @@ export const AgentSnapshotPayloadSchema = z.object({
   attentionTimestamp: z.string().nullable().optional(),
   archivedAt: z.string().nullable().optional(),
   providerUnavailable: z.boolean().optional(),
+  // Secret-safe receipt of the immutable role binding; instructions never cross the wire.
+  roleBinding: RoleBindingReceiptSchema.optional(),
 });
 
 export type AgentSnapshotPayload = z.infer<typeof AgentSnapshotPayloadSchema>;
@@ -1371,6 +1380,9 @@ export const CreateAgentRequestMessageSchema = z.object({
   worktree: CreateAgentWorktreeTargetSchema.optional(),
   autoArchive: z.boolean().optional(),
   labels: z.record(z.string(), z.string()).default({}),
+  // Native Foundation role for the new agent; daemon materializes instructions and
+  // rejects the combination with config.systemPrompt.
+  roleId: PaseoRoleIdSchema.optional(),
   requestId: z.string(),
 });
 

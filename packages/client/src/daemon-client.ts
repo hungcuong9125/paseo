@@ -367,6 +367,7 @@ export interface CreateAgentRequestOptions extends AgentConfigOverrides {
   worktreeName?: string;
   requestId?: string;
   labels?: Record<string, string>;
+  roleId?: CreateAgentRequestMessage["roleId"];
 }
 
 export interface CreatePaseoWorktreeInput extends Pick<
@@ -2393,6 +2394,7 @@ export class DaemonClient {
       ...(options.labels && Object.keys(options.labels).length > 0
         ? { labels: options.labels }
         : {}),
+      ...(options.roleId ? { roleId: options.roleId } : {}),
     });
 
     const status = await this.sendRequest({

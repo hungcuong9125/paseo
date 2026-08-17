@@ -34,6 +34,7 @@ import {
 } from "@/composer/draft/workspace-tab-core";
 import type { AgentCapabilityFlags } from "@getpaseo/protocol/agent-types";
 import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
+import type { PaseoRoleId } from "@getpaseo/protocol/role-binding";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { WorkspaceComposerAttachment } from "@/attachments/types";
 import {
@@ -132,6 +133,10 @@ function resolveDraftModeId(input: {
   return null;
 }
 
+function toOptionalRoleIdField(roleId: PaseoRoleId | null): { roleId: PaseoRoleId } | object {
+  return roleId ? { roleId } : {};
+}
+
 async function submitDraftCreateRequest(input: {
   attempt: { clientMessageId: string };
   text: string;
@@ -149,6 +154,7 @@ async function submitDraftCreateRequest(input: {
     effectiveModelId: string | null;
     effectiveThinkingOptionId: string | null;
     featureValues: Record<string, unknown> | undefined;
+    selectedRoleId: PaseoRoleId | null;
   };
   hostDisconnectedMessage: string;
   selectModelMessage: string;
@@ -196,6 +202,7 @@ async function submitDraftCreateRequest(input: {
   const result = await client.createAgent({
     config,
     workspaceId,
+    ...toOptionalRoleIdField(composerState.selectedRoleId),
     ...(text ? { initialPrompt: text } : {}),
     clientMessageId: attempt.clientMessageId,
     ...(imagesData && imagesData.length > 0 ? { images: imagesData } : {}),

@@ -2,6 +2,7 @@ import type { ComponentType } from "react";
 import {
   Bot,
   Brain,
+  Crown,
   ListTodo,
   Settings2,
   Shield,
@@ -24,6 +25,7 @@ export type AgentControlIcon = ComponentType<AgentControlIconProps>;
 
 export const ThinkingIcon = Brain;
 export const PlanModeIcon = ListTodo;
+export const RoleIcon = Crown;
 
 const MODE_ICONS: Record<string, AgentControlIcon> = {
   Bot,

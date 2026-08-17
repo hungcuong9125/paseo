@@ -167,6 +167,11 @@ export const ja: TranslationResources = {
       fallback: "プロバイダー",
       select: "エージェントプロバイダーを選択",
     },
+    role: {
+      fallback: "ロール",
+      select: "Paseoロールを選択",
+      title: "Paseoロール",
+    },
     thinking: {
       title: "思考",
       unknown: "不明",
@@ -192,6 +197,7 @@ export const ja: TranslationResources = {
       thinking: "思考モード",
       model: "モデルを変更",
       mode: "権限モードを変更",
+      role: "Foundationロールを割り当てる（Lead、Peer、Supervisor）",
     },
   },
   agentStream: {

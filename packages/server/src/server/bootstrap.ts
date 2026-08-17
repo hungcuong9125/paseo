@@ -833,6 +833,7 @@ export async function createPaseoDaemon(
   const agentManager = new AgentManager({
     clients: initialAgentManagerState.clients,
     providerDefinitions: initialAgentManagerState.providerDefinitions,
+    providerRoleBindingSupport: initialAgentManagerState.roleBindingSupport,
     registry: agentStorage,
     appendSystemPrompt: config.appendSystemPrompt,
     onWorkspaceStateMayHaveChanged: ({ cwd }) => {

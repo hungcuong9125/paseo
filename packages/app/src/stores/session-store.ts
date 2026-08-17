@@ -33,6 +33,7 @@ import type {
   AgentUsage,
   AgentPersistenceHandle,
 } from "@getpaseo/protocol/agent-types";
+import type { RoleBindingReceipt } from "@getpaseo/protocol/role-binding";
 import type {
   ServerInfoStatusPayload,
   ProjectPlacementPayload,
@@ -101,6 +102,7 @@ export interface Agent {
   archivedAt?: Date | null;
   parentAgentId: string | null;
   labels: Record<string, string>;
+  roleBinding?: RoleBindingReceipt;
   projectPlacement?: ProjectPlacementPayload | null;
 }
 

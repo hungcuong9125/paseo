@@ -1,4 +1,5 @@
 import type { AgentAttachment } from "./messages.js";
+import type { ProviderRoleBindingSupport } from "./role-binding.js";
 
 export type AgentProvider = string;
 
@@ -114,6 +115,7 @@ export interface ProviderSnapshotEntry {
   label?: string;
   description?: string;
   defaultModeId?: string | null;
+  roleBinding?: ProviderRoleBindingSupport;
 }
 
 export interface AgentFeatureToggle {

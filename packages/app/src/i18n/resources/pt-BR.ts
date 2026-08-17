@@ -167,6 +167,11 @@ export const ptBR: TranslationResources = {
       fallback: "Provedor",
       select: "Selecionar provedor do agente",
     },
+    role: {
+      fallback: "Função",
+      select: "Selecionar função do Paseo",
+      title: "Função do Paseo",
+    },
     thinking: {
       title: "Raciocínio",
       unknown: "Desconhecido",
@@ -192,6 +197,7 @@ export const ptBR: TranslationResources = {
       thinking: "Modo de raciocínio",
       model: "Alterar modelo",
       mode: "Alterar modo de permissão",
+      role: "Vincular uma função base (Lead, Peer, Supervisor)",
     },
   },
   agentStream: {

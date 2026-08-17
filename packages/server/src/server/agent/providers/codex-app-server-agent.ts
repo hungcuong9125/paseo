@@ -3278,6 +3278,7 @@ export class CodexAppServerAgentSession implements AgentSession {
     private readonly autoReviewEnabled: boolean = false,
     private readonly agentId?: string,
     private readonly initialResumePurpose: "interactive" | "history" = "interactive",
+    private readonly roleInstructions?: string,
   ) {
     this.logger = logger.child({
       module: "agent",
@@ -3571,6 +3572,7 @@ export class CodexAppServerAgentSession implements AgentSession {
       match.developer_instructions,
       this.config.systemPrompt,
       this.config.daemonAppendSystemPrompt,
+      this.roleInstructions,
     );
     if (developerInstructions) settings.developer_instructions = developerInstructions;
     if (this.config.model) settings.model = this.config.model;
@@ -4795,6 +4797,7 @@ export class CodexAppServerAgentSession implements AgentSession {
     const developerInstructions = composeSystemPromptParts(
       this.config.systemPrompt,
       this.config.daemonAppendSystemPrompt,
+      this.roleInstructions,
     );
     const params: Record<string, unknown> = {
       model,
@@ -6697,6 +6700,8 @@ export class CodexAppServerAgentClient implements AgentClient {
       goalsEnabled,
       autoReviewEnabled,
       launchContext?.agentId,
+      "interactive",
+      launchContext?.roleBinding?.instructions,
     );
     await session.connect();
     return session;
@@ -6729,6 +6734,7 @@ export class CodexAppServerAgentClient implements AgentClient {
       autoReviewEnabled,
       launchContext?.agentId,
       options?.purpose ?? "interactive",
+      launchContext?.roleBinding?.instructions,
     );
     await session.connect();
     return session;

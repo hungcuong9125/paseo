@@ -14,6 +14,7 @@ import {
 } from "@getpaseo/protocol/agent-labels";
 import type { Logger } from "pino";
 import type { ProviderOptions, ToolPolicy } from "@getpaseo/protocol/agent-types";
+import type { PaseoRoleId, ProviderRoleBindingSupport } from "@getpaseo/protocol/role-binding";
 import { z } from "zod";
 import type { TerminalManager } from "../../terminal/terminal-manager.js";
 
@@ -47,6 +48,7 @@ import {
   type ListImportableSessionsOptions,
 } from "./agent-sdk-types.js";
 import { buildArchivedAgentRecord, type ArchivedStoredAgentRecord } from "./agent-archive.js";
+import { materializeRoleBinding, type PersistedRoleBinding } from "./role-binding.js";
 import type { StoredAgentRecord, AgentStorage } from "./agent-storage.js";
 import type { AgentOwner } from "./agent-owner.js";
 import {
@@ -257,6 +259,9 @@ export interface CreateAgentOptions {
   env?: Record<string, string>;
   persistSession?: boolean;
   initialTitle?: string | null;
+  // Native Foundation role; daemon materializes the immutable binding and owns
+  // the durable instruction channel. Rejected together with config.systemPrompt.
+  roleId?: PaseoRoleId;
   // undefined is an explicit decision: the agent never appears in the sidebar.
   workspaceId: string | undefined;
   owner?: AgentOwner;
@@ -265,6 +270,7 @@ export interface CreateAgentOptions {
 export interface AgentManagerOptions {
   clients?: ProviderClientMap;
   providerDefinitions?: ProviderEnabledMap;
+  providerRoleBindingSupport?: Partial<Record<AgentProvider, ProviderRoleBindingSupport>>;
   idFactory?: () => string;
   registry?: AgentStorage;
   onAgentAttention?: AgentAttentionCallback;
@@ -371,6 +377,11 @@ interface ManagedAgentBase {
    * User-defined labels for categorizing agents (e.g., { surface: "workspace" }).
    */
   labels: Record<string, string>;
+  /**
+   * Immutable native role binding materialized at create. Instructions are
+   * daemon-owned; only the secret-safe receipt crosses the wire.
+   */
+  roleBinding?: PersistedRoleBinding;
 }
 
 type ManagedAgentWithSession = ManagedAgentBase & {
@@ -640,6 +651,10 @@ export class AgentManager {
   private readonly clients = new Map<AgentProvider, AgentClient>();
   private readonly providerEnabled = new Map<AgentProvider, boolean>();
   private readonly providerDefinitions = new Map<AgentProvider, ProviderEnabledFlag>();
+  private readonly providerRoleBindingSupport = new Map<
+    AgentProvider,
+    ProviderRoleBindingSupport
+  >();
   private readonly agents = new Map<string, LiveManagedAgent>();
   private readonly timelineStore = new InMemoryAgentTimelineStore();
   private readonly providerSubagents = new ProviderSubagentStore();
@@ -695,6 +710,7 @@ export class AgentManager {
     });
     this.updateProviderRegistry({
       providerDefinitions: options.providerDefinitions ?? {},
+      roleBindingSupport: options.providerRoleBindingSupport ?? {},
       clients: options.clients ?? {},
     });
   }
@@ -710,6 +726,7 @@ export class AgentManager {
 
   updateProviderRegistry(input: {
     providerDefinitions: ProviderEnabledMap;
+    roleBindingSupport?: Partial<Record<AgentProvider, ProviderRoleBindingSupport>>;
     clients: ProviderClientMap;
   }): void {
     this.providerEnabled.clear();
@@ -718,6 +735,13 @@ export class AgentManager {
       if (definition) {
         this.providerEnabled.set(provider, definition.enabled);
         this.providerDefinitions.set(provider, definition);
+      }
+    }
+
+    this.providerRoleBindingSupport.clear();
+    for (const [provider, support] of Object.entries(input.roleBindingSupport ?? {})) {
+      if (support) {
+        this.providerRoleBindingSupport.set(provider, support);
       }
     }
 
@@ -1109,6 +1133,11 @@ export class AgentManager {
   ): Promise<ManagedAgent> {
     this.assertAcceptingAgentRegistrations();
     const resolvedAgentId = validateAgentId(agentId ?? this.idFactory(), "createAgent");
+    if (options?.roleId && config.systemPrompt) {
+      throw new Error(
+        "Role-bound launch rejects config.systemPrompt; the role owns the durable instruction channel.",
+      );
+    }
     await this.deleteAgentState(resolvedAgentId);
     const { storedConfig, launchConfig } = await this.prepareSessionConfig(
       config,
@@ -1116,6 +1145,9 @@ export class AgentManager {
       options?.env,
     );
     this.requireEnabledProvider(storedConfig.provider);
+    const roleBinding = options?.roleId
+      ? this.materializeRoleBindingForProvider(options.roleId, storedConfig.provider)
+      : undefined;
     const client = await this.requireAvailableClient({
       provider: storedConfig.provider,
     });
@@ -1124,6 +1156,7 @@ export class AgentManager {
       client,
       storedConfig.cwd,
       options?.env,
+      roleBinding,
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const createOptions = this.buildCreateSessionOptions(options);
@@ -1134,6 +1167,18 @@ export class AgentManager {
       initialTitle: options.initialTitle,
       workspaceId: options.workspaceId,
       owner: options.owner,
+      roleBinding,
+    });
+  }
+
+  private materializeRoleBindingForProvider(
+    roleId: PaseoRoleId,
+    provider: AgentProvider,
+  ): PersistedRoleBinding {
+    return materializeRoleBinding({
+      roleId,
+      provider,
+      providerSupport: this.providerRoleBindingSupport.get(provider),
     });
   }
 
@@ -1158,6 +1203,7 @@ export class AgentManager {
       labels?: Record<string, string>;
       workspaceId?: string;
       owner?: AgentOwner;
+      roleBinding?: PersistedRoleBinding;
     },
     resumeOptions?: AgentResumeSessionOptions,
   ): Promise<ManagedAgent> {
@@ -1177,6 +1223,7 @@ export class AgentManager {
       labels?: Record<string, string>;
       workspaceId?: string;
       owner?: AgentOwner;
+      roleBinding?: PersistedRoleBinding;
     },
     resumeOptions?: AgentResumeSessionOptions,
   ): Promise<ManagedAgent> {
@@ -1203,7 +1250,13 @@ export class AgentManager {
         `Provider '${handle.provider}' is not available. Please ensure the CLI is installed.`,
       );
     }
-    const launchContext = await this.buildLaunchContext(resolvedAgentId, client, storedConfig.cwd);
+    const launchContext = await this.buildLaunchContext(
+      resolvedAgentId,
+      client,
+      storedConfig.cwd,
+      undefined,
+      options?.roleBinding,
+    );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
     const session = await client.resumeSession(
       handle,
@@ -1332,7 +1385,13 @@ export class AgentManager {
       provider,
     } as AgentSessionConfig;
     const { storedConfig, launchConfig } = await this.prepareSessionConfig(refreshConfig, agentId);
-    const launchContext = await this.buildLaunchContext(agentId, client, storedConfig.cwd);
+    const launchContext = await this.buildLaunchContext(
+      agentId,
+      client,
+      storedConfig.cwd,
+      undefined,
+      existing.roleBinding,
+    );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
 
     const session = handle
@@ -1376,6 +1435,7 @@ export class AgentManager {
         lastUsage: preservedLastUsage,
         lastError: preservedLastError,
         attention: preservedAttention,
+        roleBinding: existing.roleBinding,
       });
     } finally {
       if (!handedToRegistration) {
@@ -1660,6 +1720,7 @@ export class AgentManager {
         attention: { requiresAttention: false },
         internal: record.internal,
         labels: record.labels,
+        roleBinding: record.roleBinding,
       },
     });
   }
@@ -1682,6 +1743,11 @@ export class AgentManager {
 
   async setAgentModel(agentId: string, modelId: string | null): Promise<void> {
     const agent = this.requireSessionAgent(agentId);
+    if (agent.roleBinding) {
+      throw new Error(
+        "Role-bound agents pin their model at create; spawn a new agent to change model.",
+      );
+    }
     const normalizedModelId =
       typeof modelId === "string" && modelId.trim().length > 0 ? modelId : null;
 
@@ -2919,6 +2985,7 @@ export class AgentManager {
       publishWhenReady?: boolean;
       workspaceId?: string;
       owner?: AgentOwner;
+      roleBinding?: PersistedRoleBinding;
     },
   ): Promise<ManagedAgent> {
     let registered = false;
@@ -3072,6 +3139,7 @@ export class AgentManager {
           persistence?: AgentPersistenceHandle;
           workspaceId?: string;
           owner?: AgentOwner;
+          roleBinding?: PersistedRoleBinding;
         }
       | undefined;
   }): ActiveManagedAgent {
@@ -3112,6 +3180,7 @@ export class AgentManager {
       attention: resolveInitialAttention(options?.attention),
       internal: config.internal ?? false,
       labels: options?.labels ?? {},
+      roleBinding: options?.roleBinding,
     } as ActiveManagedAgent;
   }
 
@@ -4572,6 +4641,7 @@ export class AgentManager {
     client: AgentClient,
     cwd: string,
     env?: Record<string, string>,
+    roleBinding?: PersistedRoleBinding,
   ): Promise<AgentLaunchContext> {
     const context: AgentLaunchContext = {
       agentId,
@@ -4581,6 +4651,14 @@ export class AgentManager {
         PASEO_AGENT_CWD: cwd,
       },
     };
+    if (roleBinding) {
+      // Daemon-owned, immutable role instructions; providers inject them through
+      // their native durable instruction channel on create and resume.
+      context.roleBinding = {
+        roleId: roleBinding.roleId,
+        instructions: roleBinding.instructions,
+      };
+    }
     if (
       this.paseoToolsEnabled &&
       client.capabilities.supportsNativePaseoTools &&

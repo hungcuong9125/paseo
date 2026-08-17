@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { UserComposerAttachment } from "@/attachments/types";
+import type { AgentProvider } from "@getpaseo/protocol/agent-types";
 import type { DraftAgentControlsProps } from "@/composer/agent-controls";
 import type { DraftCommandConfig } from "@/hooks/use-agent-commands-query";
 import {
@@ -20,6 +21,11 @@ import {
   resolveEffectiveComposerThinkingOptionId,
   type ProviderSelectionState,
 } from "@/provider-selection/provider-selection";
+import {
+  isProviderRoleBindingSupportedForRole,
+  PASEO_ROLE_SUMMARIES,
+  type PaseoRoleId,
+} from "@getpaseo/protocol/role-binding";
 import { useDraftStore } from "@/stores/draft-store";
 import { toDraftInputIfReady } from "@/stores/draft-store/state";
 
@@ -48,6 +54,7 @@ type DraftComposerState = UseAgentFormStateResult & {
   featureValues: Record<string, unknown> | undefined;
   agentControls: DraftAgentControlsProps;
   commandDraftConfig: DraftCommandConfig | undefined;
+  selectedRoleId: PaseoRoleId | null;
 };
 
 export interface AgentInputDraft {
@@ -156,6 +163,65 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
     formState.setWorkingDir(lockedWorkingDir);
   }, [composerOptions, formState, lockedWorkingDir]);
 
+  const [selectedRoleId, setSelectedRoleId] = useState<PaseoRoleId | null>(null);
+
+  // The role picker appears only when the daemon reports native role-binding
+  // support for at least one provider; old daemons never send the field.
+  const roleSelectionAvailable = useMemo(
+    () =>
+      (formState.allProviderEntries ?? []).some(
+        (entry) => entry.roleBinding?.status === "supported",
+      ),
+    [formState.allProviderEntries],
+  );
+  const roleOptions = useMemo(
+    () =>
+      roleSelectionAvailable
+        ? PASEO_ROLE_SUMMARIES.map((summary) => ({
+            id: summary.id,
+            label: summary.label,
+          }))
+        : [],
+    [roleSelectionAvailable],
+  );
+
+  const isRoleCompatibleProvider = useCallback(
+    (provider: AgentProvider) => {
+      if (!selectedRoleId) return true;
+      const entry = (formState.allProviderEntries ?? []).find(
+        (candidate) => candidate.provider === provider,
+      );
+      return isProviderRoleBindingSupportedForRole(entry?.roleBinding, selectedRoleId);
+    },
+    [formState.allProviderEntries, selectedRoleId],
+  );
+
+  const roleFilteredModelSelectorProviders = useMemo(
+    () =>
+      selectedRoleId
+        ? formState.modelSelectorProviders.filter((provider) =>
+            isRoleCompatibleProvider(provider.id),
+          )
+        : formState.modelSelectorProviders,
+    [formState.modelSelectorProviders, isRoleCompatibleProvider, selectedRoleId],
+  );
+
+  // Selecting a role can invalidate the current provider; switch to the first
+  // compatible one instead of leaving the draft on a provider that will reject
+  // the role-bound create.
+  useEffect(() => {
+    if (!selectedRoleId || !formState.selectedProvider) {
+      return;
+    }
+    if (isRoleCompatibleProvider(formState.selectedProvider)) {
+      return;
+    }
+    const firstCompatible = roleFilteredModelSelectorProviders[0];
+    if (firstCompatible) {
+      formState.setProviderAndModelFromUser(firstCompatible.id, "");
+    }
+  }, [formState, isRoleCompatibleProvider, roleFilteredModelSelectorProviders, selectedRoleId]);
+
   const providerSelection = useMemo<ProviderSelectionState>(
     () => ({
       provider: formState.selectedProvider,
@@ -246,8 +312,13 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
         features: draftFeatures,
         onSetFeature: setDraftFeatureValue,
         onApplyAgentProfile: applyDraftAgentProfile,
+        roleOptions,
+        selectedRoleId,
+        onSelectRole: setSelectedRoleId,
+        modelSelectorProviders: roleFilteredModelSelectorProviders,
       }),
       commandDraftConfig,
+      selectedRoleId,
     };
   }, [
     commandDraftConfig,
@@ -258,6 +329,9 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
     draftFeatureValues,
     applyDraftAgentProfile,
     formState,
+    roleFilteredModelSelectorProviders,
+    roleOptions,
+    selectedRoleId,
     setDraftFeatureValue,
     workingDir,
   ]);

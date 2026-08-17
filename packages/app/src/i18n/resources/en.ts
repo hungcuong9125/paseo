@@ -165,6 +165,11 @@ export const en = {
       fallback: "Provider",
       select: "Select agent provider",
     },
+    role: {
+      fallback: "Role",
+      select: "Select Paseo role",
+      title: "Paseo role",
+    },
     thinking: {
       title: "Thinking",
       unknown: "Unknown",
@@ -190,6 +195,7 @@ export const en = {
       thinking: "Thinking mode",
       model: "Change model",
       mode: "Change mode",
+      role: "Bind a Foundation role (Lead, Peer, Supervisor)",
     },
   },
   agentStream: {

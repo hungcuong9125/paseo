@@ -167,6 +167,11 @@ export const ko: TranslationResources = {
       fallback: "프로바이더",
       select: "에이전트 프로바이더 선택",
     },
+    role: {
+      fallback: "역할",
+      select: "Paseo 역할 선택",
+      title: "Paseo 역할",
+    },
     thinking: {
       title: "사고",
       unknown: "알 수 없음",
@@ -192,6 +197,7 @@ export const ko: TranslationResources = {
       thinking: "사고 모드",
       model: "모델 변경",
       mode: "모드 변경",
+      role: "기본 역할 바인딩(Lead, Peer, Supervisor)",
     },
   },
   agentStream: {
