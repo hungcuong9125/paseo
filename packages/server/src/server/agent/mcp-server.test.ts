@@ -3630,10 +3630,10 @@ describe("send_agent_prompt MCP tool", () => {
     if (!parsed.success) {
       throw new Error("Expected caller send_agent_prompt input to parse");
     }
-    expect(parsed.data).toMatchObject({
-      background: true,
-      notifyOnFinish: true,
-    });
+    // notifyOnFinish is resolved in the handler, not the schema, so prompting
+    // your own parent can opt out of the default.
+    expect(parsed.data).toMatchObject({ background: true });
+    expect(parsed.data).not.toHaveProperty("notifyOnFinish");
 
     const response = await tool.handler(parsed.data as Record<string, unknown>);
 
@@ -3642,6 +3642,57 @@ describe("send_agent_prompt MCP tool", () => {
     expect(response.structuredContent.guidance).toBe(
       "You will get notified when the prompted agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.",
     );
+  });
+
+  it("does not subscribe to its own parent when reporting upward", async () => {
+    const { agentManager, agentStorage, spies } = createTestDeps();
+    const parentAgent = {
+      id: "parent-agent",
+      cwd: existingCwd,
+      lifecycle: "idle",
+      currentModeId: "full-access",
+    } as ManagedAgent;
+    const grandparentAgent = {
+      id: "grandparent-agent",
+      cwd: existingCwd,
+      lifecycle: "running",
+      currentModeId: null,
+      availableModes: [],
+      config: { title: "Supervisor" },
+    } as ManagedAgent;
+    spies.agentManager.getAgent.mockImplementation((agentId: string) => {
+      if (agentId === "parent-agent") return parentAgent;
+      if (agentId === "grandparent-agent") return grandparentAgent;
+      return null;
+    });
+    spies.agentStorage.get.mockImplementation(async (agentId: string) =>
+      agentId === "parent-agent"
+        ? { labels: { "paseo.parent-agent-id": "grandparent-agent" } }
+        : null,
+    );
+
+    const server = await createAgentMcpServer({
+      agentManager,
+      agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "parent-agent",
+      logger,
+    });
+
+    const tool = registeredTool(server, "send_agent_prompt");
+    const parsed = await tool.inputSchema.safeParseAsync({
+      agentId: "grandparent-agent",
+      prompt: "Reporting back: work complete.",
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) {
+      throw new Error("Expected caller send_agent_prompt input to parse");
+    }
+
+    const response = await tool.handler(parsed.data as Record<string, unknown>);
+
+    expect(spies.agentManager.subscribe).not.toHaveBeenCalled();
+    expect(response.structuredContent.guidance).toBeUndefined();
   });
 
   it("keeps top-level prompts blocking by default", async () => {
