@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { View, Text } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 
-type StatusBadgeVariant = "success" | "error" | "muted";
+export type StatusBadgeVariant = "success" | "error" | "warning" | "muted" | "open";
 
 interface StatusBadgeProps {
   label: string;
@@ -13,8 +13,11 @@ export function StatusBadge({ label, variant = "muted" }: StatusBadgeProps) {
   const pillStyle = useMemo(
     () => [
       styles.pill,
+      variant === "muted" && styles.pillMuted,
+      variant === "open" && styles.pillOpen,
       variant === "success" && styles.pillSuccess,
       variant === "error" && styles.pillError,
+      variant === "warning" && styles.pillWarning,
     ],
     [variant],
   );
@@ -23,6 +26,7 @@ export function StatusBadge({ label, variant = "muted" }: StatusBadgeProps) {
       styles.pillText,
       variant === "success" && styles.pillTextSuccess,
       variant === "error" && styles.pillTextError,
+      variant === "warning" && styles.pillTextWarning,
     ],
     [variant],
   );
@@ -39,21 +43,28 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     borderRadius: theme.borderRadius.full,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface3,
+    borderWidth: 0,
     paddingHorizontal: theme.spacing[2],
     paddingVertical: 3,
   },
-  // Tinted from the one status token rather than a palette step, so the pill tracks the
-  // theme. `1a`/`33` are the 10%/20% alpha suffixes the identity table uses.
+  // Borderless soft tints (Linear/Tailwind style). Borders are dropped entirely —
+  // alpha-suffixed border colors fall back to black in this RN/Unistyles build, so a
+  // tint background alone carries the status. `33` is the 20% alpha suffix the
+  // identity table uses; backgrounds take alpha, borders take none.
+  pillMuted: {
+    backgroundColor: theme.colors.surface3,
+  },
+  pillOpen: {
+    backgroundColor: "transparent",
+  },
   pillSuccess: {
-    backgroundColor: `${theme.colors.statusSuccess}1a`,
-    borderColor: `${theme.colors.statusSuccess}33`,
+    backgroundColor: `${theme.colors.statusSuccess}33`,
   },
   pillError: {
-    backgroundColor: `${theme.colors.statusDanger}1a`,
-    borderColor: `${theme.colors.statusDanger}33`,
+    backgroundColor: `${theme.colors.statusDanger}33`,
+  },
+  pillWarning: {
+    backgroundColor: `${theme.colors.statusWarning}33`,
   },
   pillText: {
     fontSize: theme.fontSize.xs,
@@ -65,5 +76,11 @@ const styles = StyleSheet.create((theme) => ({
   },
   pillTextError: {
     color: theme.colors.statusDanger,
+  },
+  pillTextWarning: {
+    color: theme.colors.statusWarning,
+  },
+  pillTextOpen: {
+    color: theme.colors.palette.blue,
   },
 }));

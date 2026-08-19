@@ -17,6 +17,14 @@ import {
 } from "@getpaseo/protocol/messages";
 import { validateWSOutboundMessage } from "@getpaseo/protocol/validation/ws-outbound";
 import type {
+  IssueDetail,
+  IssueNote,
+  IssuePriority,
+  IssueSummary,
+  IssueType,
+} from "@getpaseo/protocol/issues/types";
+import type { IssuesErrorCode } from "@getpaseo/protocol/issues/rpc-schemas";
+import type {
   AgentStreamEventPayload,
   AgentSnapshotPayload,
   ProjectPlacementPayload,
@@ -831,6 +839,16 @@ type CorrelatedResponsePayload<TType extends CorrelatedResponseType> = Extract<
   CorrelatedResponseMessage,
   { type: TType }
 >["payload"];
+
+export class IssuesRpcError extends Error {
+  readonly code: IssuesErrorCode;
+
+  constructor(code: IssuesErrorCode, message: string) {
+    super(message);
+    this.name = "IssuesRpcError";
+    this.code = code;
+  }
+}
 
 class DaemonRpcError extends Error {
   readonly requestId: string;
@@ -5189,6 +5207,206 @@ export class DaemonClient {
       },
       responseType: "schedule/update/response",
     });
+  }
+
+  async issuesList(options: {
+    projectId: string;
+    all?: boolean;
+    requestId?: string;
+  }): Promise<{ issues: IssueSummary[]; hiddenCount: number }> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.issues.list.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.issues.list.request",
+          projectId: options.projectId,
+          ...(options.all !== undefined ? { all: options.all } : {}),
+        },
+      });
+    if (payload.error) {
+      throw new IssuesRpcError(payload.errorCode ?? "unknown", payload.error);
+    }
+    return { issues: payload.issues, hiddenCount: payload.hiddenCount };
+  }
+
+  async issuesShow(options: {
+    projectId: string;
+    issueId: string;
+    requestId?: string;
+  }): Promise<IssueDetail> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.issues.show.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.issues.show.request",
+          projectId: options.projectId,
+          issueId: options.issueId,
+        },
+      });
+    if (payload.error || !payload.issue) {
+      throw new IssuesRpcError(payload.errorCode ?? "unknown", payload.error ?? "Issue not found");
+    }
+    return payload.issue;
+  }
+
+  async issuesCreate(options: {
+    projectId: string;
+    title: string;
+    issueType?: IssueType;
+    priority?: IssuePriority;
+    parentId?: string;
+    description?: string;
+    requestId?: string;
+  }): Promise<IssueSummary> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.issues.create.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.issues.create.request",
+          projectId: options.projectId,
+          title: options.title,
+          ...(options.issueType ? { issueType: options.issueType } : {}),
+          ...(options.priority ? { priority: options.priority } : {}),
+          ...(options.parentId ? { parentId: options.parentId } : {}),
+          ...(options.description ? { description: options.description } : {}),
+        },
+      });
+    if (payload.error || !payload.issue) {
+      throw new IssuesRpcError(payload.errorCode ?? "unknown", payload.error ?? "Create failed");
+    }
+    return payload.issue;
+  }
+
+  async issuesUpdate(options: {
+    projectId: string;
+    issueId: string;
+    title?: string;
+    status?: "open" | "in_progress";
+    priority?: IssuePriority;
+    requestId?: string;
+  }): Promise<IssueSummary> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.issues.update.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.issues.update.request",
+          projectId: options.projectId,
+          issueId: options.issueId,
+          ...(options.title !== undefined ? { title: options.title } : {}),
+          ...(options.status !== undefined ? { status: options.status } : {}),
+          ...(options.priority !== undefined ? { priority: options.priority } : {}),
+        },
+      });
+    if (payload.error || !payload.issue) {
+      throw new IssuesRpcError(payload.errorCode ?? "unknown", payload.error ?? "Update failed");
+    }
+    return payload.issue;
+  }
+
+  async issuesClose(options: {
+    projectId: string;
+    issueId: string;
+    note?: string;
+    requestId?: string;
+  }): Promise<IssueSummary> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.issues.close.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.issues.close.request",
+          projectId: options.projectId,
+          issueId: options.issueId,
+          ...(options.note ? { note: options.note } : {}),
+        },
+      });
+    if (payload.error || !payload.issue) {
+      throw new IssuesRpcError(payload.errorCode ?? "unknown", payload.error ?? "Close failed");
+    }
+    return payload.issue;
+  }
+
+  async issuesReopen(options: {
+    projectId: string;
+    issueId: string;
+    requestId?: string;
+  }): Promise<IssueSummary> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.issues.reopen.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.issues.reopen.request",
+          projectId: options.projectId,
+          issueId: options.issueId,
+        },
+      });
+    if (payload.error || !payload.issue) {
+      throw new IssuesRpcError(payload.errorCode ?? "unknown", payload.error ?? "Reopen failed");
+    }
+    return payload.issue;
+  }
+
+  async issuesCancel(options: {
+    projectId: string;
+    issueId: string;
+    reason?: string;
+    requestId?: string;
+  }): Promise<IssueSummary> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.issues.cancel.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.issues.cancel.request",
+          projectId: options.projectId,
+          issueId: options.issueId,
+          ...(options.reason ? { reason: options.reason } : {}),
+        },
+      });
+    if (payload.error || !payload.issue) {
+      throw new IssuesRpcError(payload.errorCode ?? "unknown", payload.error ?? "Cancel failed");
+    }
+    return payload.issue;
+  }
+
+  async issuesAddNote(options: {
+    projectId: string;
+    issueId: string;
+    body: string;
+    requestId?: string;
+  }): Promise<IssueNote> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.issues.note_add.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.issues.note_add.request",
+          projectId: options.projectId,
+          issueId: options.issueId,
+          body: options.body,
+        },
+      });
+    if (payload.error || !payload.note) {
+      throw new IssuesRpcError(payload.errorCode ?? "unknown", payload.error ?? "Add note failed");
+    }
+    return payload.note;
+  }
+
+  async issuesInit(options: {
+    projectId: string;
+    prefix?: string;
+    requestId?: string;
+  }): Promise<{ initialised: boolean }> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.issues.init.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.issues.init.request",
+          projectId: options.projectId,
+          ...(options.prefix ? { prefix: options.prefix } : {}),
+        },
+      });
+    if (payload.error) {
+      throw new IssuesRpcError(payload.errorCode ?? "unknown", payload.error);
+    }
+    return { initialised: payload.initialised };
   }
 
   onTerminalStreamEvent(handler: (event: TerminalStreamEvent) => void): () => void {

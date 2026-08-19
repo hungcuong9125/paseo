@@ -159,6 +159,8 @@ import {
   createGitMetadataGenerator,
 } from "./session/checkout/git-metadata-generator.js";
 import { ScheduleSession } from "./session/schedule/schedule-session.js";
+import { IssuesSession } from "./session/issues/issues-session.js";
+import type { AitService } from "../services/ait-cli-service.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { WorkspaceFilesSession } from "./session/files/workspace-files-session.js";
 import { AgentConfigSession } from "./session/agent-config/agent-config-session.js";
@@ -448,6 +450,7 @@ export interface SessionOptions {
   workspaceRegistry: WorkspaceRegistry;
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
+  aitService: AitService;
   checkoutDiffManager: CheckoutDiffManager;
   github?: ForgeService;
   createAgentMcpTransport?: AgentMcpTransportFactory;
@@ -668,6 +671,7 @@ export class Session {
   private readonly voiceSession: VoiceSession;
   private readonly checkoutSession: CheckoutSession;
   private readonly scheduleSession: ScheduleSession;
+  private readonly issuesSession: IssuesSession;
   private readonly providerCatalogSession: ProviderCatalogSession;
   private readonly workspaceFilesSession: WorkspaceFilesSession;
   private readonly agentConfigSession: AgentConfigSession;
@@ -701,6 +705,7 @@ export class Session {
       workspaceRegistry,
       filesystem,
       scheduleService,
+      aitService,
       checkoutDiffManager,
       github,
       renameCurrentBranch,
@@ -829,6 +834,12 @@ export class Session {
     this.scheduleSession = new ScheduleSession({
       host: { emit: (msg) => this.emit(msg) },
       scheduleService,
+      logger: this.sessionLogger,
+    });
+    this.issuesSession = new IssuesSession({
+      host: { emit: (msg) => this.emit(msg) },
+      aitService,
+      projectRegistry: this.projectRegistry,
       logger: this.sessionLogger,
     });
     this.providerCatalogSession = new ProviderCatalogSession({
@@ -1833,6 +1844,7 @@ export class Session {
       this.dispatchProviderMessage(msg) ??
       this.dispatchTerminalMessage(msg) ??
       this.dispatchScheduleMessage(msg) ??
+      this.dispatchIssuesMessage(msg) ??
       this.dispatchMiscMessage(msg);
     if (promise) await promise;
   }
@@ -2267,6 +2279,31 @@ export class Session {
         return this.scheduleSession.handleScheduleRunOnceRequest(msg);
       case "schedule/update":
         return this.scheduleSession.handleScheduleUpdateRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private dispatchIssuesMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "project.issues.list.request":
+        return this.issuesSession.handleProjectIssuesListRequest(msg);
+      case "project.issues.show.request":
+        return this.issuesSession.handleProjectIssuesShowRequest(msg);
+      case "project.issues.create.request":
+        return this.issuesSession.handleProjectIssuesCreateRequest(msg);
+      case "project.issues.update.request":
+        return this.issuesSession.handleProjectIssuesUpdateRequest(msg);
+      case "project.issues.close.request":
+        return this.issuesSession.handleProjectIssuesCloseRequest(msg);
+      case "project.issues.reopen.request":
+        return this.issuesSession.handleProjectIssuesReopenRequest(msg);
+      case "project.issues.cancel.request":
+        return this.issuesSession.handleProjectIssuesCancelRequest(msg);
+      case "project.issues.note_add.request":
+        return this.issuesSession.handleProjectIssuesNoteAddRequest(msg);
+      case "project.issues.init.request":
+        return this.issuesSession.handleProjectIssuesInitRequest(msg);
       default:
         return undefined;
     }

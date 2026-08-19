@@ -5,6 +5,7 @@ import {
   GitBranch,
   History,
   Home,
+  ListChecks,
   Plus,
   Search,
   Server,
@@ -65,6 +66,7 @@ import { useIsMobilePanelPresented } from "@/mobile-panels/provider";
 import {
   buildOpenProjectRoute,
   buildNewWorkspaceRoute,
+  buildTrackerRoute,
   buildSchedulesRoute,
   buildSessionsRoute,
   buildSettingsAddHostRoute,
@@ -112,6 +114,7 @@ interface SidebarLabels {
   searchHosts: string;
   sessions: string;
   schedules: string;
+  issues: string;
   closeSidebar: string;
 }
 
@@ -121,6 +124,7 @@ interface MobileSidebarProps extends SidebarSharedProps {
   closeSidebar: () => void;
   handleViewMoreNavigate: () => void;
   handleViewSchedulesNavigate: () => void;
+  handleViewIssuesNavigate: () => void;
 }
 
 interface DesktopSidebarProps extends SidebarSharedProps {
@@ -128,6 +132,7 @@ interface DesktopSidebarProps extends SidebarSharedProps {
   active: boolean;
   handleViewMore: () => void;
   handleViewSchedules: () => void;
+  handleViewIssues: () => void;
 }
 
 export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boolean }) {
@@ -223,6 +228,10 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     router.push(buildSchedulesRoute());
   }, []);
 
+  const handleViewIssuesNavigate = useCallback(() => {
+    router.push(buildTrackerRoute());
+  }, []);
+
   const newWorkspaceKeys = useShortcutKeys("new-workspace");
   const labels = useMemo(
     (): SidebarLabels => ({
@@ -234,6 +243,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
       searchHosts: t("sidebar.host.searchPlaceholder"),
       sessions: t("sidebar.sections.sessions"),
       schedules: t("sidebar.sections.schedules"),
+      issues: t("sidebar.sections.issues"),
       closeSidebar: t("sidebar.actions.closeSidebar"),
     }),
     [t],
@@ -272,6 +282,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
           handleOpenHostSettings={handleOpenHostSettingsMobile}
           handleViewMoreNavigate={handleViewMoreNavigate}
           handleViewSchedulesNavigate={handleViewSchedulesNavigate}
+          handleViewIssuesNavigate={handleViewIssuesNavigate}
         />
       </RetainedPanelActivity>
     );
@@ -290,6 +301,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
         handleOpenHostSettings={handleOpenHostSettingsDesktop}
         handleViewMore={handleViewMoreNavigate}
         handleViewSchedules={handleViewSchedulesNavigate}
+        handleViewIssues={handleViewIssuesNavigate}
       />
     </RetainedPanelActivity>
   );
@@ -618,11 +630,13 @@ function MobileSidebar({
   closeSidebar,
   handleViewMoreNavigate,
   handleViewSchedulesNavigate,
+  handleViewIssuesNavigate,
 }: MobileSidebarProps) {
   const pathname = usePathname();
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
   const isSessionsActive = pathname.includes("/sessions");
   const isSchedulesActive = pathname.includes("/schedules");
+  const isIssuesActive = pathname.includes("/tracker");
   const { gesture: closeGesture, gestureRef: closeGestureRef } = useCloseAgentListGesture();
   const dragGestureHostPresented = useIsMobilePanelPresented("agent-list");
 
@@ -635,6 +649,11 @@ function MobileSidebar({
     closeSidebar();
     handleViewSchedulesNavigate();
   }, [closeSidebar, handleViewSchedulesNavigate]);
+
+  const handleViewIssues = useCallback(() => {
+    closeSidebar();
+    handleViewIssuesNavigate();
+  }, [closeSidebar, handleViewIssuesNavigate]);
 
   const handleWorkspacePress = useCallback(() => {
     closeSidebar();
@@ -664,6 +683,14 @@ function MobileSidebar({
             variant="compact"
             shortcutKeys={newWorkspaceKeys}
             onBeforeNavigate={closeSidebar}
+          />
+          <SidebarHeaderRow
+            icon={ListChecks}
+            label={labels.issues}
+            onPress={handleViewIssues}
+            isActive={isIssuesActive}
+            testID="sidebar-issues"
+            variant="compact"
           />
           <SidebarHeaderRow
             icon={History}
@@ -763,12 +790,14 @@ function DesktopSidebar({
   active,
   handleViewMore,
   handleViewSchedules,
+  handleViewIssues,
 }: DesktopSidebarProps) {
   const ownsTopLeft = useOwnsWindowChromeCorner("top-left");
   const pathname = usePathname();
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
   const isSessionsActive = pathname.includes("/sessions");
   const isSchedulesActive = pathname.includes("/schedules");
+  const isIssuesActive = pathname.includes("/tracker");
   const sidebarWidth = usePanelStore((state) => state.sidebarWidth);
   const setSidebarWidth = usePanelStore((state) => state.setSidebarWidth);
   const { width: viewportWidth } = useWindowDimensions();
@@ -882,6 +911,14 @@ function DesktopSidebar({
               testID="sidebar-global-new-workspace"
               variant="compact"
               shortcutKeys={newWorkspaceKeys}
+            />
+            <SidebarHeaderRow
+              icon={ListChecks}
+              label={labels.issues}
+              onPress={handleViewIssues}
+              isActive={isIssuesActive}
+              testID="sidebar-issues"
+              variant="compact"
             />
             <SidebarHeaderRow
               icon={History}

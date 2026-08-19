@@ -9,6 +9,7 @@ import {
   History,
   Home,
   Keyboard,
+  ListChecks,
   Plus,
   Settings,
 } from "lucide-react-native";
@@ -23,6 +24,7 @@ import { useKeyboardShortcutsStore } from "@/stores/keyboard-shortcuts-store";
 import { useSidebarViewStore } from "@/stores/sidebar-view-store";
 import { clearCommandCenterFocusRestoreElement } from "@/utils/command-center-focus-restore";
 import {
+  buildTrackerRoute,
   buildOpenProjectRoute,
   buildSchedulesRoute,
   buildSessionsRoute,
@@ -41,6 +43,9 @@ const ThemedHistory = withUnistyles(History, (theme) => ({
   color: theme.colors.foregroundMuted,
 }));
 const ThemedCalendarClock = withUnistyles(CalendarClock, (theme) => ({
+  color: theme.colors.foregroundMuted,
+}));
+const ThemedListChecks = withUnistyles(ListChecks, (theme) => ({
   color: theme.colors.foregroundMuted,
 }));
 const ThemedKeyboard = withUnistyles(Keyboard, (theme) => ({
@@ -75,6 +80,10 @@ function SchedulesIcon({ size }: CommandCenterIconProps) {
   return <ThemedCalendarClock size={size} strokeWidth={2.2} />;
 }
 
+function IssuesIcon({ size }: CommandCenterIconProps) {
+  return <ThemedListChecks size={size} strokeWidth={2.2} />;
+}
+
 function KeyboardIcon({ size }: CommandCenterIconProps) {
   return <ThemedKeyboard size={size} strokeWidth={2.2} />;
 }
@@ -100,6 +109,7 @@ export function CommandCenterRootActions() {
   const homeRoute = useMemo<Href>(() => buildOpenProjectRoute(), []);
   const sessionsRoute = useMemo<Href>(() => buildSessionsRoute(), []);
   const schedulesRoute = useMemo<Href>(() => buildSchedulesRoute(), []);
+  const trackerRoute = useMemo<Href>(() => buildTrackerRoute(), []);
   const setShortcutsDialogOpen = useKeyboardShortcutsStore((state) => state.setShortcutsDialogOpen);
   // Narrow selector on purpose: a whole-store subscription would re-register every root action
   // each time host filters are reconciled.
@@ -206,10 +216,28 @@ export function CommandCenterRootActions() {
         },
       },
       {
-        id: "settings",
+        id: "issues",
         group: "actions",
         groupRank: 0,
         rank: 5,
+        keywords: ["issues", "tracker", "ait", "tasks"],
+        visibility: "always",
+        run: () => {
+          clearCommandCenterFocusRestoreElement();
+          router.push(trackerRoute);
+        },
+        presentation: {
+          kind: "action",
+          title: t("sidebar.sections.issues"),
+          sectionTitle: t("shell.commandCenter.actions"),
+          icon: IssuesIcon,
+        },
+      },
+      {
+        id: "settings",
+        group: "actions",
+        groupRank: 0,
+        rank: 6,
         keywords: ["settings", "preferences", "config", "configuration"],
         visibility: "always",
         run: () => {
@@ -233,7 +261,7 @@ export function CommandCenterRootActions() {
         id: "keyboard-shortcuts",
         group: "actions",
         groupRank: 0,
-        rank: 6,
+        rank: 7,
         keywords: ["keyboard", "shortcuts", "keys", "hotkeys"],
         visibility: "always",
         run: () => setShortcutsDialogOpen(true),
@@ -266,6 +294,7 @@ export function CommandCenterRootActions() {
   }, [
     groupMode,
     homeRoute,
+    trackerRoute,
     openAddProject,
     overrides,
     schedulesRoute,

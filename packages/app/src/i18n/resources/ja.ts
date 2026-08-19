@@ -1025,6 +1025,7 @@ export const ja: TranslationResources = {
     sections: {
       sessions: "履歴",
       schedules: "スケジュール",
+      issues: "トラッカー",
     },
     worktreeSetup: {
       title: "ワークツリースクリプトを設定",

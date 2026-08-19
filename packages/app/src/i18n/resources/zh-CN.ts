@@ -1006,6 +1006,7 @@ export const zhCN: TranslationResources = {
     sections: {
       sessions: "历史",
       schedules: "计划",
+      issues: "跟踪器",
     },
     worktreeSetup: {
       title: "设置 worktree scripts",
