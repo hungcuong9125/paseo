@@ -49,7 +49,7 @@ type ViewMode = "list" | "kanban";
 
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const EMPTY_ISSUES: AggregatedTracker[] = [];
+const EMPTY_TRACKERS: AggregatedTracker[] = [];
 
 // Containers (epic/initiative) always pass so Kanban still has something to
 // group under even when every task inside is filtered out; only task leaves
@@ -118,7 +118,7 @@ function TrackerScreenContent(): ReactElement {
     enabled: hasAnyProject,
   });
 
-  const allTrackers = loadState.status === "loaded" ? loadState.data : EMPTY_ISSUES;
+  const allTrackers = loadState.status === "loaded" ? loadState.data : EMPTY_TRACKERS;
   const projectFilteredTrackers = useMemo(
     () =>
       selectedProjectId

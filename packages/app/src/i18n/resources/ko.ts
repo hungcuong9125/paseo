@@ -1021,7 +1021,7 @@ export const ko: TranslationResources = {
     sections: {
       sessions: "기록",
       schedules: "일정",
-      issues: "트래커",
+      tracker: "트래커",
     },
     worktreeSetup: {
       title: "워크트리 스크립트 설정",

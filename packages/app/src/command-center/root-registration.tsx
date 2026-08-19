@@ -80,7 +80,7 @@ function SchedulesIcon({ size }: CommandCenterIconProps) {
   return <ThemedCalendarClock size={size} strokeWidth={2.2} />;
 }
 
-function IssuesIcon({ size }: CommandCenterIconProps) {
+function TrackerIcon({ size }: CommandCenterIconProps) {
   return <ThemedListChecks size={size} strokeWidth={2.2} />;
 }
 
@@ -216,11 +216,11 @@ export function CommandCenterRootActions() {
         },
       },
       {
-        id: "issues",
+        id: "tracker",
         group: "actions",
         groupRank: 0,
         rank: 5,
-        keywords: ["issues", "tracker", "ait", "tasks"],
+        keywords: ["tracker", "ait", "tasks"],
         visibility: "always",
         run: () => {
           clearCommandCenterFocusRestoreElement();
@@ -228,9 +228,9 @@ export function CommandCenterRootActions() {
         },
         presentation: {
           kind: "action",
-          title: t("sidebar.sections.issues"),
+          title: t("sidebar.sections.tracker"),
           sectionTitle: t("shell.commandCenter.actions"),
-          icon: IssuesIcon,
+          icon: TrackerIcon,
         },
       },
       {
