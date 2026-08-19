@@ -1,5 +1,4 @@
-import { expect, it, test, vi } from "vitest";
-import pino, { type Logger } from "pino";
+import { expect, test, vi } from "vitest";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentManager } from "./agent-manager.js";
@@ -10,234 +9,198 @@ import {
   sendPromptToAgent,
   setupFinishNotification,
 } from "./agent-prompt.js";
+import type { FinishNotificationRegistration } from "./agent-prompt.js";
 import type { AgentManagerEvent, ManagedAgent } from "./agent-manager.js";
+import type { AgentStreamEvent } from "./agent-sdk-types.js";
 
-interface CapturedLogger {
-  logger: Logger;
-  records: Array<Record<string, unknown>>;
-  nextRecord: Promise<void>;
+type Lifecycle = "idle" | "running" | "error" | "closed";
+
+interface FakeAgentState {
+  lifecycle: Lifecycle;
+  activeForegroundTurnId: string | null;
+  title: string;
+  archivedAt?: string;
+  parentAgentId?: string | null;
 }
 
-function createCapturedLogger(): CapturedLogger {
-  const records: Array<Record<string, unknown>> = [];
-  let resolveNextRecord!: () => void;
-  const nextRecord = new Promise<void>((resolve) => {
-    resolveNextRecord = resolve;
-  });
-  const logger = pino(
-    { level: "error" },
-    {
-      write(line: string) {
-        records.push(JSON.parse(line) as Record<string, unknown>);
-        resolveNextRecord();
-      },
-    },
-  );
-  return { logger, records, nextRecord };
+interface Subscription {
+  agentId: string | null;
+  callback: (event: AgentManagerEvent) => void;
 }
 
-interface FinishNotificationScenarioOptions {
-  childLastAssistantMessage?: string | null;
-  childParentAgentId?: string | null;
-  requireParentOwnership?: boolean;
-  parentPromptError?: Error;
-  logger?: Logger;
+interface Harness {
+  agentManager: AgentManager;
+  agentStorage: AgentStorage;
+  /** Prompts handed to an agent, in delivery order. */
+  deliveredTo(agentId: string): string[];
+  failNextDeliveries(count: number): void;
+  setLifecycle(agentId: string, lifecycle: Lifecycle, turnId?: string | null): void;
+  emitStream(agentId: string, event: AgentStreamEvent): void;
+  archive(agentId: string): void;
 }
 
-interface FinishNotificationScenario {
-  startWatchingChild(): void;
-  requestChildPermission(requestId?: string): void;
-  resolveChildPermission(requestId?: string): void;
-  resolveChildPermissionFromState(requestId?: string): void;
-  resolveChildPermissionWhileIdle(requestId?: string): void;
-  finishChild(): void;
-  finishChildAndReadParentPrompt(): Promise<string>;
-  closeChildAndReadParentPrompt(): Promise<string>;
-  parentPrompts(): string[];
-  wasParentPrompted(): boolean;
-}
+const CALLER = "caller-agent";
 
-function createFinishNotificationScenario(
-  options?: FinishNotificationScenarioOptions,
-): FinishNotificationScenario {
-  let subscriber: ((event: AgentManagerEvent) => void) | null = null;
-  let resolveParentPrompt: ((prompt: string) => void) | null = null;
-  let parentPrompted = false;
-  const parentPrompts: string[] = [];
+function createHarness(options?: {
+  agents?: Record<string, Partial<FakeAgentState>>;
+  lastAssistantMessage?: (agentId: string) => string | null;
+}): Harness {
+  const states = new Map<string, FakeAgentState>();
+  const subscriptions = new Set<Subscription>();
+  const delivered = new Map<string, string[]>();
+  let deliveryFailuresLeft = 0;
 
-  const childAgent: ManagedAgent = Object.create(null);
-  Reflect.set(childAgent, "id", "child-agent");
-  Reflect.set(childAgent, "lifecycle", "idle");
-  Reflect.set(childAgent, "config", { title: "Child Agent" });
-  Reflect.set(childAgent, "pendingPermissions", new Map());
+  function ensureState(agentId: string): FakeAgentState {
+    const existing = states.get(agentId);
+    if (existing) {
+      return existing;
+    }
+    const created: FakeAgentState = {
+      lifecycle: "idle",
+      activeForegroundTurnId: null,
+      title: agentId,
+    };
+    states.set(agentId, created);
+    return created;
+  }
 
-  const callerAgent: ManagedAgent = Object.create(null);
-  Reflect.set(callerAgent, "id", "caller-agent");
-  Reflect.set(callerAgent, "lifecycle", "idle");
-  Reflect.set(callerAgent, "config", { title: "Caller Agent" });
+  ensureState(CALLER);
+  for (const [agentId, patch] of Object.entries(options?.agents ?? {})) {
+    Object.assign(ensureState(agentId), patch);
+  }
+
+  function snapshotOf(agentId: string): ManagedAgent | null {
+    const state = states.get(agentId);
+    if (!state) {
+      return null;
+    }
+    const snapshot: ManagedAgent = Object.create(null);
+    Reflect.set(snapshot, "id", agentId);
+    Reflect.set(snapshot, "lifecycle", state.lifecycle);
+    Reflect.set(snapshot, "activeForegroundTurnId", state.activeForegroundTurnId);
+    Reflect.set(snapshot, "config", { title: state.title });
+    return snapshot;
+  }
+
+  function dispatch(agentId: string, event: AgentManagerEvent): void {
+    for (const subscription of subscriptions) {
+      if (subscription.agentId !== null && subscription.agentId !== agentId) {
+        continue;
+      }
+      subscription.callback(event);
+    }
+  }
 
   const agentManager: AgentManager = Object.create(AgentManager.prototype);
-  Reflect.set(agentManager, "getAgent", (agentId: string) => {
-    if (agentId === "child-agent") {
-      return childAgent;
-    }
-    if (agentId === "caller-agent") {
-      return callerAgent;
-    }
-    return null;
-  });
-  Reflect.set(agentManager, "subscribe", (callback: (event: AgentManagerEvent) => void) => {
-    subscriber = callback;
-    return () => {
-      subscriber = null;
-    };
-  });
-  Reflect.set(agentManager, "getLastAssistantMessage", async () => {
-    return options?.childLastAssistantMessage ?? null;
+  Reflect.set(agentManager, "getAgent", (agentId: string) => snapshotOf(agentId));
+  Reflect.set(
+    agentManager,
+    "subscribe",
+    (callback: (event: AgentManagerEvent) => void, opts?: { agentId?: string }) => {
+      const subscription: Subscription = { agentId: opts?.agentId ?? null, callback };
+      subscriptions.add(subscription);
+      return () => subscriptions.delete(subscription);
+    },
+  );
+  Reflect.set(agentManager, "getLastAssistantMessage", async (agentId: string) => {
+    return options?.lastAssistantMessage?.(agentId) ?? null;
   });
   Reflect.set(agentManager, "tryRunOutOfBand", () => false);
-  Reflect.set(agentManager, "hasInFlightRun", () => Boolean(options?.parentPromptError));
-  Reflect.set(agentManager, "streamAgent", (_agentId: string, prompt: string) => {
-    parentPrompted = true;
-    parentPrompts.push(prompt);
-    resolveParentPrompt?.(prompt);
+  Reflect.set(agentManager, "hasInFlightRun", (agentId: string) => {
+    return states.get(agentId)?.lifecycle === "running";
+  });
+  Reflect.set(agentManager, "streamAgent", (agentId: string, prompt: string) => {
+    if (deliveryFailuresLeft > 0) {
+      deliveryFailuresLeft -= 1;
+      throw new Error(`Agent ${agentId} already has an active run`);
+    }
+    const existing = delivered.get(agentId);
+    if (existing) {
+      existing.push(prompt);
+    } else {
+      delivered.set(agentId, [prompt]);
+    }
     return (async function* noop() {})();
   });
-  Reflect.set(agentManager, "replaceAgentRun", async (_agentId: string, prompt: string) => {
-    resolveParentPrompt?.(prompt);
-    throw options?.parentPromptError;
+  Reflect.set(agentManager, "replaceAgentRun", async (agentId: string) => {
+    throw new Error(`Agent ${agentId} already has an active run`);
   });
 
   const agentStorage: AgentStorage = Object.create(AgentStorage.prototype);
   Reflect.set(agentStorage, "get", async (agentId: string) => {
-    if (agentId === "child-agent") {
-      const parentAgentId =
-        options?.childParentAgentId === undefined ? "caller-agent" : options.childParentAgentId;
-      return {
-        title: "Child Agent",
-        labels: parentAgentId ? { "paseo.parent-agent-id": parentAgentId } : {},
-      };
+    const state = states.get(agentId);
+    if (!state) {
+      return null;
     }
-    return null;
+    const parentAgentId = state.parentAgentId === undefined ? CALLER : state.parentAgentId;
+    return {
+      title: state.title,
+      ...(state.archivedAt ? { archivedAt: state.archivedAt } : {}),
+      labels: parentAgentId ? { "paseo.parent-agent-id": parentAgentId } : {},
+    };
   });
 
   return {
-    startWatchingChild() {
-      setupFinishNotification({
-        agentManager,
-        agentStorage,
-        childAgentId: "child-agent",
-        callerAgentId: "caller-agent",
-        requireParentOwnership: options?.requireParentOwnership,
-        logger: options?.logger ?? createTestLogger(),
-      });
+    agentManager,
+    agentStorage,
+    deliveredTo(agentId) {
+      return delivered.get(agentId) ?? [];
     },
-    requestChildPermission(requestId = "permission-1") {
-      childAgent.lifecycle = "running";
-      childAgent.pendingPermissions.set(requestId, {
-        id: requestId,
-        provider: "claude",
-        kind: "tool",
-        name: "Run command",
-        description: "Write the QA sentinel",
-        input: {
-          file_path: "/tmp/permission-qa.txt",
-          content: "PASEO_PERMISSION_NOTIFY_QA_OK\n",
-        },
-      });
-      subscriber?.({
-        type: "agent_state",
-        agent: childAgent,
-      });
-      subscriber?.({
-        type: "agent_stream",
-        agentId: "child-agent",
-        event: {
-          type: "permission_requested",
-          provider: "codex",
-          request: childAgent.pendingPermissions.get(requestId)!,
-        },
-      });
+    failNextDeliveries(count) {
+      deliveryFailuresLeft = count;
     },
-    resolveChildPermission(requestId = "permission-1") {
-      childAgent.pendingPermissions.delete(requestId);
-      subscriber?.({
-        type: "agent_stream",
-        agentId: "child-agent",
-        event: {
-          type: "permission_resolved",
-          provider: "codex",
-          requestId,
-          resolution: { behavior: "allow" },
-        },
-      });
+    setLifecycle(agentId, lifecycle, turnId) {
+      const state = ensureState(agentId);
+      state.lifecycle = lifecycle;
+      if (turnId !== undefined) {
+        state.activeForegroundTurnId = turnId;
+      }
+      const agent = snapshotOf(agentId);
+      if (agent) {
+        dispatch(agentId, { type: "agent_state", agent });
+      }
     },
-    resolveChildPermissionFromState(requestId = "permission-1") {
-      childAgent.pendingPermissions.delete(requestId);
-      subscriber?.({ type: "agent_state", agent: childAgent });
+    emitStream(agentId, event) {
+      dispatch(agentId, { type: "agent_stream", agentId, event });
     },
-    resolveChildPermissionWhileIdle(requestId = "permission-1") {
-      childAgent.pendingPermissions.delete(requestId);
-      childAgent.lifecycle = "idle";
-      subscriber?.({ type: "agent_state", agent: childAgent });
-      subscriber?.({
-        type: "agent_stream",
-        agentId: "child-agent",
-        event: {
-          type: "permission_resolved",
-          provider: "codex",
-          requestId,
-          resolution: { behavior: "allow" },
-        },
-      });
-    },
-    finishChild() {
-      childAgent.lifecycle = "running";
-      subscriber?.({
-        type: "agent_state",
-        agent: childAgent,
-      });
-
-      childAgent.lifecycle = "idle";
-      subscriber?.({
-        type: "agent_state",
-        agent: childAgent,
-      });
-    },
-    async finishChildAndReadParentPrompt() {
-      const parentPrompt = new Promise<string>((resolve) => {
-        resolveParentPrompt = resolve;
-      });
-      this.finishChild();
-
-      return parentPrompt;
-    },
-    async closeChildAndReadParentPrompt() {
-      const parentPrompt = new Promise<string>((resolve) => {
-        resolveParentPrompt = resolve;
-      });
-
-      childAgent.lifecycle = "running";
-      subscriber?.({
-        type: "agent_state",
-        agent: childAgent,
-      });
-
-      childAgent.lifecycle = "closed";
-      subscriber?.({
-        type: "agent_state",
-        agent: childAgent,
-      });
-
-      return parentPrompt;
-    },
-    parentPrompts() {
-      return parentPrompts;
-    },
-    wasParentPrompted() {
-      return parentPrompted;
+    archive(agentId) {
+      ensureState(agentId).archivedAt = "2026-01-01T00:00:00.000Z";
     },
   };
+}
+
+function watchNextTurn(harness: Harness, childAgentId: string) {
+  return setupFinishNotification({
+    agentManager: harness.agentManager,
+    agentStorage: harness.agentStorage,
+    childAgentId,
+    callerAgentId: CALLER,
+    watch: "next-turn",
+    logger: createTestLogger(),
+  });
+}
+
+function startTurn(harness: Harness, childAgentId: string, turnId: string): void {
+  harness.setLifecycle(childAgentId, "running", turnId);
+  harness.emitStream(childAgentId, { type: "turn_started", provider: "codex", turnId });
+}
+
+function endTurn(harness: Harness, childAgentId: string, turnId: string): void {
+  harness.emitStream(childAgentId, { type: "turn_completed", provider: "codex", turnId });
+  harness.setLifecycle(childAgentId, "idle", null);
+}
+
+/** Arm, dispatch, bind — the order every real dispatch site follows. */
+function runTurn(
+  harness: Harness,
+  childAgentId: string,
+  turnId: string,
+  existing?: FinishNotificationRegistration,
+): void {
+  const registration = existing ?? watchNextTurn(harness, childAgentId);
+  startTurn(harness, childAgentId, turnId);
+  registration.bindTurn(turnId);
+  endTurn(harness, childAgentId, turnId);
 }
 
 test("isSystemInjectedEnvelope matches the envelope formatSystemNotificationPrompt produces", () => {
@@ -284,269 +247,353 @@ test("sendPromptToAgent forwards the client message id as run options", async ()
   });
 });
 
-test("finish notifications tell the parent the child's last assistant message", async () => {
-  const scenario = createFinishNotificationScenario({
-    childLastAssistantMessage: "Implemented the cleanup and all checks pass.",
+test("sendPromptToAgent can refuse to replace an in-flight run", async () => {
+  const harness = createHarness({ agents: { child: { lifecycle: "running" } } });
+
+  await expect(
+    sendPromptToAgent({
+      agentManager: harness.agentManager,
+      agentStorage: harness.agentStorage,
+      agentId: "child",
+      prompt: "hello",
+      replaceRunning: false,
+      logger: createTestLogger(),
+    }),
+  ).resolves.toEqual({ outOfBand: false });
+
+  expect(harness.deliveredTo("child")).toEqual(["hello"]);
+});
+
+test("finish notifications tell the caller the child's last assistant message", async () => {
+  const harness = createHarness({
+    agents: { child: { title: "Child Agent" } },
+    lastAssistantMessage: () => "Implemented the cleanup and all checks pass.",
   });
 
-  scenario.startWatchingChild();
-  const parentPrompt = await scenario.finishChildAndReadParentPrompt();
+  watchNextTurn(harness, "child");
+  runTurn(harness, "child", "turn-1");
 
-  expect(parentPrompt).toEqual(
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+  expect(harness.deliveredTo(CALLER)[0]).toEqual(
     formatSystemNotificationPrompt(
-      "Agent child-agent (Child Agent) finished.\n\n<agent-response>\nImplemented the cleanup and all checks pass.\n</agent-response>",
+      "Agent child (Child Agent) finished.\n\n<agent-response>\nImplemented the cleanup and all checks pass.\n</agent-response>",
     ),
+  );
+});
+
+test("a turn belonging to someone else does not consume the watch", async () => {
+  const harness = createHarness({ agents: { child: {} } });
+
+  const registration = watchNextTurn(harness, "child");
+
+  // Another writer's turn opens and is cancelled inside the arming window.
+  startTurn(harness, "child", "foreign-turn");
+  harness.emitStream("child", {
+    type: "turn_canceled",
+    provider: "codex",
+    reason: "interrupted",
+    turnId: "foreign-turn",
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(harness.deliveredTo(CALLER)).toEqual([]);
+
+  // Our dispatch names its own turn.
+  startTurn(harness, "child", "work-turn");
+  registration.bindTurn("work-turn");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(harness.deliveredTo(CALLER)).toEqual([]);
+
+  endTurn(harness, "child", "work-turn");
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+  expect(harness.deliveredTo(CALLER)[0]).toContain("Agent child (child) finished.");
+});
+
+test("a turn that ended while arming is delivered once the watch is bound", async () => {
+  const harness = createHarness({ agents: { child: {} } });
+
+  const registration = watchNextTurn(harness, "child");
+  startTurn(harness, "child", "fast-turn");
+  endTurn(harness, "child", "fast-turn");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(harness.deliveredTo(CALLER)).toEqual([]);
+
+  registration.bindTurn("fast-turn");
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+});
+
+test("binding with an unknown turn id takes the turn that ended while arming", async () => {
+  const harness = createHarness({ agents: { child: {} } });
+
+  const registration = watchNextTurn(harness, "child");
+  startTurn(harness, "child", "fast-turn");
+  endTurn(harness, "child", "fast-turn");
+  registration.bindTurn(null);
+
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+});
+
+test("a permission request does not consume the finish watch", async () => {
+  const harness = createHarness({ agents: { child: {} } });
+
+  const registration = watchNextTurn(harness, "child");
+  startTurn(harness, "child", "turn-1");
+  registration.bindTurn("turn-1");
+  harness.emitStream("child", {
+    type: "permission_requested",
+    provider: "codex",
+    request: { id: "perm-1", toolName: "bash", input: {} },
+  } as AgentStreamEvent);
+
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+  expect(harness.deliveredTo(CALLER)[0]).toContain("needs permission");
+
+  endTurn(harness, "child", "turn-1");
+
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(2));
+  expect(harness.deliveredTo(CALLER)[1]).toContain("finished");
+});
+
+test("notifications wait for a busy caller instead of replacing its turn", async () => {
+  const harness = createHarness({ agents: { child: {} } });
+  harness.setLifecycle(CALLER, "running");
+
+  watchNextTurn(harness, "child");
+  runTurn(harness, "child", "turn-1");
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(harness.deliveredTo(CALLER)).toEqual([]);
+
+  harness.setLifecycle(CALLER, "idle");
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+});
+
+test("notifications that pile up against a busy caller are merged, not dropped", async () => {
+  const harness = createHarness({ agents: { "child-a": {}, "child-b": {} } });
+  harness.setLifecycle(CALLER, "running");
+
+  watchNextTurn(harness, "child-a");
+  watchNextTurn(harness, "child-b");
+  runTurn(harness, "child-a", "turn-a");
+  runTurn(harness, "child-b", "turn-b");
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(harness.deliveredTo(CALLER)).toEqual([]);
+
+  harness.setLifecycle(CALLER, "idle");
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+
+  const notification = harness.deliveredTo(CALLER)[0];
+  expect(notification).toContain("Agent child-a (child-a) finished.");
+  expect(notification).toContain("Agent child-b (child-b) finished.");
+});
+
+test("a delivery that is refused is retried instead of dropped", async () => {
+  const harness = createHarness({ agents: { child: {} } });
+  harness.failNextDeliveries(1);
+
+  watchNextTurn(harness, "child");
+  runTurn(harness, "child", "turn-1");
+
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1), { timeout: 10_000 });
+  expect(harness.deliveredTo(CALLER)[0]).toContain("Agent child (child) finished.");
+});
+
+test("watching a turn that already ended notifies immediately", async () => {
+  const harness = createHarness({ agents: { child: { lifecycle: "running" } } });
+
+  setupFinishNotification({
+    agentManager: harness.agentManager,
+    agentStorage: harness.agentStorage,
+    childAgentId: "child",
+    callerAgentId: CALLER,
+    watch: "next-turn",
+    expectedTurnId: "turn-already-over",
+    logger: createTestLogger(),
+  });
+
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+});
+
+test("cancelling a watch before any turn starts silences it", async () => {
+  const harness = createHarness({ agents: { child: {} } });
+
+  const registration = watchNextTurn(harness, "child");
+  registration.cancel();
+  expect(registration.willNotifyCaller()).toBe(false);
+
+  runTurn(harness, "child", "turn-1", registration);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(harness.deliveredTo(CALLER)).toEqual([]);
+});
+
+test("binding twice keeps the first turn", async () => {
+  const harness = createHarness({ agents: { child: {} } });
+
+  const registration = watchNextTurn(harness, "child");
+  startTurn(harness, "child", "turn-1");
+  registration.bindTurn("turn-1");
+  registration.bindTurn("turn-2");
+
+  harness.emitStream("child", { type: "turn_completed", provider: "codex", turnId: "turn-2" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(harness.deliveredTo(CALLER)).toEqual([]);
+
+  endTurn(harness, "child", "turn-1");
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+});
+
+test("detaching a child ends its parent-owned finish notification", async () => {
+  const harness = createHarness({ agents: { child: { parentAgentId: null } } });
+
+  const registration = setupFinishNotification({
+    agentManager: harness.agentManager,
+    agentStorage: harness.agentStorage,
+    childAgentId: "child",
+    callerAgentId: CALLER,
+    watch: "next-turn",
+    requireParentOwnership: true,
+    logger: createTestLogger(),
+  });
+  runTurn(harness, "child", "turn-1", registration);
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(harness.deliveredTo(CALLER)).toEqual([]);
+});
+
+test("follow-up finish notifications do not require a parent relationship", async () => {
+  const harness = createHarness({ agents: { child: { parentAgentId: "another-agent" } } });
+
+  watchNextTurn(harness, "child");
+  runTurn(harness, "child", "turn-1");
+
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+});
+
+test("does not notify archived callers", async () => {
+  const harness = createHarness({ agents: { child: {} } });
+  harness.archive(CALLER);
+
+  watchNextTurn(harness, "child");
+  runTurn(harness, "child", "turn-1");
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(harness.deliveredTo(CALLER)).toEqual([]);
+});
+
+test("a child that is not loaded yet keeps its watch", async () => {
+  const harness = createHarness();
+
+  // No state for "cold-child": getAgent returns null, the normal case when the
+  // watch is armed before the dispatch that loads the agent.
+  const registration = watchNextTurn(harness, "cold-child");
+  expect(registration.willNotifyCaller()).toBe(true);
+
+  runTurn(harness, "cold-child", "turn-1", registration);
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+});
+
+test("an interrupted turn is not reported as finished", async () => {
+  const harness = createHarness({ agents: { child: {} } });
+
+  const registration = watchNextTurn(harness, "child");
+  startTurn(harness, "child", "turn-1");
+  registration.bindTurn("turn-1");
+  harness.emitStream("child", {
+    type: "turn_canceled",
+    provider: "codex",
+    reason: "interrupted",
+    turnId: "turn-1",
+  });
+
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+  expect(harness.deliveredTo(CALLER)[0]).toContain("was interrupted");
+  expect(harness.deliveredTo(CALLER)[0]).not.toContain("finished");
+});
+
+test("a fired watch still reports that the caller will hear about it", async () => {
+  const harness = createHarness({ agents: { child: {} } });
+
+  const registration = watchNextTurn(harness, "child");
+  runTurn(harness, "child", "turn-1", registration);
+
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+  expect(registration.willNotifyCaller()).toBe(true);
+});
+
+test("the legacy any-idle watch still fires on the first idle", async () => {
+  const harness = createHarness({ agents: { child: {} } });
+
+  setupFinishNotification({
+    agentManager: harness.agentManager,
+    agentStorage: harness.agentStorage,
+    childAgentId: "child",
+    callerAgentId: CALLER,
+    logger: createTestLogger(),
+  });
+
+  harness.setLifecycle("child", "running", "turn-1");
+  harness.setLifecycle("child", "idle", null);
+
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+});
+
+test("closing a watched child notifies the caller", async () => {
+  const harness = createHarness({ agents: { child: { title: "Child Agent" } } });
+
+  const registration = watchNextTurn(harness, "child");
+  startTurn(harness, "child", "turn-1");
+  registration.bindTurn("turn-1");
+  harness.setLifecycle("child", "closed");
+
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+  expect(harness.deliveredTo(CALLER)[0]).toEqual(
+    formatSystemNotificationPrompt("Agent child (Child Agent) was closed."),
   );
 });
 
 test("finish notifications truncate oversized child responses", async () => {
   const included = "x".repeat(4000);
   const omitted = "TAIL-MARKER".repeat(50);
-  const scenario = createFinishNotificationScenario({
-    childLastAssistantMessage: included + omitted,
+  const harness = createHarness({
+    agents: { child: { title: "Child Agent" } },
+    lastAssistantMessage: () => included + omitted,
   });
 
-  scenario.startWatchingChild();
-  const parentPrompt = await scenario.finishChildAndReadParentPrompt();
+  watchNextTurn(harness, "child");
+  runTurn(harness, "child", "turn-1");
 
-  expect(parentPrompt).toContain(included);
-  expect(parentPrompt).toContain(
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+  const notification = harness.deliveredTo(CALLER)[0];
+  expect(notification).toContain(included);
+  expect(notification).toContain(
     `[truncated ${omitted.length} chars; use get_agent_activity for the full response]`,
   );
-  expect(parentPrompt).not.toContain("TAIL-MARKER");
+  expect(notification).not.toContain("TAIL-MARKER");
 });
 
-test("closing a watched child notifies the caller", async () => {
-  const scenario = createFinishNotificationScenario();
+test("permission notifications carry the actionable request payload", async () => {
+  const harness = createHarness({ agents: { child: { title: "Child Agent" } } });
 
-  scenario.startWatchingChild();
-  const parentPrompt = await scenario.closeChildAndReadParentPrompt();
+  const registration = watchNextTurn(harness, "child");
+  startTurn(harness, "child", "turn-1");
+  registration.bindTurn("turn-1");
+  harness.emitStream("child", {
+    type: "permission_requested",
+    provider: "codex",
+    request: { id: "perm-1", provider: "codex", kind: "tool", name: "Run command", input: {} },
+  } as AgentStreamEvent);
 
-  expect(parentPrompt).toEqual(
-    formatSystemNotificationPrompt("Agent child-agent (Child Agent) was closed."),
-  );
-});
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+  const notification = harness.deliveredTo(CALLER)[0];
+  expect(notification).toContain("needs permission.");
 
-test("finish notifications survive permission responses", async () => {
-  const scenario = createFinishNotificationScenario();
-
-  scenario.startWatchingChild();
-  scenario.requestChildPermission();
-
-  await vi.waitFor(() => {
-    expect(scenario.parentPrompts()).toHaveLength(1);
-  });
-  expect(scenario.parentPrompts()[0]).toContain("needs permission.");
-  const permissionPayload = scenario
-    .parentPrompts()[0]
-    .match(/<permission-request>\n([\s\S]+?)\n<\/permission-request>/)?.[1];
+  const permissionPayload = notification.match(
+    /<permission-request>\n([\s\S]+?)\n<\/permission-request>/,
+  )?.[1];
   expect(permissionPayload).toBeDefined();
   expect(JSON.parse(permissionPayload!)).toEqual({
-    agentId: "child-agent",
-    requestId: "permission-1",
-    request: {
-      id: "permission-1",
-      provider: "claude",
-      kind: "tool",
-      name: "Run command",
-      description: "Write the QA sentinel",
-      input: {
-        file_path: "/tmp/permission-qa.txt",
-        content: "PASEO_PERMISSION_NOTIFY_QA_OK\n",
-      },
-    },
+    agentId: "child",
+    requestId: "perm-1",
+    request: { id: "perm-1", provider: "codex", kind: "tool", name: "Run command", input: {} },
   });
-
-  scenario.resolveChildPermission();
-  scenario.finishChild();
-
-  await vi.waitFor(() => {
-    expect(scenario.parentPrompts()).toHaveLength(2);
-  });
-  expect(scenario.parentPrompts()[1]).toContain("finished.");
-});
-
-test("an idle permission resolution waits for the resumed run to finish", async () => {
-  const scenario = createFinishNotificationScenario();
-
-  scenario.startWatchingChild();
-  scenario.requestChildPermission();
-  await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(1));
-
-  scenario.resolveChildPermissionWhileIdle();
-  scenario.requestChildPermission("permission-2");
-  await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(2));
-  expect(scenario.parentPrompts().every((prompt) => prompt.includes("needs permission."))).toBe(
-    true,
-  );
-
-  scenario.resolveChildPermission("permission-2");
-  scenario.finishChild();
-  await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(3));
-  expect(scenario.parentPrompts()[2]).toContain("finished.");
-});
-
-test("finish notifications report every concurrently pending permission", async () => {
-  const scenario = createFinishNotificationScenario();
-
-  scenario.startWatchingChild();
-  scenario.requestChildPermission("permission-1");
-  scenario.requestChildPermission("permission-2");
-
-  await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(2));
-  expect(
-    scenario.parentPrompts().map((prompt) => {
-      const payload = prompt.match(/<permission-request>\n([\s\S]+?)\n<\/permission-request>/)?.[1];
-      return JSON.parse(payload!).requestId;
-    }),
-  ).toEqual(["permission-1", "permission-2"]);
-
-  scenario.resolveChildPermission("permission-1");
-  scenario.resolveChildPermission("permission-2");
-  scenario.finishChild();
-
-  await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(3));
-  expect(scenario.parentPrompts()[2]).toContain("finished.");
-});
-
-test("finish notifications survive repeated permission cycles", async () => {
-  const scenario = createFinishNotificationScenario();
-
-  scenario.startWatchingChild();
-  scenario.requestChildPermission();
-  await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(1));
-  scenario.resolveChildPermissionFromState();
-
-  scenario.requestChildPermission();
-  await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(2));
-  scenario.resolveChildPermission();
-  scenario.finishChild();
-
-  await vi.waitFor(() => expect(scenario.parentPrompts()).toHaveLength(3));
-  expect(
-    scenario.parentPrompts().map((prompt) => prompt.match(/(needs permission|finished)\./)?.[1]),
-  ).toEqual(["needs permission", "needs permission", "finished"]);
-});
-
-test("detaching a child ends its parent-owned finish notification", async () => {
-  const scenario = createFinishNotificationScenario({
-    childParentAgentId: null,
-    requireParentOwnership: true,
-  });
-  scenario.startWatchingChild();
-  scenario.finishChild();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(scenario.wasParentPrompted()).toBe(false);
-});
-
-test("follow-up finish notifications do not require a parent relationship", async () => {
-  const scenario = createFinishNotificationScenario({ childParentAgentId: "another-agent" });
-
-  scenario.startWatchingChild();
-  const parentPrompt = await scenario.finishChildAndReadParentPrompt();
-
-  expect(parentPrompt).toContain("Agent child-agent (Child Agent) finished.");
-});
-
-test("finish notifications log a rejected parent prompt without an unhandled rejection", async () => {
-  const captured = createCapturedLogger();
-  const scenario = createFinishNotificationScenario({
-    parentPromptError: new Error("parent provider rejected replacement"),
-    logger: captured.logger,
-  });
-
-  scenario.startWatchingChild();
-  await scenario.finishChildAndReadParentPrompt();
-  await captured.nextRecord;
-
-  expect(captured.records).toEqual([
-    expect.objectContaining({
-      msg: "Failed to notify caller agent",
-      childAgentId: "child-agent",
-      callerAgentId: "caller-agent",
-      reason: "finished",
-      err: expect.objectContaining({ message: "parent provider rejected replacement" }),
-    }),
-  ]);
-});
-
-it("does not notify archived callers", async () => {
-  let subscriber: ((event: AgentManagerEvent) => void) | null = null;
-
-  const childAgent: ManagedAgent = Object.create(null);
-  Reflect.set(childAgent, "id", "child-agent");
-  Reflect.set(childAgent, "lifecycle", "idle");
-  Reflect.set(childAgent, "config", { title: "Child Agent" });
-  Reflect.set(childAgent, "pendingPermissions", new Map());
-
-  const callerAgent: ManagedAgent = Object.create(null);
-  Reflect.set(callerAgent, "id", "caller-agent");
-  Reflect.set(callerAgent, "lifecycle", "idle");
-  Reflect.set(callerAgent, "config", { title: "Caller Agent" });
-
-  const streamAgentSpy = vi.fn(() => (async function* noop() {})());
-  const replaceAgentRunSpy = vi.fn(() => (async function* noop() {})());
-
-  const agentManager: AgentManager = Object.create(AgentManager.prototype);
-  Reflect.set(
-    agentManager,
-    "getAgent",
-    vi.fn((agentId: string) => {
-      if (agentId === "child-agent") {
-        return childAgent;
-      }
-      if (agentId === "caller-agent") {
-        return callerAgent;
-      }
-      return null;
-    }),
-  );
-  Reflect.set(
-    agentManager,
-    "subscribe",
-    vi.fn((callback: (event: AgentManagerEvent) => void) => {
-      subscriber = callback;
-      return () => {
-        subscriber = null;
-      };
-    }),
-  );
-  Reflect.set(agentManager, "hasInFlightRun", vi.fn().mockReturnValue(false));
-  Reflect.set(agentManager, "streamAgent", streamAgentSpy);
-  Reflect.set(agentManager, "replaceAgentRun", replaceAgentRunSpy);
-
-  const agentStorageGetSpy = vi.fn(async (agentId: string) =>
-    agentId === "caller-agent" ? { archivedAt: "2024-01-01" } : null,
-  );
-  const agentStorage: AgentStorage = Object.create(AgentStorage.prototype);
-  Reflect.set(agentStorage, "get", agentStorageGetSpy);
-
-  setupFinishNotification({
-    agentManager,
-    agentStorage,
-    childAgentId: "child-agent",
-    callerAgentId: "caller-agent",
-    logger: createTestLogger(),
-  });
-
-  expect(subscriber).not.toBeNull();
-
-  childAgent.lifecycle = "running";
-  subscriber?.({
-    type: "agent_state",
-    agent: childAgent,
-  });
-
-  childAgent.lifecycle = "idle";
-  subscriber?.({
-    type: "agent_state",
-    agent: childAgent,
-  });
-
-  await vi.waitFor(() => {
-    expect(agentStorageGetSpy).toHaveBeenCalledWith("caller-agent");
-  });
-
-  expect(streamAgentSpy).not.toHaveBeenCalled();
-  expect(replaceAgentRunSpy).not.toHaveBeenCalled();
 });
