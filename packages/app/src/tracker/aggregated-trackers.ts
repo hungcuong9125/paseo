@@ -1,71 +1,71 @@
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import { IssuesRpcError } from "@getpaseo/client/internal/daemon-client";
-import type { IssuesErrorCode } from "@getpaseo/protocol/issues/rpc-schemas";
-import type { IssueSummary } from "@getpaseo/protocol/issues/types";
+import { TrackerRpcError } from "@getpaseo/client/internal/daemon-client";
+import type { TrackerErrorCode } from "@getpaseo/protocol/tracker/rpc-schemas";
+import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 import { toErrorMessage } from "@/utils/error-messages";
 
-export const issuesQueryBaseKey = ["issues"] as const;
+export const trackerQueryBaseKey = ["trackers"] as const;
 
 /** A project known to the current host, regardless of whether it has an open
- * workspace — this is the whole point: Issues/Tracker data lives at a
+ * workspace — this is the whole point: Trackers/Tracker data lives at a
  * project's root (`.ait/ait.db`), not at a specific workspace directory. */
-export interface IssueProjectInput {
+export interface TrackerProjectInput {
   serverId: string;
   serverName: string;
   projectId: string;
   projectName: string;
 }
 
-/** One issue tagged with the project (and host) it came from, so a flat
+/** One tracker tagged with the project (and host) it came from, so a flat
  * aggregated list can render a per-row project label and scope mutations
  * without the caller having to track "current project" separately. */
-export interface AggregatedIssue extends IssueSummary {
+export interface AggregatedTracker extends TrackerSummary {
   serverId: string;
   serverName: string;
   projectId: string;
   projectName: string;
 }
 
-export interface IssueProjectError {
+export interface TrackerProjectError {
   serverId: string;
   serverName: string;
   projectId: string;
   projectName: string;
   message: string;
-  code: IssuesErrorCode;
+  code: TrackerErrorCode;
 }
 
-export interface IssuesRuntimeSnapshot {
+export interface TrackersRuntimeSnapshot {
   connectionStatus: string;
 }
 
-export interface IssuesRuntime {
-  getClient(serverId: string): Pick<DaemonClient, "issuesList"> | null;
-  getSnapshot(serverId: string): IssuesRuntimeSnapshot | null | undefined;
+export interface TrackersRuntime {
+  getClient(serverId: string): Pick<DaemonClient, "trackerList"> | null;
+  getSnapshot(serverId: string): TrackersRuntimeSnapshot | null | undefined;
 }
 
-export interface FetchAggregatedIssuesConnectingResult {
+export interface FetchAggregatedTrackersConnectingResult {
   status: "connecting";
 }
 
-export interface FetchAggregatedIssuesResult {
+export interface FetchAggregatedTrackersResult {
   status: "loaded";
-  data: AggregatedIssue[];
-  projectErrors: IssueProjectError[];
+  data: AggregatedTracker[];
+  projectErrors: TrackerProjectError[];
 }
 
-export type FetchAggregatedIssuesState =
-  | FetchAggregatedIssuesConnectingResult
-  | FetchAggregatedIssuesResult;
+export type FetchAggregatedTrackersState =
+  | FetchAggregatedTrackersConnectingResult
+  | FetchAggregatedTrackersResult;
 
-export interface FetchAggregatedIssuesInput {
-  projects: readonly IssueProjectInput[];
-  runtime: IssuesRuntime;
+export interface FetchAggregatedTrackersInput {
+  projects: readonly TrackerProjectInput[];
+  runtime: TrackersRuntime;
   all: boolean;
 }
 
 /**
- * Fetch issues across every known project (no shared database — each project
+ * Fetch trackers across every known project (no shared database — each project
  * keeps its own `.ait/ait.db`, we just fan the same request out in parallel,
  * mirroring how `web-ait` itself polls each registered project independently)
  * and merge them into one flat, project-tagged list.
@@ -78,11 +78,11 @@ export interface FetchAggregatedIssuesInput {
  * still resolves to `{status:"loaded", data:[], projectErrors:[...]}` so the
  * caller can inspect exactly which project failed and why.
  */
-export async function fetchAggregatedIssues(
-  input: FetchAggregatedIssuesInput,
-): Promise<FetchAggregatedIssuesState> {
+export async function fetchAggregatedTrackers(
+  input: FetchAggregatedTrackersInput,
+): Promise<FetchAggregatedTrackersState> {
   const hasSettlingProject = input.projects.some((project) =>
-    isIssuesConnectionSettling(input.runtime.getSnapshot(project.serverId)),
+    isTrackersConnectionSettling(input.runtime.getSnapshot(project.serverId)),
   );
   const hasAskableProject = input.projects.some((project) => {
     const snapshot = input.runtime.getSnapshot(project.serverId);
@@ -93,8 +93,8 @@ export async function fetchAggregatedIssues(
     return { status: "connecting" };
   }
 
-  const issues: AggregatedIssue[] = [];
-  const projectErrors: IssueProjectError[] = [];
+  const trackers: AggregatedTracker[] = [];
+  const projectErrors: TrackerProjectError[] = [];
 
   await Promise.all(
     input.projects.map(async (project) => {
@@ -105,10 +105,10 @@ export async function fetchAggregatedIssues(
         return;
       }
       try {
-        const result = await client.issuesList({ projectId: project.projectId, all: input.all });
-        for (const issue of result.issues) {
-          issues.push({
-            ...issue,
+        const result = await client.trackerList({ projectId: project.projectId, all: input.all });
+        for (const tracker of result.trackers) {
+          trackers.push({
+            ...tracker,
             serverId: project.serverId,
             serverName: project.serverName,
             projectId: project.projectId,
@@ -122,20 +122,22 @@ export async function fetchAggregatedIssues(
           projectId: project.projectId,
           projectName: project.projectName,
           message: toErrorMessage(error),
-          code: error instanceof IssuesRpcError ? error.code : "unknown",
+          code: error instanceof TrackerRpcError ? error.code : "unknown",
         });
       }
     }),
   );
 
-  if (issues.length === 0 && projectErrors.length === 0 && hasSettlingProject) {
+  if (trackers.length === 0 && projectErrors.length === 0 && hasSettlingProject) {
     return { status: "connecting" };
   }
 
-  return { status: "loaded", data: issues, projectErrors };
+  return { status: "loaded", data: trackers, projectErrors };
 }
 
-function isIssuesConnectionSettling(snapshot: IssuesRuntimeSnapshot | null | undefined): boolean {
+function isTrackersConnectionSettling(
+  snapshot: TrackersRuntimeSnapshot | null | undefined,
+): boolean {
   if (!snapshot) {
     return true;
   }

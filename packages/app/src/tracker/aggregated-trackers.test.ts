@@ -1,14 +1,14 @@
-import type { IssueSummary } from "@getpaseo/protocol/issues/types";
+import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 import { describe, expect, it } from "vitest";
 import {
-  fetchAggregatedIssues,
-  type IssueProjectInput,
-  type IssuesRuntime,
-  type IssuesRuntimeSnapshot,
-} from "./aggregated-issues";
-import { getIssueStatCounts } from "./issue-stats";
+  fetchAggregatedTrackers,
+  type TrackerProjectInput,
+  type TrackersRuntime,
+  type TrackersRuntimeSnapshot,
+} from "./aggregated-trackers";
+import { getTrackerStatCounts } from "./tracker-stats";
 
-function makeIssue(overrides: Partial<IssueSummary> = {}): IssueSummary {
+function makeTracker(overrides: Partial<TrackerSummary> = {}): TrackerSummary {
   return {
     id: "proj-1",
     title: "Fix the thing",
@@ -20,13 +20,13 @@ function makeIssue(overrides: Partial<IssueSummary> = {}): IssueSummary {
   };
 }
 
-const PROJECT_A: IssueProjectInput = {
+const PROJECT_A: TrackerProjectInput = {
   serverId: "host-a",
   serverName: "Host A",
   projectId: "prj-a",
   projectName: "project-a",
 };
-const PROJECT_B: IssueProjectInput = {
+const PROJECT_B: TrackerProjectInput = {
   serverId: "host-b",
   serverName: "Host B",
   projectId: "prj-b",
@@ -34,9 +34,9 @@ const PROJECT_B: IssueProjectInput = {
 };
 
 function makeRuntime(input: {
-  snapshots: Record<string, IssuesRuntimeSnapshot | null>;
-  results?: Record<string, { issues: IssueSummary[]; hiddenCount: number } | Error>;
-}): IssuesRuntime {
+  snapshots: Record<string, TrackersRuntimeSnapshot | null>;
+  results?: Record<string, { trackers: TrackerSummary[]; hiddenCount: number } | Error>;
+}): TrackersRuntime {
   return {
     getSnapshot: (serverId) => input.snapshots[serverId] ?? null,
     getClient: (serverId) => {
@@ -44,21 +44,21 @@ function makeRuntime(input: {
         return null;
       }
       return {
-        issuesList: async () => {
+        trackerList: async () => {
           const result = input.results?.[serverId];
           if (result instanceof Error) {
             throw result;
           }
-          return result ?? { issues: [], hiddenCount: 0 };
+          return result ?? { trackers: [], hiddenCount: 0 };
         },
       };
     },
   };
 }
 
-describe("fetchAggregatedIssues load state", () => {
+describe("fetchAggregatedTrackers load state", () => {
   it("does not report loaded empty while known projects' hosts are still connecting", async () => {
-    const result = await fetchAggregatedIssues({
+    const result = await fetchAggregatedTrackers({
       projects: [PROJECT_A, PROJECT_B],
       all: false,
       runtime: makeRuntime({
@@ -72,8 +72,8 @@ describe("fetchAggregatedIssues load state", () => {
     expect(result).toEqual({ status: "connecting" });
   });
 
-  it("reports loaded empty after every reachable project answers with no issues", async () => {
-    const result = await fetchAggregatedIssues({
+  it("reports loaded empty after every reachable project answers with no trackers", async () => {
+    const result = await fetchAggregatedTrackers({
       projects: [PROJECT_A, PROJECT_B],
       all: false,
       runtime: makeRuntime({
@@ -82,8 +82,8 @@ describe("fetchAggregatedIssues load state", () => {
           "host-b": { connectionStatus: "online" },
         },
         results: {
-          "host-a": { issues: [], hiddenCount: 0 },
-          "host-b": { issues: [], hiddenCount: 0 },
+          "host-a": { trackers: [], hiddenCount: 0 },
+          "host-b": { trackers: [], hiddenCount: 0 },
         },
       }),
     });
@@ -91,14 +91,14 @@ describe("fetchAggregatedIssues load state", () => {
     expect(result).toEqual({ status: "loaded", data: [], projectErrors: [] });
   });
 
-  it("tags each issue with the project it came from", async () => {
-    const issue = makeIssue();
-    const result = await fetchAggregatedIssues({
+  it("tags each tracker with the project it came from", async () => {
+    const tracker = makeTracker();
+    const result = await fetchAggregatedTrackers({
       projects: [PROJECT_A],
       all: false,
       runtime: makeRuntime({
         snapshots: { "host-a": { connectionStatus: "online" } },
-        results: { "host-a": { issues: [issue], hiddenCount: 0 } },
+        results: { "host-a": { trackers: [tracker], hiddenCount: 0 } },
       }),
     });
 
@@ -106,7 +106,7 @@ describe("fetchAggregatedIssues load state", () => {
       status: "loaded",
       data: [
         {
-          ...issue,
+          ...tracker,
           serverId: "host-a",
           serverName: "Host A",
           projectId: "prj-a",
@@ -119,24 +119,24 @@ describe("fetchAggregatedIssues load state", () => {
 
   it("fetches every project on one host with all statuses enabled", async () => {
     const requests: string[] = [];
-    const projectBOnHostA: IssueProjectInput = {
+    const projectBOnHostA: TrackerProjectInput = {
       ...PROJECT_B,
       serverId: PROJECT_A.serverId,
     };
-    const runtime: IssuesRuntime = {
+    const runtime: TrackersRuntime = {
       getSnapshot: () => ({ connectionStatus: "online" }),
       getClient: () => ({
-        issuesList: async ({ projectId, all }) => {
+        trackerList: async ({ projectId, all }) => {
           requests.push(`${projectId}:${String(all)}`);
           return {
-            issues: [makeIssue({ id: `${projectId}-open-task` })],
+            trackers: [makeTracker({ id: `${projectId}-open-task` })],
             hiddenCount: 0,
           };
         },
       }),
     };
 
-    const result = await fetchAggregatedIssues({
+    const result = await fetchAggregatedTrackers({
       projects: [PROJECT_A, projectBOnHostA],
       all: true,
       runtime,
@@ -152,20 +152,24 @@ describe("fetchAggregatedIssues load state", () => {
       projectErrors: [],
     });
     if (result.status !== "loaded") {
-      throw new Error("Expected aggregated issues to be loaded");
+      throw new Error("Expected aggregated trackers to be loaded");
     }
-    expect(getIssueStatCounts(result.data)).toEqual({
+    expect(getTrackerStatCounts(result.data)).toEqual({
       open: 2,
       inProgress: 0,
       p0: 0,
+      p1: 0,
+      p2: 2,
+      p3: 0,
+      p4: 0,
       done: 0,
       all: 2,
     });
   });
 
   it("collects a per-project error without dropping the other project's data", async () => {
-    const issue = makeIssue();
-    const result = await fetchAggregatedIssues({
+    const tracker = makeTracker();
+    const result = await fetchAggregatedTrackers({
       projects: [PROJECT_A, PROJECT_B],
       all: false,
       runtime: makeRuntime({
@@ -174,7 +178,7 @@ describe("fetchAggregatedIssues load state", () => {
           "host-b": { connectionStatus: "online" },
         },
         results: {
-          "host-a": { issues: [issue], hiddenCount: 0 },
+          "host-a": { trackers: [tracker], hiddenCount: 0 },
           "host-b": new Error("boom"),
         },
       }),
@@ -199,12 +203,12 @@ describe("fetchAggregatedIssues load state", () => {
   });
 
   it("skips a project whose host is offline", async () => {
-    const result = await fetchAggregatedIssues({
+    const result = await fetchAggregatedTrackers({
       projects: [PROJECT_A],
       all: false,
       runtime: makeRuntime({
         snapshots: { "host-a": { connectionStatus: "offline" } },
-        results: { "host-a": { issues: [makeIssue()], hiddenCount: 0 } },
+        results: { "host-a": { trackers: [makeTracker()], hiddenCount: 0 } },
       }),
     });
 

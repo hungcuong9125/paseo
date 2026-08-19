@@ -1,6 +1,6 @@
-import type { IssueSummary } from "@getpaseo/protocol/issues/types";
+import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 
-export interface IssueStatCounts {
+export interface TrackerStatCounts {
   open: number;
   inProgress: number;
   p0: number;
@@ -12,8 +12,8 @@ export interface IssueStatCounts {
   all: number;
 }
 
-export function getIssueStatCounts(issues: readonly IssueSummary[]): IssueStatCounts {
-  const tasks = issues.filter((issue) => issue.type === "task");
+export function getTrackerStatCounts(trackers: readonly TrackerSummary[]): TrackerStatCounts {
+  const tasks = trackers.filter((tracker) => tracker.type === "task");
   const done = tasks.filter(
     (task) => task.status === "closed" || task.status === "cancelled",
   ).length;

@@ -9,7 +9,11 @@ import {
 } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
-import type { IssuePriority, IssueSummary, IssueType } from "@getpaseo/protocol/issues/types";
+import type {
+  TrackerPriority,
+  TrackerSummary,
+  TrackerType,
+} from "@getpaseo/protocol/tracker/types";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import { Field, FormTextInput } from "@/components/ui/form-field";
@@ -19,16 +23,16 @@ import {
   type SelectFieldDisplay,
   type SelectFieldOption,
 } from "@/components/ui/select-field";
-import type { IssueProjectInput } from "@/issues/aggregated-issues";
-import { useIssueFormModel } from "@/issues/use-issue-form-model";
-import { useIssueMutations } from "@/issues/use-issue-mutations";
+import type { TrackerProjectInput } from "@/tracker/aggregated-trackers";
+import { useTrackerFormModel } from "@/tracker/use-tracker-form-model";
+import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
 import { toErrorMessage } from "@/utils/error-messages";
 
-export interface IssueFormSheetProps {
-  projects: IssueProjectInput[];
+export interface TrackerFormSheetProps {
+  projects: TrackerProjectInput[];
   visible: boolean;
   onClose: () => void;
-  onCreated?: (issue: IssueSummary) => void;
+  onCreated?: (tracker: TrackerSummary) => void;
   defaultServerId?: string | null;
   defaultProjectId?: string | null;
   defaultProjectDisplay?: string | null;
@@ -36,18 +40,18 @@ export interface IssueFormSheetProps {
   defaultParentDisplay?: string | null;
 }
 
-const TYPE_OPTIONS: { value: IssueType; label: string; testID: string }[] = [
-  { value: "task", label: "Task", testID: "issue-form-type-task" },
-  { value: "epic", label: "Epic", testID: "issue-form-type-epic" },
-  { value: "initiative", label: "Initiative", testID: "issue-form-type-initiative" },
+const TYPE_OPTIONS: { value: TrackerType; label: string; testID: string }[] = [
+  { value: "task", label: "Task", testID: "tracker-form-type-task" },
+  { value: "epic", label: "Epic", testID: "tracker-form-type-epic" },
+  { value: "initiative", label: "Initiative", testID: "tracker-form-type-initiative" },
 ];
 
-const PRIORITY_OPTIONS: { value: IssuePriority; label: string; testID: string }[] = [
-  { value: "P0", label: "P0", testID: "issue-form-priority-p0" },
-  { value: "P1", label: "P1", testID: "issue-form-priority-p1" },
-  { value: "P2", label: "P2", testID: "issue-form-priority-p2" },
-  { value: "P3", label: "P3", testID: "issue-form-priority-p3" },
-  { value: "P4", label: "P4", testID: "issue-form-priority-p4" },
+const PRIORITY_OPTIONS: { value: TrackerPriority; label: string; testID: string }[] = [
+  { value: "P0", label: "P0", testID: "tracker-form-priority-p0" },
+  { value: "P1", label: "P1", testID: "tracker-form-priority-p1" },
+  { value: "P2", label: "P2", testID: "tracker-form-priority-p2" },
+  { value: "P3", label: "P3", testID: "tracker-form-priority-p3" },
+  { value: "P4", label: "P4", testID: "tracker-form-priority-p4" },
 ];
 
 function projectOptionKey(serverId: string, projectId: string): string {
@@ -56,8 +60,8 @@ function projectOptionKey(serverId: string, projectId: string): string {
 
 // Two-level mount so the sheet's exit animation keeps rendering the form that was open
 // when the parent flipped `visible` to false, instead of unmounting mid-animation.
-export function IssueFormSheet(props: IssueFormSheetProps): ReactElement | null {
-  const [renderedProps, setRenderedProps] = useState<IssueFormSheetProps | null>(() =>
+export function TrackerFormSheet(props: TrackerFormSheetProps): ReactElement | null {
+  const [renderedProps, setRenderedProps] = useState<TrackerFormSheetProps | null>(() =>
     props.visible ? props : null,
   );
   const [sheetVisible, setSheetVisible] = useState(props.visible);
@@ -100,7 +104,7 @@ export function IssueFormSheet(props: IssueFormSheetProps): ReactElement | null 
   }
 
   return (
-    <OpenIssueFormSheet
+    <OpenTrackerFormSheet
       key={
         renderedProps.defaultProjectId
           ? `${renderedProps.defaultServerId}:${renderedProps.defaultProjectId}:${renderedProps.defaultParentId ?? "root"}`
@@ -114,7 +118,7 @@ export function IssueFormSheet(props: IssueFormSheetProps): ReactElement | null 
   );
 }
 
-function OpenIssueFormSheet({
+function OpenTrackerFormSheet({
   projects,
   visible,
   onClose,
@@ -125,8 +129,8 @@ function OpenIssueFormSheet({
   defaultProjectDisplay,
   defaultParentId,
   defaultParentDisplay,
-}: IssueFormSheetProps & { onDismiss: () => void }): ReactElement {
-  const model = useIssueFormModel({
+}: TrackerFormSheetProps & { onDismiss: () => void }): ReactElement {
+  const model = useTrackerFormModel({
     serverId: defaultServerId,
     projectId: defaultProjectId,
     projectDisplay: defaultProjectDisplay,
@@ -134,7 +138,7 @@ function OpenIssueFormSheet({
     parentDisplay: defaultParentDisplay,
   });
   const state = useSyncExternalStore(model.subscribe, model.getState, model.getState);
-  const { createIssue, isCreating } = useIssueMutations({
+  const { createTracker, isCreating } = useTrackerMutations({
     serverId: state.serverId ?? "",
     projectId: state.projectId ?? "",
   });
@@ -174,19 +178,19 @@ function OpenIssueFormSheet({
     }
     model.setSubmitError(null);
     try {
-      const issue = await createIssue({
+      const tracker = await createTracker({
         title: state.title.trim(),
-        issueType: state.issueType,
+        trackerType: state.trackerType,
         priority: state.priority,
         parentId: state.parentId ?? undefined,
         description: state.description.trim() || undefined,
       });
-      onCreated?.(issue);
+      onCreated?.(tracker);
       onClose();
     } catch (error) {
       model.setSubmitError(toErrorMessage(error));
     }
-  }, [canSubmit, createIssue, model, onClose, onCreated, state]);
+  }, [canSubmit, createTracker, model, onClose, onCreated, state]);
 
   const handleSubmitPress = useCallback(() => {
     void handleSubmit();
@@ -211,7 +215,7 @@ function OpenIssueFormSheet({
           onPress={handleSubmitPress}
           disabled={!canSubmit}
           loading={isCreating}
-          testID="issue-form-submit"
+          testID="tracker-form-submit"
         >
           Create
         </Button>
@@ -227,7 +231,7 @@ function OpenIssueFormSheet({
       onClose={onClose}
       onDismiss={onDismiss}
       footer={footer}
-      testID="issue-form-sheet"
+      testID="tracker-form-sheet"
     >
       <ProjectField
         locked={projectLocked}
@@ -237,7 +241,7 @@ function OpenIssueFormSheet({
         options={projectOptions}
         onChange={handleProjectChange}
       />
-      <Field label="Title" testID="issue-form-title">
+      <Field label="Title" testID="tracker-form-title">
         <FormTextInput
           value={state.title}
           onChangeText={model.setTitle}
@@ -245,14 +249,14 @@ function OpenIssueFormSheet({
           autoFocus
         />
       </Field>
-      <Field label="Type" testID="issue-form-type">
+      <Field label="Type" testID="tracker-form-type">
         <SegmentedControl
-          value={state.issueType}
-          onValueChange={model.setIssueType}
+          value={state.trackerType}
+          onValueChange={model.setTrackerType}
           options={TYPE_OPTIONS}
         />
       </Field>
-      <Field label="Priority" testID="issue-form-priority">
+      <Field label="Priority" testID="tracker-form-priority">
         <SegmentedControl
           value={state.priority}
           onValueChange={model.setPriority}
@@ -260,11 +264,11 @@ function OpenIssueFormSheet({
         />
       </Field>
       {state.parentDisplay ? (
-        <Field label="Parent" testID="issue-form-parent">
+        <Field label="Parent" testID="tracker-form-parent">
           <Text style={styles.parentValue}>{state.parentDisplay}</Text>
         </Field>
       ) : null}
-      <Field label="Description" testID="issue-form-description">
+      <Field label="Description" testID="tracker-form-description">
         <FormTextInput
           value={state.description}
           onChangeText={model.setDescription}
@@ -273,7 +277,7 @@ function OpenIssueFormSheet({
         />
       </Field>
       {state.submitError ? (
-        <Text style={styles.errorText} testID="issue-form-error">
+        <Text style={styles.errorText} testID="tracker-form-error">
           {state.submitError}
         </Text>
       ) : null}
@@ -301,7 +305,7 @@ function ProjectField({
       return null;
     }
     return (
-      <Field label="Project" testID="issue-form-project-locked">
+      <Field label="Project" testID="tracker-form-project-locked">
         <Text style={styles.parentValue}>{lockedDisplay}</Text>
       </Field>
     );
@@ -315,7 +319,7 @@ function ProjectField({
       onChange={onChange}
       placeholder="Choose a project"
       emptyText="No projects available"
-      testID="issue-form-project"
+      testID="tracker-form-project"
     />
   );
 }

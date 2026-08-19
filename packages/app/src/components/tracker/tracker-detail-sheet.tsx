@@ -1,22 +1,22 @@
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
-import type { IssueDetail } from "@getpaseo/protocol/issues/types";
+import type { TrackerDetail } from "@getpaseo/protocol/tracker/types";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import { FormTextInput } from "@/components/ui/form-field";
-import { IssueStatusIcon, issueStatusLabel } from "@/components/issues/issue-status-icon";
+import { TrackerStatusIcon, trackerStatusLabel } from "@/components/tracker/tracker-status-icon";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
-import { useIssueMutations } from "@/issues/use-issue-mutations";
+import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
 import { useHostRuntimeClient } from "@/runtime/host-runtime";
 import { formatTimeAgo } from "@/utils/time";
 import { toErrorMessage } from "@/utils/error-messages";
 
-export interface IssueDetailSheetProps {
+export interface TrackerDetailSheetProps {
   serverId: string;
   projectId: string;
   visible: boolean;
-  issueId: string | null;
+  trackerId: string | null;
   onClose: () => void;
 }
 
@@ -24,44 +24,44 @@ type DetailState =
   | { status: "idle" }
   | { status: "loading" }
   | { status: "error"; error: string }
-  | { status: "loaded"; issue: IssueDetail };
+  | { status: "loaded"; tracker: TrackerDetail };
 
-export function IssueDetailSheet({
+export function TrackerDetailSheet({
   serverId,
   projectId,
   visible,
-  issueId,
+  trackerId,
   onClose,
-}: IssueDetailSheetProps): ReactElement | null {
-  if (!visible || !issueId) {
+}: TrackerDetailSheetProps): ReactElement | null {
+  if (!visible || !trackerId) {
     return null;
   }
   return (
-    <OpenIssueDetailSheet
-      key={issueId}
+    <OpenTrackerDetailSheet
+      key={trackerId}
       serverId={serverId}
       projectId={projectId}
-      issueId={issueId}
+      trackerId={trackerId}
       onClose={onClose}
     />
   );
 }
 
-function OpenIssueDetailSheet({
+function OpenTrackerDetailSheet({
   serverId,
   projectId,
-  issueId,
+  trackerId,
   onClose,
 }: {
   serverId: string;
   projectId: string;
-  issueId: string;
+  trackerId: string;
   onClose: () => void;
 }): ReactElement {
   const client = useHostRuntimeClient(serverId);
   const [state, setState] = useState<DetailState>({ status: "idle" });
   const [noteBody, setNoteBody] = useState("");
-  const mutations = useIssueMutations({ serverId, projectId });
+  const mutations = useTrackerMutations({ serverId, projectId });
 
   const load = useCallback(async (): Promise<void> => {
     if (!client) {
@@ -70,48 +70,48 @@ function OpenIssueDetailSheet({
     }
     setState({ status: "loading" });
     try {
-      const issue = await client.issuesShow({ projectId, issueId });
-      setState({ status: "loaded", issue });
+      const tracker = await client.trackerShow({ projectId, trackerId });
+      setState({ status: "loaded", tracker });
     } catch (error) {
       setState({ status: "error", error: toErrorMessage(error) });
     }
-  }, [client, projectId, issueId]);
+  }, [client, projectId, trackerId]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const handleStart = useCallback(async (): Promise<void> => {
-    await mutations.updateIssue({ issueId, status: "in_progress" });
+    await mutations.updateTracker({ trackerId, status: "in_progress" });
     await load();
-  }, [mutations, issueId, load]);
+  }, [mutations, trackerId, load]);
 
   const handleClose = useCallback(async (): Promise<void> => {
-    await mutations.closeIssue({ issueId });
+    await mutations.closeTracker({ trackerId });
     await load();
-  }, [mutations, issueId, load]);
+  }, [mutations, trackerId, load]);
 
   const handleReopen = useCallback(async (): Promise<void> => {
-    await mutations.reopenIssue(issueId);
+    await mutations.reopenTracker(trackerId);
     await load();
-  }, [mutations, issueId, load]);
+  }, [mutations, trackerId, load]);
 
   const handleCancel = useCallback(async (): Promise<void> => {
-    await mutations.cancelIssue({ issueId });
+    await mutations.cancelTracker({ trackerId });
     await load();
-  }, [mutations, issueId, load]);
+  }, [mutations, trackerId, load]);
 
   const handleAddNote = useCallback(async (): Promise<void> => {
     const body = noteBody.trim();
     if (!body) {
       return;
     }
-    await mutations.addNote({ issueId, body });
+    await mutations.addNote({ trackerId, body });
     setNoteBody("");
     await load();
-  }, [mutations, issueId, noteBody, load]);
+  }, [mutations, trackerId, noteBody, load]);
 
-  const headerTitle = state.status === "loaded" ? state.issue.id : "Loading…";
+  const headerTitle = state.status === "loaded" ? state.tracker.id : "Loading…";
   const header = useMemo<SheetHeader>(() => ({ title: headerTitle }), [headerTitle]);
 
   return (
@@ -120,7 +120,7 @@ function OpenIssueDetailSheet({
       visible
       onClose={onClose}
       onDismiss={onClose}
-      testID="issue-detail-sheet"
+      testID="tracker-detail-sheet"
     >
       {state.status === "loading" || state.status === "idle" ? (
         <View style={styles.centered}>
@@ -130,14 +130,14 @@ function OpenIssueDetailSheet({
       {state.status === "error" ? (
         <View style={styles.centered}>
           <Text style={styles.message}>{state.error}</Text>
-          <Button variant="ghost" onPress={load} testID="issue-detail-retry">
+          <Button variant="ghost" onPress={load} testID="tracker-detail-retry">
             Try again
           </Button>
         </View>
       ) : null}
       {state.status === "loaded" ? (
-        <IssueDetailContent
-          issue={state.issue}
+        <TrackerDetailContent
+          tracker={state.tracker}
           noteBody={noteBody}
           onChangeNoteBody={setNoteBody}
           onStart={handleStart}
@@ -152,8 +152,8 @@ function OpenIssueDetailSheet({
   );
 }
 
-function IssueDetailContent({
-  issue,
+function TrackerDetailContent({
+  tracker,
   noteBody,
   onChangeNoteBody,
   onStart,
@@ -163,7 +163,7 @@ function IssueDetailContent({
   onAddNote,
   isAddingNote,
 }: {
-  issue: IssueDetail;
+  tracker: TrackerDetail;
   noteBody: string;
   onChangeNoteBody: (value: string) => void;
   onStart: () => void;
@@ -173,59 +173,59 @@ function IssueDetailContent({
   onAddNote: () => void;
   isAddingNote: boolean;
 }): ReactElement {
-  const isOpenOrInProgress = issue.status === "open" || issue.status === "in_progress";
+  const isOpenOrInProgress = tracker.status === "open" || tracker.status === "in_progress";
 
   return (
     <View style={styles.content}>
       <View style={styles.titleRow}>
         <View style={styles.titleRowIcon}>
-          <IssueStatusIcon status={issue.status} size={18} />
+          <TrackerStatusIcon status={tracker.status} size={18} />
         </View>
         <Text
           style={[
             styles.title,
-            issue.status === "in_progress" && styles.titleRunning,
-            issue.status === "closed" && styles.titleClosed,
-            issue.status === "cancelled" && styles.titleCancelled,
+            tracker.status === "in_progress" && styles.titleRunning,
+            tracker.status === "closed" && styles.titleClosed,
+            tracker.status === "cancelled" && styles.titleCancelled,
           ]}
         >
-          {issue.title}
+          {tracker.title}
         </Text>
       </View>
       <Text style={styles.meta}>
-        {issueStatusLabel(issue.status)} · {issue.type} · {issue.priority}
-        {issue.claimedBy ? ` · claimed by ${issue.claimedBy}` : ""}
+        {trackerStatusLabel(tracker.status)} · {tracker.type} · {tracker.priority}
+        {tracker.claimedBy ? ` · claimed by ${tracker.claimedBy}` : ""}
       </Text>
 
-      {issue.description ? <Text style={styles.description}>{issue.description}</Text> : null}
+      {tracker.description ? <Text style={styles.description}>{tracker.description}</Text> : null}
 
       <View style={styles.actionsRow}>
-        {issue.status === "open" ? (
-          <Button variant="outline" size="sm" onPress={onStart} testID="issue-detail-start">
+        {tracker.status === "open" ? (
+          <Button variant="outline" size="sm" onPress={onStart} testID="tracker-detail-start">
             Start
           </Button>
         ) : null}
         {isOpenOrInProgress ? (
-          <Button variant="outline" size="sm" onPress={onClose} testID="issue-detail-close">
+          <Button variant="outline" size="sm" onPress={onClose} testID="tracker-detail-close">
             Close
           </Button>
         ) : null}
         {!isOpenOrInProgress ? (
-          <Button variant="outline" size="sm" onPress={onReopen} testID="issue-detail-reopen">
+          <Button variant="outline" size="sm" onPress={onReopen} testID="tracker-detail-reopen">
             Reopen
           </Button>
         ) : null}
         {isOpenOrInProgress ? (
-          <Button variant="ghost" size="sm" onPress={onCancel} testID="issue-detail-cancel">
+          <Button variant="ghost" size="sm" onPress={onCancel} testID="tracker-detail-cancel">
             Cancel
           </Button>
         ) : null}
       </View>
 
-      {issue.children.length > 0 ? (
+      {tracker.children.length > 0 ? (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Children</Text>
-          {issue.children.map((child) => (
+          {tracker.children.map((child) => (
             <Text key={child.id} style={styles.listItem} numberOfLines={1}>
               {child.id} · {child.title}
             </Text>
@@ -233,10 +233,10 @@ function IssueDetailContent({
         </View>
       ) : null}
 
-      {issue.blockedBy.length > 0 ? (
+      {tracker.blockedBy.length > 0 ? (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Blocked by</Text>
-          {issue.blockedBy.map((blocker) => (
+          {tracker.blockedBy.map((blocker) => (
             <Text key={blocker.id} style={styles.listItem} numberOfLines={1}>
               {blocker.id} · {blocker.title}
             </Text>
@@ -246,8 +246,8 @@ function IssueDetailContent({
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Notes</Text>
-        {issue.notes.length === 0 ? <Text style={styles.emptyNotes}>No notes yet.</Text> : null}
-        {issue.notes.map((note) => (
+        {tracker.notes.length === 0 ? <Text style={styles.emptyNotes}>No notes yet.</Text> : null}
+        {tracker.notes.map((note) => (
           <View key={note.id} style={styles.note}>
             <Text style={styles.noteBody}>{note.body}</Text>
             <Text style={styles.noteMeta}>{formatTimeAgo(new Date(note.createdAt))}</Text>
@@ -258,7 +258,7 @@ function IssueDetailContent({
           onChangeText={onChangeNoteBody}
           placeholder="Add a note"
           multiline
-          testID="issue-detail-note-input"
+          testID="tracker-detail-note-input"
         />
         <Button
           variant="outline"
@@ -266,7 +266,7 @@ function IssueDetailContent({
           onPress={onAddNote}
           disabled={noteBody.trim().length === 0 || isAddingNote}
           loading={isAddingNote}
-          testID="issue-detail-add-note"
+          testID="tracker-detail-add-note"
         >
           Add note
         </Button>

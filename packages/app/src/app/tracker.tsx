@@ -1,10 +1,10 @@
 import { HostRouteBootstrapBoundary } from "@/components/host-route-bootstrap-boundary";
-import { IssuesScreen } from "@/screens/issues-screen";
+import { TrackerScreen } from "@/screens/tracker-screen";
 
 export default function TrackerRoute() {
   return (
     <HostRouteBootstrapBoundary>
-      <IssuesScreen />
+      <TrackerScreen />
     </HostRouteBootstrapBoundary>
   );
 }

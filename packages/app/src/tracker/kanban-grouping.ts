@@ -1,9 +1,9 @@
-import type { IssueSummary } from "@getpaseo/protocol/issues/types";
+import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 
 const MAX_TREE_DEPTH = 32;
 
 export interface KanbanItem {
-  issue: IssueSummary;
+  tracker: TrackerSummary;
   depth: number;
   hasChildren: boolean;
   childCount: number;
@@ -13,7 +13,7 @@ export interface KanbanItem {
 export interface KanbanSubColumn {
   id: string;
   title: string;
-  groupIssue: IssueSummary | null;
+  groupTracker: TrackerSummary | null;
   children: KanbanItem[];
 }
 
@@ -21,7 +21,7 @@ export interface KanbanEpicColumn {
   kind: "epic";
   id: string;
   title: string;
-  issue: IssueSummary;
+  tracker: TrackerSummary;
   children: KanbanItem[];
   subColumns: KanbanSubColumn[];
   completed: boolean;
@@ -33,7 +33,7 @@ export interface KanbanStandaloneColumn {
   kind: "standalone";
   id: "standalone";
   title: "Standalone";
-  issue: null;
+  tracker: null;
   children: KanbanItem[];
   subColumns: [];
   completed: false;
@@ -44,7 +44,7 @@ export interface KanbanStandaloneColumn {
 export type KanbanColumn = KanbanEpicColumn | KanbanStandaloneColumn;
 
 export interface KanbanInitiativeSection {
-  initiative: IssueSummary;
+  initiative: TrackerSummary;
   activeColumns: KanbanEpicColumn[];
   completedColumns: KanbanEpicColumn[];
   quiet: boolean;
@@ -59,27 +59,27 @@ export interface KanbanBoardModel {
   empty: boolean;
 }
 
-function isDone(issue: IssueSummary): boolean {
-  return issue.status === "closed" || issue.status === "cancelled";
+function isDone(tracker: TrackerSummary): boolean {
+  return tracker.status === "closed" || tracker.status === "cancelled";
 }
 
-function compareIssues(left: IssueSummary, right: IssueSummary): number {
+function compareTrackers(left: TrackerSummary, right: TrackerSummary): number {
   return left.priority.localeCompare(right.priority) || left.id.localeCompare(right.id);
 }
 
-export function buildKanbanBoard(issues: IssueSummary[]): KanbanBoardModel {
-  const issueMap = new Map(issues.map((issue) => [issue.id, issue]));
-  const childrenOf = new Map<string, IssueSummary[]>();
-  for (const issue of issues) {
-    if (!issue.parentId) {
+export function buildKanbanBoard(trackers: TrackerSummary[]): KanbanBoardModel {
+  const trackerMap = new Map(trackers.map((tracker) => [tracker.id, tracker]));
+  const childrenOf = new Map<string, TrackerSummary[]>();
+  for (const tracker of trackers) {
+    if (!tracker.parentId) {
       continue;
     }
-    const children = childrenOf.get(issue.parentId) ?? [];
-    children.push(issue);
-    childrenOf.set(issue.parentId, children);
+    const children = childrenOf.get(tracker.parentId) ?? [];
+    children.push(tracker);
+    childrenOf.set(tracker.parentId, children);
   }
   for (const children of childrenOf.values()) {
-    children.sort(compareIssues);
+    children.sort(compareTrackers);
   }
 
   const descendantStats = (parentId: string, ancestors = new Set<string>(), depth = 0) => {
@@ -100,18 +100,18 @@ export function buildKanbanBoard(issues: IssueSummary[]): KanbanBoardModel {
   };
 
   const flatten = (
-    roots: IssueSummary[],
+    roots: TrackerSummary[],
     startDepth = 0,
     ancestors = new Set<string>(),
   ): KanbanItem[] => {
     const result: KanbanItem[] = [];
-    const visit = (current: IssueSummary, depth: number, path: Set<string>) => {
+    const visit = (current: TrackerSummary, depth: number, path: Set<string>) => {
       if (depth - startDepth >= MAX_TREE_DEPTH || path.has(current.id)) {
         return;
       }
       const stats = descendantStats(current.id, path);
       result.push({
-        issue: current,
+        tracker: current,
         depth,
         hasChildren: stats.childCount > 0,
         ...stats,
@@ -121,20 +121,20 @@ export function buildKanbanBoard(issues: IssueSummary[]): KanbanBoardModel {
         visit(child, depth + 1, nextPath);
       }
     };
-    for (const root of [...roots].sort(compareIssues)) {
+    for (const root of [...roots].sort(compareTrackers)) {
       visit(root, startDepth, ancestors);
     }
     return result;
   };
 
-  const columns = issues
-    .filter((issue) => issue.type === "epic")
-    .sort(compareIssues)
+  const columns = trackers
+    .filter((tracker) => tracker.type === "epic")
+    .sort(compareTrackers)
     .map<KanbanEpicColumn>((epic) => {
       const directChildren = childrenOf.get(epic.id) ?? [];
       const allChildren = flatten(directChildren);
-      const taskChildren = allChildren.filter(({ issue }) => issue.type === "task");
-      const doneCount = taskChildren.filter(({ issue }) => isDone(issue)).length;
+      const taskChildren = allChildren.filter(({ tracker }) => tracker.type === "task");
+      const doneCount = taskChildren.filter(({ tracker }) => isDone(tracker)).length;
       const hasSubGroups = directChildren.some(
         (child) => (childrenOf.get(child.id)?.length ?? 0) > 0,
       );
@@ -150,7 +150,7 @@ export function buildKanbanBoard(issues: IssueSummary[]): KanbanBoardModel {
           subColumns.push({
             id: `${epic.id}:general`,
             title: "General",
-            groupIssue: null,
+            groupTracker: null,
             children: flatten(generalChildren),
           });
         }
@@ -162,7 +162,7 @@ export function buildKanbanBoard(issues: IssueSummary[]): KanbanBoardModel {
           subColumns.push({
             id: group.id,
             title: group.title,
-            groupIssue: group,
+            groupTracker: group,
             children: flatten(groupChildren),
           });
         }
@@ -172,7 +172,7 @@ export function buildKanbanBoard(issues: IssueSummary[]): KanbanBoardModel {
         kind: "epic",
         id: epic.id,
         title: epic.title,
-        issue: epic,
+        tracker: epic,
         children,
         subColumns,
         completed: isDone(epic) || (taskChildren.length > 0 && doneCount === taskChildren.length),
@@ -181,11 +181,13 @@ export function buildKanbanBoard(issues: IssueSummary[]): KanbanBoardModel {
       };
     });
   const columnByEpicId = new Map(columns.map((column) => [column.id, column]));
-  const initiatives = issues.filter((issue) => issue.type === "initiative").sort(compareIssues);
+  const initiatives = trackers
+    .filter((tracker) => tracker.type === "initiative")
+    .sort(compareTrackers);
   const initiativeIds = new Set(initiatives.map((initiative) => initiative.id));
   const initiativeSections = initiatives.map<KanbanInitiativeSection>((initiative) => {
     const initiativeColumns = (childrenOf.get(initiative.id) ?? [])
-      .filter((issue) => issue.type === "epic")
+      .filter((tracker) => tracker.type === "epic")
       .map((epic) => columnByEpicId.get(epic.id))
       .filter((column): column is KanbanEpicColumn => column !== undefined);
     const activeColumns = initiativeColumns.filter((column) => !column.completed);
@@ -200,11 +202,11 @@ export function buildKanbanBoard(issues: IssueSummary[]): KanbanBoardModel {
     };
   });
   const topLevelColumns = columns.filter(
-    (column) => !column.issue.parentId || !initiativeIds.has(column.issue.parentId),
+    (column) => !column.tracker.parentId || !initiativeIds.has(column.tracker.parentId),
   );
   const activeColumns: KanbanColumn[] = topLevelColumns.filter((column) => !column.completed);
   const completedColumns = topLevelColumns.filter((column) => column.completed);
-  const hasEpicAncestor = (task: IssueSummary): boolean => {
+  const hasEpicAncestor = (task: TrackerSummary): boolean => {
     let parentId = task.parentId;
     const seen = new Set<string>();
     for (let depth = 0; parentId && depth < MAX_TREE_DEPTH; depth += 1) {
@@ -212,7 +214,7 @@ export function buildKanbanBoard(issues: IssueSummary[]): KanbanBoardModel {
         return false;
       }
       seen.add(parentId);
-      const parent = issueMap.get(parentId);
+      const parent = trackerMap.get(parentId);
       if (!parent) {
         return false;
       }
@@ -223,20 +225,20 @@ export function buildKanbanBoard(issues: IssueSummary[]): KanbanBoardModel {
     }
     return false;
   };
-  const standaloneIssues = issues
-    .filter((issue) => issue.type === "task" && !hasEpicAncestor(issue))
-    .sort(compareIssues);
-  const standaloneIds = new Set(standaloneIssues.map((issue) => issue.id));
+  const standaloneTrackers = trackers
+    .filter((tracker) => tracker.type === "task" && !hasEpicAncestor(tracker))
+    .sort(compareTrackers);
+  const standaloneIds = new Set(standaloneTrackers.map((tracker) => tracker.id));
   const standaloneItems: KanbanItem[] = [];
   const displayedStandaloneIds = new Set<string>();
-  const visitStandalone = (current: IssueSummary, depth: number, path: Set<string>) => {
+  const visitStandalone = (current: TrackerSummary, depth: number, path: Set<string>) => {
     if (depth >= MAX_TREE_DEPTH || path.has(current.id) || displayedStandaloneIds.has(current.id)) {
       return;
     }
     displayedStandaloneIds.add(current.id);
     const stats = descendantStats(current.id, path);
     standaloneItems.push({
-      issue: current,
+      tracker: current,
       depth,
       hasChildren: stats.childCount > 0,
       ...stats,
@@ -248,13 +250,13 @@ export function buildKanbanBoard(issues: IssueSummary[]): KanbanBoardModel {
       }
     }
   };
-  const standaloneRoots = standaloneIssues.filter(
-    (issue) => !issue.parentId || !standaloneIds.has(issue.parentId),
+  const standaloneRoots = standaloneTrackers.filter(
+    (tracker) => !tracker.parentId || !standaloneIds.has(tracker.parentId),
   );
   for (const root of standaloneRoots) {
     visitStandalone(root, 0, new Set());
   }
-  for (const remaining of standaloneIssues) {
+  for (const remaining of standaloneTrackers) {
     visitStandalone(remaining, 0, new Set());
   }
   const standalone: KanbanStandaloneColumn | null =
@@ -263,12 +265,12 @@ export function buildKanbanBoard(issues: IssueSummary[]): KanbanBoardModel {
           kind: "standalone",
           id: "standalone",
           title: "Standalone",
-          issue: null,
+          tracker: null,
           children: standaloneItems,
           subColumns: [],
           completed: false,
           childCount: standaloneItems.length,
-          doneCount: standaloneItems.filter(({ issue }) => isDone(issue)).length,
+          doneCount: standaloneItems.filter(({ tracker }) => isDone(tracker)).length,
         }
       : null;
   if (standalone) {
@@ -293,6 +295,6 @@ export function buildKanbanBoard(issues: IssueSummary[]): KanbanBoardModel {
       standalone === null &&
       !hasActiveInitiativeColumn &&
       !hasVisibleEmptyInitiative,
-    empty: issues.length === 0,
+    empty: trackers.length === 0,
   };
 }

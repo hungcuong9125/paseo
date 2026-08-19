@@ -20,7 +20,7 @@ import {
   type PressableStateCallbackType,
 } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import type { IssueSummary } from "@getpaseo/protocol/issues/types";
+import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -29,7 +29,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { IssueStatusIcon, issueStatusLabel } from "@/components/issues/issue-status-icon";
+import { TrackerStatusIcon, trackerStatusLabel } from "@/components/tracker/tracker-status-icon";
 import { isNative } from "@/constants/platform";
 import {
   buildKanbanBoard,
@@ -37,7 +37,7 @@ import {
   type KanbanEpicColumn,
   type KanbanInitiativeSection,
   type KanbanItem,
-} from "@/issues/kanban-grouping";
+} from "@/tracker/kanban-grouping";
 import { settingsStyles } from "@/styles/settings";
 import type { Theme } from "@/styles/theme";
 
@@ -65,37 +65,37 @@ const closeLeading = <ThemedCheckCircle size={MENU_ICON_SIZE} uniProps={mutedCol
 const reopenLeading = <ThemedRotateCcw size={MENU_ICON_SIZE} uniProps={mutedColorMapping} />;
 const cancelLeading = <ThemedXCircle size={MENU_ICON_SIZE} uniProps={destructiveColorMapping} />;
 
-export interface IssueKanbanBoardProps {
-  issues: IssueSummary[];
-  onOpenIssue: (issue: IssueSummary) => void;
-  onStart: (issue: IssueSummary) => void;
-  onClose: (issue: IssueSummary) => void;
-  onReopen: (issue: IssueSummary) => void;
-  onCancel: (issue: IssueSummary) => void;
+export interface TrackerKanbanBoardProps {
+  trackers: TrackerSummary[];
+  onOpenTracker: (tracker: TrackerSummary) => void;
+  onStart: (tracker: TrackerSummary) => void;
+  onClose: (tracker: TrackerSummary) => void;
+  onReopen: (tracker: TrackerSummary) => void;
+  onCancel: (tracker: TrackerSummary) => void;
 }
 
-interface IssueActions {
-  onOpenIssue: IssueKanbanBoardProps["onOpenIssue"];
-  onStart: IssueKanbanBoardProps["onStart"];
-  onClose: IssueKanbanBoardProps["onClose"];
-  onReopen: IssueKanbanBoardProps["onReopen"];
-  onCancel: IssueKanbanBoardProps["onCancel"];
+interface TrackerActions {
+  onOpenTracker: TrackerKanbanBoardProps["onOpenTracker"];
+  onStart: TrackerKanbanBoardProps["onStart"];
+  onClose: TrackerKanbanBoardProps["onClose"];
+  onReopen: TrackerKanbanBoardProps["onReopen"];
+  onCancel: TrackerKanbanBoardProps["onCancel"];
 }
 
-export function IssueKanbanBoard({
-  issues,
-  onOpenIssue,
+export function TrackerKanbanBoard({
+  trackers,
+  onOpenTracker,
   onStart,
   onClose,
   onReopen,
   onCancel,
-}: IssueKanbanBoardProps): ReactElement {
-  const model = useMemo(() => buildKanbanBoard(issues), [issues]);
+}: TrackerKanbanBoardProps): ReactElement {
+  const model = useMemo(() => buildKanbanBoard(trackers), [trackers]);
   const [expandedCompletedId, setExpandedCompletedId] = useState<string | null>(null);
   const [expandedQuietInitiativeId, setExpandedQuietInitiativeId] = useState<string | null>(null);
-  const actions = useMemo<IssueActions>(
-    () => ({ onOpenIssue, onStart, onClose, onReopen, onCancel }),
-    [onOpenIssue, onStart, onClose, onReopen, onCancel],
+  const actions = useMemo<TrackerActions>(
+    () => ({ onOpenTracker, onStart, onClose, onReopen, onCancel }),
+    [onOpenTracker, onStart, onClose, onReopen, onCancel],
   );
 
   const scrollRef = useRef<ScrollView>(null);
@@ -127,7 +127,7 @@ export function IssueKanbanBoard({
   }, []);
 
   if (model.empty) {
-    return <BoardState kind="empty" title="No issues yet" />;
+    return <BoardState kind="empty" title="No trackers yet" />;
   }
 
   if (model.allClear) {
@@ -147,7 +147,7 @@ export function IssueKanbanBoard({
         onContentSizeChange={handleContentSizeChange}
         onLayout={handleLayout}
         scrollEventThrottle={32}
-        testID="issue-kanban-board"
+        testID="tracker-kanban-board"
       >
         <View style={styles.boardTrack}>
           {model.initiativeSections.map((section) =>
@@ -187,7 +187,7 @@ export function IssueKanbanBoard({
           onPress={scrollLeft}
           accessibilityRole="button"
           accessibilityLabel="Scroll board left"
-          testID="issue-kanban-scroll-left"
+          testID="tracker-kanban-scroll-left"
         >
           <ThemedChevronLeft size={18} uniProps={foregroundColorMapping} />
         </Pressable>
@@ -198,7 +198,7 @@ export function IssueKanbanBoard({
           onPress={scrollRight}
           accessibilityRole="button"
           accessibilityLabel="Scroll board right"
-          testID="issue-kanban-scroll-right"
+          testID="tracker-kanban-scroll-right"
         >
           <ThemedChevronRight size={18} uniProps={foregroundColorMapping} />
         </Pressable>
@@ -238,12 +238,12 @@ function InitiativeSection({
 }: {
   section: KanbanInitiativeSection;
   expandedCompletedId: string | null;
-  actions: IssueActions;
+  actions: TrackerActions;
   onToggleCompleted: (columnId: string) => void;
   onCollapse?: (initiativeId: string) => void;
 }): ReactElement {
   const handleOpen = useCallback(
-    () => actions.onOpenIssue(section.initiative),
+    () => actions.onOpenTracker(section.initiative),
     [actions, section.initiative],
   );
   const handleCollapse = useCallback(() => {
@@ -333,14 +333,14 @@ function KanbanColumnView({
   actions,
 }: {
   column: KanbanColumn;
-  actions: IssueActions;
+  actions: TrackerActions;
 }): ReactElement {
   const hasRows = column.children.length > 0 || column.subColumns.length > 0;
   return (
     <View style={[settingsStyles.card, styles.column]} testID={`kanban-column-${column.id}`}>
       {column.kind === "epic" ? (
-        <IssueEntry
-          issue={column.issue}
+        <TrackerEntry
+          tracker={column.tracker}
           depth={0}
           hasChildren={column.childCount > 0}
           childCount={column.childCount}
@@ -358,17 +358,17 @@ function KanbanColumnView({
         </View>
       )}
       {column.children.map((item) => (
-        <IssueEntry key={item.issue.id} {...item} actions={actions} />
+        <TrackerEntry key={item.tracker.id} {...item} actions={actions} />
       ))}
       {column.subColumns.map((subColumn) => (
         <View key={subColumn.id}>
-          {subColumn.groupIssue ? (
-            <IssueEntry
-              issue={subColumn.groupIssue}
+          {subColumn.groupTracker ? (
+            <TrackerEntry
+              tracker={subColumn.groupTracker}
               depth={0}
               hasChildren={subColumn.children.length > 0}
               childCount={subColumn.children.length}
-              doneCount={subColumn.children.filter(({ issue }) => isDone(issue)).length}
+              doneCount={subColumn.children.filter(({ tracker }) => isDone(tracker)).length}
               structural
               actions={actions}
             />
@@ -379,7 +379,7 @@ function KanbanColumnView({
             </View>
           )}
           {subColumn.children.map((item) => (
-            <IssueEntry key={item.issue.id} {...item} actions={actions} />
+            <TrackerEntry key={item.tracker.id} {...item} actions={actions} />
           ))}
         </View>
       ))}
@@ -392,8 +392,8 @@ function KanbanColumnView({
   );
 }
 
-function IssueEntry({
-  issue,
+function TrackerEntry({
+  tracker,
   depth,
   hasChildren,
   childCount,
@@ -404,26 +404,26 @@ function IssueEntry({
 }: KanbanItem & {
   isFirst?: boolean;
   structural?: boolean;
-  actions: IssueActions;
+  actions: TrackerActions;
 }): ReactElement {
   const [isHovered, setIsHovered] = useState(false);
   const handlePointerEnter = useCallback(() => setIsHovered(true), []);
   const handlePointerLeave = useCallback(() => setIsHovered(false), []);
-  const handlePress = useCallback(() => actions.onOpenIssue(issue), [actions, issue]);
+  const handlePress = useCallback(() => actions.onOpenTracker(tracker), [actions, tracker]);
   const rowStyle = useCallback(
     ({ pressed }: PressableStateCallbackType) => [
       settingsStyles.row,
-      styles.issueRow,
+      styles.trackerRow,
       !isFirst && settingsStyles.rowBorder,
-      isHovered && styles.issueRowHovered,
-      pressed && styles.issueRowPressed,
+      isHovered && styles.trackerRowHovered,
+      pressed && styles.trackerRowPressed,
     ],
     [isFirst, isHovered],
   );
 
   let content: ReactElement = (
     <View
-      style={styles.issueRowContainer}
+      style={styles.trackerRowContainer}
       onPointerEnter={handlePointerEnter}
       onPointerLeave={handlePointerLeave}
     >
@@ -431,28 +431,28 @@ function IssueEntry({
         style={rowStyle}
         onPress={handlePress}
         accessibilityRole="button"
-        accessibilityLabel={`Open issue ${issue.title}`}
-        testID={`kanban-issue-${issue.id}`}
+        accessibilityLabel={`Open tracker ${tracker.title}`}
+        testID={`kanban-tracker-${tracker.id}`}
       >
-        <View style={styles.issueStatusIcon}>
-          <IssueStatusIcon status={issue.status} size={15} />
+        <View style={styles.trackerStatusIcon}>
+          <TrackerStatusIcon status={tracker.status} size={15} />
         </View>
-        <View style={styles.issueMain}>
+        <View style={styles.trackerMain}>
           <Text
             style={[
               settingsStyles.rowTitle,
               structural && styles.structuralTitle,
-              issue.status === "in_progress" && styles.titleRunning,
-              issue.status === "closed" && styles.titleClosed,
-              issue.status === "cancelled" && styles.titleCancelled,
+              tracker.status === "in_progress" && styles.titleRunning,
+              tracker.status === "closed" && styles.titleClosed,
+              tracker.status === "cancelled" && styles.titleCancelled,
             ]}
             numberOfLines={1}
           >
-            {issue.title}
+            {tracker.title}
           </Text>
-          <View style={styles.issueMeta}>
-            <Text style={styles.progressText}>{issueStatusLabel(issue.status)}</Text>
-            <Text style={styles.priorityText}>{issue.priority}</Text>
+          <View style={styles.trackerMeta}>
+            <Text style={styles.progressText}>{trackerStatusLabel(tracker.status)}</Text>
+            <Text style={styles.priorityText}>{tracker.priority}</Text>
             {hasChildren ? (
               <Text style={styles.progressText}>
                 {doneCount} / {childCount}
@@ -460,7 +460,7 @@ function IssueEntry({
             ) : null}
           </View>
         </View>
-        <IssueActionsMenu issue={issue} actions={actions} />
+        <TrackerActionsMenu tracker={tracker} actions={actions} />
       </Pressable>
     </View>
   );
@@ -470,31 +470,31 @@ function IssueEntry({
   return content;
 }
 
-function IssueActionsMenu({
-  issue,
+function TrackerActionsMenu({
+  tracker,
   actions,
 }: {
-  issue: IssueSummary;
-  actions: IssueActions;
+  tracker: TrackerSummary;
+  actions: TrackerActions;
 }): ReactElement {
-  const isOpenOrInProgress = issue.status === "open" || issue.status === "in_progress";
-  const handleStart = useCallback(() => actions.onStart(issue), [actions, issue]);
-  const handleClose = useCallback(() => actions.onClose(issue), [actions, issue]);
-  const handleReopen = useCallback(() => actions.onReopen(issue), [actions, issue]);
-  const handleCancel = useCallback(() => actions.onCancel(issue), [actions, issue]);
+  const isOpenOrInProgress = tracker.status === "open" || tracker.status === "in_progress";
+  const handleStart = useCallback(() => actions.onStart(tracker), [actions, tracker]);
+  const handleClose = useCallback(() => actions.onClose(tracker), [actions, tracker]);
+  const handleReopen = useCallback(() => actions.onReopen(tracker), [actions, tracker]);
+  const handleCancel = useCallback(() => actions.onCancel(tracker), [actions, tracker]);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
         hitSlop={8}
         style={kebabTriggerStyle}
         accessibilityRole={isNative ? "button" : undefined}
-        accessibilityLabel="Issue actions"
-        testID={`kanban-issue-kebab-${issue.id}`}
+        accessibilityLabel="Tracker actions"
+        testID={`kanban-tracker-kebab-${tracker.id}`}
       >
         {renderKebabTriggerIcon}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" width={200}>
-        {issue.status === "open" ? (
+        {tracker.status === "open" ? (
           <DropdownMenuItem leading={startLeading} onSelect={handleStart}>
             Start
           </DropdownMenuItem>
@@ -529,7 +529,7 @@ function CompletedRail({
 }: {
   columns: KanbanEpicColumn[];
   expandedColumnId: string | null;
-  actions: IssueActions;
+  actions: TrackerActions;
   onToggle: (columnId: string) => void;
 }): ReactElement {
   return (
@@ -558,7 +558,7 @@ function CompletedRailItem({
 }: {
   column: KanbanEpicColumn;
   expanded: boolean;
-  actions: IssueActions;
+  actions: TrackerActions;
   onToggle: (columnId: string) => void;
 }): ReactElement {
   const handleToggle = useCallback(() => onToggle(column.id), [onToggle, column.id]);
@@ -597,8 +597,8 @@ function CompletedRailItem({
   );
 }
 
-function isDone(issue: IssueSummary): boolean {
-  return issue.status === "closed" || issue.status === "cancelled";
+function isDone(tracker: TrackerSummary): boolean {
+  return tracker.status === "closed" || tracker.status === "cancelled";
 }
 
 function renderKebabTriggerIcon({ hovered }: { hovered?: boolean }): ReactElement {
@@ -707,28 +707,28 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[4],
     paddingVertical: theme.spacing[3],
   },
-  issueRowContainer: {
+  trackerRowContainer: {
     position: "relative",
   },
-  issueRow: {
+  trackerRow: {
     minHeight: theme.spacing[16],
     gap: theme.spacing[2],
   },
-  issueRowHovered: {
+  trackerRowHovered: {
     backgroundColor: theme.colors.surface2,
   },
-  issueRowPressed: {
+  trackerRowPressed: {
     backgroundColor: theme.colors.surface3,
   },
-  issueStatusIcon: {
+  trackerStatusIcon: {
     paddingTop: 2,
   },
-  issueMain: {
+  trackerMain: {
     flex: 1,
     minWidth: 0,
     gap: theme.spacing[2],
   },
-  issueMeta: {
+  trackerMeta: {
     flexDirection: "row",
     alignItems: "center",
     flexWrap: "wrap",

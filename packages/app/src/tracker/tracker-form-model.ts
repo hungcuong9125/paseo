@@ -1,12 +1,12 @@
-import type { IssuePriority, IssueType } from "@getpaseo/protocol/issues/types";
+import type { TrackerPriority, TrackerType } from "@getpaseo/protocol/tracker/types";
 
-export interface IssueFormState {
+export interface TrackerFormState {
   serverId: string | null;
   projectId: string | null;
   projectDisplay: string | null;
   title: string;
-  issueType: IssueType;
-  priority: IssuePriority;
+  trackerType: TrackerType;
+  priority: TrackerPriority;
   parentId: string | null;
   parentDisplay: string | null;
   description: string;
@@ -14,20 +14,20 @@ export interface IssueFormState {
   canSubmit: boolean;
 }
 
-export interface IssueFormModel {
-  getState(): IssueFormState;
+export interface TrackerFormModel {
+  getState(): TrackerFormState;
   subscribe(listener: () => void): () => void;
   setProject(serverId: string | null, projectId: string | null, display: string | null): void;
   setTitle(value: string): void;
-  setIssueType(value: IssueType): void;
-  setPriority(value: IssuePriority): void;
+  setTrackerType(value: TrackerType): void;
+  setPriority(value: TrackerPriority): void;
   setParent(id: string | null, display: string | null): void;
   setDescription(value: string): void;
   setSubmitError(error: string | null): void;
   close(): void;
 }
 
-export interface IssueFormSeed {
+export interface TrackerFormSeed {
   serverId?: string | null;
   projectId?: string | null;
   projectDisplay?: string | null;
@@ -35,21 +35,21 @@ export interface IssueFormSeed {
   parentDisplay?: string | null;
 }
 
-function deriveCanSubmit(state: Omit<IssueFormState, "canSubmit">): boolean {
+function deriveCanSubmit(state: Omit<TrackerFormState, "canSubmit">): boolean {
   return state.title.trim().length > 0 && Boolean(state.serverId) && Boolean(state.projectId);
 }
 
 // Locked once a seed pre-selects a project (e.g. opened from a specific
 // project's row). Left open ("choose a project" field rendered) when opened
 // from an aggregated "all projects" view with no seed project.
-export function openIssueForm(seed: IssueFormSeed = {}): IssueFormModel {
+export function openTrackerForm(seed: TrackerFormSeed = {}): TrackerFormModel {
   const listeners = new Set<() => void>();
-  let state: IssueFormState = {
+  let state: TrackerFormState = {
     serverId: seed.serverId ?? null,
     projectId: seed.projectId ?? null,
     projectDisplay: seed.projectDisplay ?? null,
     title: "",
-    issueType: "task",
+    trackerType: "task",
     priority: "P2",
     parentId: seed.parentId ?? null,
     parentDisplay: seed.parentDisplay ?? null,
@@ -58,7 +58,7 @@ export function openIssueForm(seed: IssueFormSeed = {}): IssueFormModel {
     canSubmit: false,
   };
 
-  function publish(next: Omit<IssueFormState, "canSubmit">): void {
+  function publish(next: Omit<TrackerFormState, "canSubmit">): void {
     state = { ...next, canSubmit: deriveCanSubmit(next) };
     for (const listener of listeners) {
       listener();
@@ -82,7 +82,7 @@ export function openIssueForm(seed: IssueFormSeed = {}): IssueFormModel {
         parentDisplay: null,
       }),
     setTitle: (value) => publish({ ...state, title: value, submitError: null }),
-    setIssueType: (value) => publish({ ...state, issueType: value }),
+    setTrackerType: (value) => publish({ ...state, trackerType: value }),
     setPriority: (value) => publish({ ...state, priority: value }),
     setParent: (id, display) => publish({ ...state, parentId: id, parentDisplay: display }),
     setDescription: (value) => publish({ ...state, description: value }),

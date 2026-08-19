@@ -13,12 +13,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, LayoutGrid, ListChecks, Plus } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import type { IssueSummary } from "@getpaseo/protocol/issues/types";
+import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 import { MenuHeader } from "@/components/headers/menu-header";
-import { IssueDetailSheet } from "@/components/issues/issue-detail-sheet";
-import { IssueFormSheet } from "@/components/issues/issue-form-sheet";
-import { IssueKanbanBoard } from "@/components/issues/issue-kanban-board";
-import { IssuesTable } from "@/components/issues/issues-table";
+import { TrackerDetailSheet } from "@/components/tracker/tracker-detail-sheet";
+import { TrackerFormSheet } from "@/components/tracker/tracker-form-sheet";
+import { TrackerKanbanBoard } from "@/components/tracker/tracker-kanban-board";
+import { TrackerTable } from "@/components/tracker/tracker-table";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -32,56 +32,58 @@ import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/s
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
 import { useProjects } from "@/hooks/use-projects";
 import {
-  issuesQueryBaseKey,
-  type AggregatedIssue,
-  type IssueProjectError,
-  type IssueProjectInput,
-} from "@/issues/aggregated-issues";
-import { useIssueMutations } from "@/issues/use-issue-mutations";
-import { useAggregatedIssues } from "@/issues/use-aggregated-issues";
-import { getIssueStatCounts, type IssueStatCounts } from "@/issues/issue-stats";
+  trackerQueryBaseKey,
+  type AggregatedTracker,
+  type TrackerProjectError,
+  type TrackerProjectInput,
+} from "@/tracker/aggregated-trackers";
+import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
+import { useAggregatedTrackers } from "@/tracker/use-aggregated-trackers";
+import { getTrackerStatCounts, type TrackerStatCounts } from "@/tracker/tracker-stats";
 import { useSessionStore } from "@/stores/session-store";
 import type { Theme } from "@/styles/theme";
-import { resolveIssuesScreenBodyState, type IssuesScreenBodyState } from "./issues-screen-state";
+import { resolveTrackerScreenBodyState, type TrackerScreenBodyState } from "./tracker-screen-state";
 
 type StatFilter = "open" | "in_progress" | "p0" | "done" | "all";
 type ViewMode = "list" | "kanban";
 
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const EMPTY_ISSUES: AggregatedIssue[] = [];
+const EMPTY_ISSUES: AggregatedTracker[] = [];
 
 // Containers (epic/initiative) always pass so Kanban still has something to
 // group under even when every task inside is filtered out; only task leaves
 // are actually filtered by status/priority.
-function matchesStatFilter(issue: AggregatedIssue, filter: StatFilter): boolean {
+function matchesStatFilter(tracker: AggregatedTracker, filter: StatFilter): boolean {
   switch (filter) {
     case "open":
-      return issue.status === "open";
+      return tracker.status === "open";
     case "in_progress":
-      return issue.status === "in_progress";
+      return tracker.status === "in_progress";
     case "p0":
-      return issue.priority === "P0" && (issue.status === "open" || issue.status === "in_progress");
+      return (
+        tracker.priority === "P0" && (tracker.status === "open" || tracker.status === "in_progress")
+      );
     case "done":
-      return issue.status === "closed" || issue.status === "cancelled";
+      return tracker.status === "closed" || tracker.status === "cancelled";
     case "all":
       return true;
   }
 }
 
-export function IssuesScreen(): ReactElement {
+export function TrackerScreen(): ReactElement {
   const isFocused = useIsFocused();
 
   if (!isFocused) {
     return <View style={styles.container} />;
   }
 
-  return <IssuesScreenContent />;
+  return <TrackerScreenContent />;
 }
 
-function IssuesScreenContent(): ReactElement {
+function TrackerScreenContent(): ReactElement {
   const { projects: projectSummaries } = useProjects();
-  const projectInputs = useMemo<IssueProjectInput[]>(
+  const projectInputs = useMemo<TrackerProjectInput[]>(
     () =>
       projectSummaries.flatMap((project) =>
         project.hosts.map((host) => ({
@@ -98,7 +100,7 @@ function IssuesScreenContent(): ReactElement {
   const [statFilter, setStatFilter] = useState<StatFilter>("open");
   const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [selectedIssue, setSelectedIssue] = useState<AggregatedIssue | null>(null);
+  const [selectedTracker, setSelectedTracker] = useState<AggregatedTracker | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
 
   useEffect(() => {
@@ -110,43 +112,43 @@ function IssuesScreenContent(): ReactElement {
   // Always fetch every status: the filter row's counts (Done, etc.) need the
   // full set regardless of which bucket is active, which is applied
   // client-side below instead of round-tripping a second fetch.
-  const { loadState, projectErrors, refetch } = useAggregatedIssues({
+  const { loadState, projectErrors, refetch } = useAggregatedTrackers({
     projects: projectInputs,
     all: true,
     enabled: hasAnyProject,
   });
 
-  const allIssues = loadState.status === "loaded" ? loadState.data : EMPTY_ISSUES;
-  const projectFilteredIssues = useMemo(
+  const allTrackers = loadState.status === "loaded" ? loadState.data : EMPTY_ISSUES;
+  const projectFilteredTrackers = useMemo(
     () =>
       selectedProjectId
-        ? allIssues.filter((issue) => issue.projectId === selectedProjectId)
-        : allIssues,
-    [allIssues, selectedProjectId],
+        ? allTrackers.filter((tracker) => tracker.projectId === selectedProjectId)
+        : allTrackers,
+    [allTrackers, selectedProjectId],
   );
-  const visibleIssues = useMemo(
+  const visibleTrackers = useMemo(
     () =>
       statFilter === "all"
-        ? projectFilteredIssues
-        : projectFilteredIssues.filter(
-            (issue) => issue.type !== "task" || matchesStatFilter(issue, statFilter),
+        ? projectFilteredTrackers
+        : projectFilteredTrackers.filter(
+            (tracker) => tracker.type !== "task" || matchesStatFilter(tracker, statFilter),
           ),
-    [projectFilteredIssues, statFilter],
+    [projectFilteredTrackers, statFilter],
   );
 
-  const bodyState = resolveIssuesScreenBodyState({
+  const bodyState = resolveTrackerScreenBodyState({
     hasAnyProject,
     loadState,
     selectedProjectId: selectedProjectId ?? "all",
     projectErrors,
-    visibleIssuesCount: visibleIssues.length,
+    visibleTrackersCount: visibleTrackers.length,
   });
 
   const selectedProject = selectedProjectId
     ? (projectInputs.find((p) => p.projectId === selectedProjectId) ?? null)
     : null;
 
-  const initMutations = useIssueMutations({
+  const initMutations = useTrackerMutations({
     serverId: selectedProject?.serverId ?? "",
     projectId: selectedProjectId ?? "",
   });
@@ -154,8 +156,11 @@ function IssuesScreenContent(): ReactElement {
   const openProjectPicker = useOpenAddProject();
   const queryClient = useQueryClient();
 
-  const handleOpenIssue = useCallback((issue: AggregatedIssue) => setSelectedIssue(issue), []);
-  const handleCloseDetail = useCallback(() => setSelectedIssue(null), []);
+  const handleOpenTracker = useCallback(
+    (tracker: AggregatedTracker) => setSelectedTracker(tracker),
+    [],
+  );
+  const handleCloseDetail = useCallback(() => setSelectedTracker(null), []);
   const handleOpenCreate = useCallback(() => setCreateOpen(true), []);
   const handleCloseCreate = useCallback(() => setCreateOpen(false), []);
   const handleOpenProject = useCallback(() => {
@@ -166,59 +171,59 @@ function IssuesScreenContent(): ReactElement {
   }, [initMutations]);
   const handleRetry = useCallback(() => refetch(), [refetch]);
 
-  // The Kanban board renders a projection built from AggregatedIssue[] but
-  // its own model (and action callbacks) only knows the IssueSummary shape —
-  // the runtime objects are still the exact AggregatedIssue instances we
-  // passed in, so this cast is safe (see IssueKanbanBoardProps contract).
+  // The Kanban board renders a projection built from AggregatedTracker[] but
+  // its own model (and action callbacks) only knows the TrackerSummary shape —
+  // the runtime objects are still the exact AggregatedTracker instances we
+  // passed in, so this cast is safe (see TrackerKanbanBoardProps contract).
   const runKanbanAction = useCallback(
     (
-      issue: IssueSummary,
-      action: (client: DaemonClient, aggregated: AggregatedIssue) => Promise<unknown>,
+      tracker: TrackerSummary,
+      action: (client: DaemonClient, aggregated: AggregatedTracker) => Promise<unknown>,
     ) => {
-      const aggregated = issue as AggregatedIssue;
+      const aggregated = tracker as AggregatedTracker;
       const client = useSessionStore.getState().sessions[aggregated.serverId]?.client;
       if (!client) {
         return;
       }
       void action(client, aggregated).finally(() => {
-        void queryClient.invalidateQueries({ queryKey: issuesQueryBaseKey });
+        void queryClient.invalidateQueries({ queryKey: trackerQueryBaseKey });
       });
     },
     [queryClient],
   );
-  const handleKanbanOpenIssue = useCallback(
-    (issue: IssueSummary) => setSelectedIssue(issue as AggregatedIssue),
+  const handleKanbanOpenTracker = useCallback(
+    (tracker: TrackerSummary) => setSelectedTracker(tracker as AggregatedTracker),
     [],
   );
   const handleKanbanStart = useCallback(
-    (issue: IssueSummary) =>
-      runKanbanAction(issue, (client, aggregated) =>
-        client.issuesUpdate({
+    (tracker: TrackerSummary) =>
+      runKanbanAction(tracker, (client, aggregated) =>
+        client.trackerUpdate({
           projectId: aggregated.projectId,
-          issueId: aggregated.id,
+          trackerId: aggregated.id,
           status: "in_progress",
         }),
       ),
     [runKanbanAction],
   );
   const handleKanbanClose = useCallback(
-    (issue: IssueSummary) =>
-      runKanbanAction(issue, (client, aggregated) =>
-        client.issuesClose({ projectId: aggregated.projectId, issueId: aggregated.id }),
+    (tracker: TrackerSummary) =>
+      runKanbanAction(tracker, (client, aggregated) =>
+        client.trackerClose({ projectId: aggregated.projectId, trackerId: aggregated.id }),
       ),
     [runKanbanAction],
   );
   const handleKanbanReopen = useCallback(
-    (issue: IssueSummary) =>
-      runKanbanAction(issue, (client, aggregated) =>
-        client.issuesReopen({ projectId: aggregated.projectId, issueId: aggregated.id }),
+    (tracker: TrackerSummary) =>
+      runKanbanAction(tracker, (client, aggregated) =>
+        client.trackerReopen({ projectId: aggregated.projectId, trackerId: aggregated.id }),
       ),
     [runKanbanAction],
   );
   const handleKanbanCancel = useCallback(
-    (issue: IssueSummary) =>
-      runKanbanAction(issue, (client, aggregated) =>
-        client.issuesCancel({ projectId: aggregated.projectId, issueId: aggregated.id }),
+    (tracker: TrackerSummary) =>
+      runKanbanAction(tracker, (client, aggregated) =>
+        client.trackerCancel({ projectId: aggregated.projectId, trackerId: aggregated.id }),
       ),
     [runKanbanAction],
   );
@@ -226,10 +231,10 @@ function IssuesScreenContent(): ReactElement {
   return (
     <View style={styles.container}>
       <MenuHeader title="Tracker" />
-      <IssuesScreenBody
+      <TrackerScreenBody
         bodyState={bodyState}
-        issues={visibleIssues}
-        statsIssues={projectFilteredIssues}
+        trackers={visibleTrackers}
+        statsTrackers={projectFilteredTrackers}
         showProjectLabel={selectedProjectId === null}
         projects={projectInputs}
         selectedProjectId={selectedProjectId}
@@ -239,8 +244,8 @@ function IssuesScreenContent(): ReactElement {
         viewMode={viewMode}
         onViewModeChange={setViewMode}
         projectErrors={projectErrors}
-        onOpenIssue={handleOpenIssue}
-        onKanbanOpenIssue={handleKanbanOpenIssue}
+        onOpenTracker={handleOpenTracker}
+        onKanbanOpenTracker={handleKanbanOpenTracker}
         onKanbanStart={handleKanbanStart}
         onKanbanClose={handleKanbanClose}
         onKanbanReopen={handleKanbanReopen}
@@ -251,7 +256,7 @@ function IssuesScreenContent(): ReactElement {
         isInitialising={initMutations.isInitialising}
         onRetry={handleRetry}
       />
-      <IssueFormSheet
+      <TrackerFormSheet
         projects={projectInputs}
         visible={createOpen}
         onClose={handleCloseCreate}
@@ -259,11 +264,11 @@ function IssuesScreenContent(): ReactElement {
         defaultProjectId={selectedProject?.projectId ?? null}
         defaultProjectDisplay={selectedProject?.projectName ?? null}
       />
-      <IssueDetailSheet
-        serverId={selectedIssue?.serverId ?? ""}
-        projectId={selectedIssue?.projectId ?? ""}
-        visible={selectedIssue !== null}
-        issueId={selectedIssue?.id ?? null}
+      <TrackerDetailSheet
+        serverId={selectedTracker?.serverId ?? ""}
+        projectId={selectedTracker?.projectId ?? ""}
+        visible={selectedTracker !== null}
+        trackerId={selectedTracker?.id ?? null}
         onClose={handleCloseDetail}
       />
     </View>
@@ -275,7 +280,7 @@ function ProjectPicker({
   selectedProjectId,
   onSelectProject,
 }: {
-  projects: IssueProjectInput[];
+  projects: TrackerProjectInput[];
   selectedProjectId: string | null;
   onSelectProject: (projectId: string | null) => void;
 }): ReactElement {
@@ -288,7 +293,7 @@ function ProjectPicker({
     <DropdownMenu>
       <DropdownMenuTrigger
         style={styles.projectPickerTrigger}
-        testID="issues-project-picker-trigger"
+        testID="trackers-project-picker-trigger"
       >
         <Text style={styles.projectPickerText} numberOfLines={1}>
           {selectedLabel}
@@ -299,7 +304,7 @@ function ProjectPicker({
         <DropdownMenuItem
           selected={selectedProjectId === null}
           onSelect={handleSelectAll}
-          testID="issues-project-picker-all"
+          testID="trackers-project-picker-all"
         >
           All projects
         </DropdownMenuItem>
@@ -322,7 +327,7 @@ function ProjectPickerItem({
   selected,
   onSelectProject,
 }: {
-  project: IssueProjectInput;
+  project: TrackerProjectInput;
   selected: boolean;
   onSelectProject: (projectId: string | null) => void;
 }): ReactElement {
@@ -334,7 +339,7 @@ function ProjectPickerItem({
     <DropdownMenuItem
       selected={selected}
       onSelect={handleSelect}
-      testID={`issues-project-picker-${project.projectId}`}
+      testID={`trackers-project-picker-${project.projectId}`}
     >
       {project.projectName}
     </DropdownMenuItem>
@@ -366,7 +371,7 @@ function PriorityFilterItem({
 // UI-only priority filter mockup. The trigger text and `selected` state make it
 // look interactive, but selection is NOT wired to any filtering (per request:
 // build the UI/UX, not the functionality).
-function PriorityFilterDropdown({ counts }: { counts: IssueStatCounts }): ReactElement {
+function PriorityFilterDropdown({ counts }: { counts: TrackerStatCounts }): ReactElement {
   const [selected, setSelected] = useState<string | null>(null);
   const [isHovered, setIsHovered] = useState(false);
   const priorityTotal = counts.p0 + counts.p1 + counts.p2 + counts.p3 + counts.p4;
@@ -388,12 +393,12 @@ function PriorityFilterDropdown({ counts }: { counts: IssueStatCounts }): ReactE
         style={triggerStyle}
         onHoverIn={handleHoverIn}
         onHoverOut={handleHoverOut}
-        testID="issues-priority-filter-trigger"
+        testID="trackers-priority-filter-trigger"
       >
         {selected != null ? (
           <>
             <Text style={[styles.priorityFilterCount, selectedStyle]}>
-              {counts[selected.toLowerCase() as keyof IssueStatCounts] as number}
+              {counts[selected.toLowerCase() as keyof TrackerStatCounts] as number}
             </Text>
             <Text style={[styles.priorityFilterText, selectedStyle]}> {selected}</Text>
           </>
@@ -423,10 +428,10 @@ function PriorityFilterDropdown({ counts }: { counts: IssueStatCounts }): ReactE
   );
 }
 
-function ProjectErrorsBanner({ errors }: { errors: IssueProjectError[] }): ReactElement {
+function ProjectErrorsBanner({ errors }: { errors: TrackerProjectError[] }): ReactElement {
   return (
     <View style={styles.errorsBannerWrap}>
-      <View style={styles.errorsBanner} testID="issues-project-errors">
+      <View style={styles.errorsBanner} testID="trackers-project-errors">
         {errors.map((error) => (
           <Text key={`${error.serverId}:${error.projectId}`} style={styles.errorsBannerText}>
             {`${error.projectName}: ${error.message}`}
@@ -437,10 +442,10 @@ function ProjectErrorsBanner({ errors }: { errors: IssueProjectError[] }): React
   );
 }
 
-function IssuesScreenBody({
+function TrackerScreenBody({
   bodyState,
-  issues,
-  statsIssues,
+  trackers,
+  statsTrackers,
   showProjectLabel,
   projects,
   selectedProjectId,
@@ -450,8 +455,8 @@ function IssuesScreenBody({
   viewMode,
   onViewModeChange,
   projectErrors,
-  onOpenIssue,
-  onKanbanOpenIssue,
+  onOpenTracker,
+  onKanbanOpenTracker,
   onKanbanStart,
   onKanbanClose,
   onKanbanReopen,
@@ -462,24 +467,24 @@ function IssuesScreenBody({
   isInitialising,
   onRetry,
 }: {
-  bodyState: IssuesScreenBodyState;
-  issues: AggregatedIssue[];
-  statsIssues: AggregatedIssue[];
+  bodyState: TrackerScreenBodyState;
+  trackers: AggregatedTracker[];
+  statsTrackers: AggregatedTracker[];
   showProjectLabel: boolean;
-  projects: IssueProjectInput[];
+  projects: TrackerProjectInput[];
   selectedProjectId: string | null;
   onSelectProject: (projectId: string | null) => void;
   statFilter: StatFilter;
   onStatFilterChange: (value: StatFilter) => void;
   viewMode: ViewMode;
   onViewModeChange: (value: ViewMode) => void;
-  projectErrors: IssueProjectError[];
-  onOpenIssue: (issue: AggregatedIssue) => void;
-  onKanbanOpenIssue: (issue: IssueSummary) => void;
-  onKanbanStart: (issue: IssueSummary) => void;
-  onKanbanClose: (issue: IssueSummary) => void;
-  onKanbanReopen: (issue: IssueSummary) => void;
-  onKanbanCancel: (issue: IssueSummary) => void;
+  projectErrors: TrackerProjectError[];
+  onOpenTracker: (tracker: AggregatedTracker) => void;
+  onKanbanOpenTracker: (tracker: TrackerSummary) => void;
+  onKanbanStart: (tracker: TrackerSummary) => void;
+  onKanbanClose: (tracker: TrackerSummary) => void;
+  onKanbanReopen: (tracker: TrackerSummary) => void;
+  onKanbanCancel: (tracker: TrackerSummary) => void;
   onCreate: () => void;
   onOpenProject: () => void;
   onInitialise: () => void;
@@ -491,7 +496,7 @@ function IssuesScreenBody({
       return (
         <View style={styles.centered}>
           <Text style={styles.message}>Open a project to see its tracker</Text>
-          <Button variant="outline" onPress={onOpenProject} testID="issues-open-project">
+          <Button variant="outline" onPress={onOpenProject} testID="trackers-open-project">
             Open project
           </Button>
         </View>
@@ -516,7 +521,7 @@ function IssuesScreenBody({
             variant="outline"
             onPress={onInitialise}
             loading={isInitialising}
-            testID="issues-initialise"
+            testID="trackers-initialise"
           >
             Initialize tracker
           </Button>
@@ -526,7 +531,7 @@ function IssuesScreenBody({
       return (
         <View style={styles.centered}>
           <Text style={styles.message}>{bodyState.message}</Text>
-          <Button variant="ghost" onPress={onRetry} testID="issues-retry">
+          <Button variant="ghost" onPress={onRetry} testID="trackers-retry">
             Try again
           </Button>
         </View>
@@ -538,8 +543,8 @@ function IssuesScreenBody({
           contentContainerStyle={styles.scrollContentEmpty}
           showsVerticalScrollIndicator={false}
         >
-          <IssuesToolbar
-            statsIssues={statsIssues}
+          <TrackersToolbar
+            statsTrackers={statsTrackers}
             projects={projects}
             selectedProjectId={selectedProjectId}
             onSelectProject={onSelectProject}
@@ -550,10 +555,15 @@ function IssuesScreenBody({
             onCreate={onCreate}
           />
           {projectErrors.length > 0 ? <ProjectErrorsBanner errors={projectErrors} /> : null}
-          <View style={styles.centered} testID="issues-empty">
+          <View style={styles.centered} testID="trackers-empty">
             <ListChecks size={styles.emptyIcon.width} color={styles.emptyIcon.color} />
             <Text style={styles.emptyTitle}>Nothing tracked yet</Text>
-            <Button variant="outline" leftIcon={Plus} onPress={onCreate} testID="issues-empty-new">
+            <Button
+              variant="outline"
+              leftIcon={Plus}
+              onPress={onCreate}
+              testID="trackers-empty-new"
+            >
               New item
             </Button>
           </View>
@@ -561,8 +571,8 @@ function IssuesScreenBody({
       );
     case "content": {
       const toolbar = (
-        <IssuesToolbar
-          statsIssues={statsIssues}
+        <TrackersToolbar
+          statsTrackers={statsTrackers}
           projects={projects}
           selectedProjectId={selectedProjectId}
           onSelectProject={onSelectProject}
@@ -577,16 +587,16 @@ function IssuesScreenBody({
         projectErrors.length > 0 ? <ProjectErrorsBanner errors={projectErrors} /> : null;
 
       if (viewMode === "kanban") {
-        // Not nested in the outer vertical ScrollView: IssueKanbanBoard owns its own
+        // Not nested in the outer vertical ScrollView: TrackerKanbanBoard owns its own
         // horizontal ScrollView and needs a bounded-height parent (flex: 1), which a
         // ScrollView's content container can't give a child.
         return (
-          <View style={styles.kanbanContainer} testID="issues-kanban">
+          <View style={styles.kanbanContainer} testID="trackers-kanban">
             {toolbar}
             {errorsBanner}
-            <IssueKanbanBoard
-              issues={issues}
-              onOpenIssue={onKanbanOpenIssue}
+            <TrackerKanbanBoard
+              trackers={trackers}
+              onOpenTracker={onKanbanOpenTracker}
               onStart={onKanbanStart}
               onClose={onKanbanClose}
               onReopen={onKanbanReopen}
@@ -601,14 +611,14 @@ function IssuesScreenBody({
           style={styles.scroll}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
-          testID="issues-list"
+          testID="trackers-list"
         >
           {toolbar}
           {errorsBanner}
-          <IssuesTable
-            issues={issues}
+          <TrackerTable
+            trackers={trackers}
             showProjectLabel={showProjectLabel}
-            onOpenIssue={onOpenIssue}
+            onOpenTracker={onOpenTracker}
           />
         </ScrollView>
       );
@@ -623,7 +633,7 @@ interface StatFilterPillDef {
 }
 
 // Hover/active colours for the count, locked to the same status palette used by
-// the issue-row status labels (blue / amber / red / green). "all" stays neutral.
+// the tracker-row status labels (blue / amber / red / green). "all" stays neutral.
 function statNumberColorStyle(value: StatFilter): StyleProp<TextStyle> {
   switch (value) {
     case "open":
@@ -640,7 +650,7 @@ function statNumberColorStyle(value: StatFilter): StyleProp<TextStyle> {
 }
 
 // Priority levels shown in the `?` help popover, mirroring the severity colours
-// used in the issue-row metadata. `colorStyle` resolves the per-level colour.
+// used in the tracker-row metadata. `colorStyle` resolves the per-level colour.
 const PRIORITY_HELP_LEVELS: ReadonlyArray<{ id: string; desc: string }> = [
   { id: "P0", desc: "Critical — urgent, severe" },
   { id: "P1", desc: "High priority" },
@@ -695,7 +705,7 @@ function StatFilterPillView({
       accessibilityRole="button"
       accessibilityState={accessibilityState}
       accessibilityLabel={`Filter: ${def.label}`}
-      testID={`issues-stat-${def.value}`}
+      testID={`trackers-stat-${def.value}`}
     >
       <Text style={[styles.statNumber, showColor && statNumberColorStyle(def.value)]}>
         {def.count}
@@ -709,15 +719,15 @@ function StatFilterPillView({
 // data that `ait list` doesn't return per-row, only `ait show <id>` does — a
 // dedicated ready-count RPC is follow-up work.
 function StatFilterRow({
-  issues,
+  trackers,
   statFilter,
   onStatFilterChange,
 }: {
-  issues: AggregatedIssue[];
+  trackers: AggregatedTracker[];
   statFilter: StatFilter;
   onStatFilterChange: (value: StatFilter) => void;
 }): ReactElement {
-  const counts = getIssueStatCounts(issues);
+  const counts = getTrackerStatCounts(trackers);
 
   const defs: StatFilterPillDef[] = [
     { value: "open", label: "Open", count: counts.open },
@@ -748,8 +758,8 @@ function StatFilterRow({
   );
 }
 
-function IssuesToolbar({
-  statsIssues,
+function TrackersToolbar({
+  statsTrackers,
   projects,
   selectedProjectId,
   onSelectProject,
@@ -759,8 +769,8 @@ function IssuesToolbar({
   onViewModeChange,
   onCreate,
 }: {
-  statsIssues: AggregatedIssue[];
-  projects: IssueProjectInput[];
+  statsTrackers: AggregatedTracker[];
+  projects: TrackerProjectInput[];
   selectedProjectId: string | null;
   onSelectProject: (projectId: string | null) => void;
   statFilter: StatFilter;
@@ -780,7 +790,7 @@ function IssuesToolbar({
           />
         ) : null}
         <StatFilterRow
-          issues={statsIssues}
+          trackers={statsTrackers}
           statFilter={statFilter}
           onStatFilterChange={onStatFilterChange}
         />
@@ -792,9 +802,15 @@ function IssuesToolbar({
           onValueChange={onViewModeChange}
           size="sm"
           hideLabels
-          testID="issues-view-mode"
+          testID="trackers-view-mode"
         />
-        <Button variant="outline" leftIcon={Plus} onPress={onCreate} size="sm" testID="issues-new">
+        <Button
+          variant="outline"
+          leftIcon={Plus}
+          onPress={onCreate}
+          size="sm"
+          testID="trackers-new"
+        >
           New item
         </Button>
       </View>
@@ -811,8 +827,8 @@ function renderKanbanIcon({ color, size }: { color: string; size: number }): Rea
 }
 
 const viewModeOptions: SegmentedControlOption<ViewMode>[] = [
-  { value: "list", label: "List", icon: renderListIcon, testID: "issues-view-list" },
-  { value: "kanban", label: "Kanban", icon: renderKanbanIcon, testID: "issues-view-kanban" },
+  { value: "list", label: "List", icon: renderListIcon, testID: "trackers-view-list" },
+  { value: "kanban", label: "Kanban", icon: renderKanbanIcon, testID: "trackers-view-kanban" },
 ];
 
 const styles = StyleSheet.create((theme) => ({
@@ -880,7 +896,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   // No background/border at rest — same bare-pill idiom as the workspace
   // tab row's inactive tabs. Hover uses the same surface2 wash as row hover
-  // (see IssueRow / agent-list.tsx); selected only changes text colour.
+  // (see TrackerRow / agent-list.tsx); selected only changes text colour.
   statCard: {
     flexDirection: "row",
     alignItems: "baseline",

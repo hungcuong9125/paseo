@@ -2,43 +2,43 @@ import { useMemo } from "react";
 import { useFetchQuery } from "@/data/query";
 import { getHostRuntimeStore, useHostRuntimeConnectionStatuses } from "@/runtime/host-runtime";
 import {
-  fetchAggregatedIssues,
-  issuesQueryBaseKey,
-  type AggregatedIssue,
-  type FetchAggregatedIssuesState,
-  type IssueProjectError,
-  type IssueProjectInput,
-} from "@/issues/aggregated-issues";
+  fetchAggregatedTrackers,
+  trackerQueryBaseKey,
+  type AggregatedTracker,
+  type FetchAggregatedTrackersState,
+  type TrackerProjectError,
+  type TrackerProjectInput,
+} from "@/tracker/aggregated-trackers";
 
 export type {
-  AggregatedIssue,
-  IssueProjectError,
-  IssueProjectInput,
-} from "@/issues/aggregated-issues";
+  AggregatedTracker,
+  TrackerProjectError,
+  TrackerProjectInput,
+} from "@/tracker/aggregated-trackers";
 
 export type AggregateLoadState<T> =
   | { status: "connecting" }
   | { status: "loading" }
   | { status: "loaded"; data: T[] };
 
-export interface UseAggregatedIssuesOptions {
-  projects: readonly IssueProjectInput[];
+export interface UseAggregatedTrackersOptions {
+  projects: readonly TrackerProjectInput[];
   all: boolean;
   enabled?: boolean;
 }
 
-export interface UseAggregatedIssuesResult {
-  loadState: AggregateLoadState<AggregatedIssue>;
-  projectErrors: IssueProjectError[];
+export interface UseAggregatedTrackersResult {
+  loadState: AggregateLoadState<AggregatedTracker>;
+  projectErrors: TrackerProjectError[];
   refetch: () => void;
   isRefetching: boolean;
 }
 
-export function useAggregatedIssues({
+export function useAggregatedTrackers({
   projects,
   all,
   enabled = true,
-}: UseAggregatedIssuesOptions): UseAggregatedIssuesResult {
+}: UseAggregatedTrackersOptions): UseAggregatedTrackersResult {
   const runtime = getHostRuntimeStore();
   const serverIds = useMemo(() => [...new Set(projects.map((p) => p.serverId))].sort(), [projects]);
   const connectionStatuses = useHostRuntimeConnectionStatuses(serverIds);
@@ -48,15 +48,15 @@ export function useAggregatedIssues({
   );
   const projectIds = useMemo(() => projects.map((p) => p.projectId).sort(), [projects]);
 
-  const query = useFetchQuery<FetchAggregatedIssuesState>({
-    queryKey: [...issuesQueryBaseKey, projectIds.join("|"), all, connectionStatusKey],
-    queryFn: () => fetchAggregatedIssues({ projects, runtime, all }),
+  const query = useFetchQuery<FetchAggregatedTrackersState>({
+    queryKey: [...trackerQueryBaseKey, projectIds.join("|"), all, connectionStatusKey],
+    queryFn: () => fetchAggregatedTrackers({ projects, runtime, all }),
     enabled,
     dataShape: "list",
     staleTimeMs: 5_000,
   });
 
-  let loadState: AggregateLoadState<AggregatedIssue>;
+  let loadState: AggregateLoadState<AggregatedTracker>;
   if (query.data?.status === "connecting") {
     loadState = { status: "connecting" };
   } else if (query.data?.status === "loaded") {

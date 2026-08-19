@@ -1,15 +1,15 @@
 import type pino from "pino";
-import type { IssuesErrorCode } from "@getpaseo/protocol/issues/rpc-schemas";
+import type { TrackerErrorCode } from "@getpaseo/protocol/tracker/rpc-schemas";
 import type { SessionInboundMessage, SessionOutboundMessage } from "../../messages.js";
 import { AitCliError, type AitService } from "../../../services/ait-cli-service.js";
 import type { ProjectRegistry } from "../../workspace-registry.js";
 
-export interface IssuesSessionHost {
+export interface TrackerSessionHost {
   emit(msg: SessionOutboundMessage): void;
 }
 
-export interface IssuesSessionOptions {
-  host: IssuesSessionHost;
+export interface TrackerSessionOptions {
+  host: TrackerSessionHost;
   aitService: AitService;
   projectRegistry: Pick<ProjectRegistry, "get">;
   logger: pino.Logger;
@@ -17,13 +17,13 @@ export interface IssuesSessionOptions {
 
 class ProjectNotFoundError extends Error {}
 
-export class IssuesSession {
-  private readonly host: IssuesSessionHost;
+export class TrackerSession {
+  private readonly host: TrackerSessionHost;
   private readonly aitService: AitService;
   private readonly projectRegistry: Pick<ProjectRegistry, "get">;
   private readonly logger: pino.Logger;
 
-  constructor(options: IssuesSessionOptions) {
+  constructor(options: TrackerSessionOptions) {
     this.host = options.host;
     this.aitService = options.aitService;
     this.projectRegistry = options.projectRegistry;
@@ -38,7 +38,7 @@ export class IssuesSession {
     return project.rootPath;
   }
 
-  private toErrorTuple(error: unknown): { error: string; errorCode: IssuesErrorCode } {
+  private toErrorTuple(error: unknown): { error: string; errorCode: TrackerErrorCode } {
     if (error instanceof AitCliError) {
       return { error: error.message, errorCode: error.code };
     }
@@ -49,21 +49,24 @@ export class IssuesSession {
   }
 
   private logFailure(requestType: string, error: unknown): void {
-    this.logger.warn({ err: error, requestType }, "Issues request failed");
+    this.logger.warn({ err: error, requestType }, "Trackers request failed");
   }
 
-  async handleProjectIssuesListRequest(
-    request: Extract<SessionInboundMessage, { type: "project.issues.list.request" }>,
+  async handleProjectTrackerListRequest(
+    request: Extract<SessionInboundMessage, { type: "project.tracker.list.request" }>,
   ): Promise<void> {
     try {
       const cwd = await this.resolveCwd(request.projectId);
-      const { issues, hiddenCount } = await this.aitService.listIssues({ cwd, all: request.all });
+      const { trackers, hiddenCount } = await this.aitService.listTrackers({
+        cwd,
+        all: request.all,
+      });
       this.host.emit({
-        type: "project.issues.list.response",
+        type: "project.tracker.list.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
-          issues,
+          trackers,
           hiddenCount,
           error: null,
           errorCode: null,
@@ -72,11 +75,11 @@ export class IssuesSession {
     } catch (error) {
       this.logFailure(request.type, error);
       this.host.emit({
-        type: "project.issues.list.response",
+        type: "project.tracker.list.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
-          issues: [],
+          trackers: [],
           hiddenCount: 0,
           ...this.toErrorTuple(error),
         },
@@ -84,18 +87,18 @@ export class IssuesSession {
     }
   }
 
-  async handleProjectIssuesShowRequest(
-    request: Extract<SessionInboundMessage, { type: "project.issues.show.request" }>,
+  async handleProjectTrackerShowRequest(
+    request: Extract<SessionInboundMessage, { type: "project.tracker.show.request" }>,
   ): Promise<void> {
     try {
       const cwd = await this.resolveCwd(request.projectId);
-      const issue = await this.aitService.showIssue({ cwd, issueId: request.issueId });
+      const tracker = await this.aitService.showTracker({ cwd, trackerId: request.trackerId });
       this.host.emit({
-        type: "project.issues.show.response",
+        type: "project.tracker.show.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
-          issue,
+          tracker,
           error: null,
           errorCode: null,
         },
@@ -103,38 +106,38 @@ export class IssuesSession {
     } catch (error) {
       this.logFailure(request.type, error);
       this.host.emit({
-        type: "project.issues.show.response",
+        type: "project.tracker.show.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
-          issue: null,
+          tracker: null,
           ...this.toErrorTuple(error),
         },
       });
     }
   }
 
-  async handleProjectIssuesCreateRequest(
-    request: Extract<SessionInboundMessage, { type: "project.issues.create.request" }>,
+  async handleProjectTrackerCreateRequest(
+    request: Extract<SessionInboundMessage, { type: "project.tracker.create.request" }>,
   ): Promise<void> {
     try {
       const cwd = await this.resolveCwd(request.projectId);
-      const issue = await this.aitService.createIssue({
+      const tracker = await this.aitService.createTracker({
         cwd,
         input: {
           title: request.title,
-          issueType: request.issueType,
+          trackerType: request.trackerType,
           priority: request.priority,
           parentId: request.parentId,
           description: request.description,
         },
       });
       this.host.emit({
-        type: "project.issues.create.response",
+        type: "project.tracker.create.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
-          issue,
+          tracker,
           error: null,
           errorCode: null,
         },
@@ -142,33 +145,33 @@ export class IssuesSession {
     } catch (error) {
       this.logFailure(request.type, error);
       this.host.emit({
-        type: "project.issues.create.response",
+        type: "project.tracker.create.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
-          issue: null,
+          tracker: null,
           ...this.toErrorTuple(error),
         },
       });
     }
   }
 
-  async handleProjectIssuesUpdateRequest(
-    request: Extract<SessionInboundMessage, { type: "project.issues.update.request" }>,
+  async handleProjectTrackerUpdateRequest(
+    request: Extract<SessionInboundMessage, { type: "project.tracker.update.request" }>,
   ): Promise<void> {
     try {
       const cwd = await this.resolveCwd(request.projectId);
-      const issue = await this.aitService.updateIssue({
+      const tracker = await this.aitService.updateTracker({
         cwd,
-        issueId: request.issueId,
+        trackerId: request.trackerId,
         input: { title: request.title, status: request.status, priority: request.priority },
       });
       this.host.emit({
-        type: "project.issues.update.response",
+        type: "project.tracker.update.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
-          issue,
+          tracker,
           error: null,
           errorCode: null,
         },
@@ -176,33 +179,33 @@ export class IssuesSession {
     } catch (error) {
       this.logFailure(request.type, error);
       this.host.emit({
-        type: "project.issues.update.response",
+        type: "project.tracker.update.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
-          issue: null,
+          tracker: null,
           ...this.toErrorTuple(error),
         },
       });
     }
   }
 
-  async handleProjectIssuesCloseRequest(
-    request: Extract<SessionInboundMessage, { type: "project.issues.close.request" }>,
+  async handleProjectTrackerCloseRequest(
+    request: Extract<SessionInboundMessage, { type: "project.tracker.close.request" }>,
   ): Promise<void> {
     try {
       const cwd = await this.resolveCwd(request.projectId);
-      const issue = await this.aitService.closeIssue({
+      const tracker = await this.aitService.closeTracker({
         cwd,
-        issueId: request.issueId,
+        trackerId: request.trackerId,
         note: request.note,
       });
       this.host.emit({
-        type: "project.issues.close.response",
+        type: "project.tracker.close.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
-          issue,
+          tracker,
           error: null,
           errorCode: null,
         },
@@ -210,29 +213,29 @@ export class IssuesSession {
     } catch (error) {
       this.logFailure(request.type, error);
       this.host.emit({
-        type: "project.issues.close.response",
+        type: "project.tracker.close.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
-          issue: null,
+          tracker: null,
           ...this.toErrorTuple(error),
         },
       });
     }
   }
 
-  async handleProjectIssuesReopenRequest(
-    request: Extract<SessionInboundMessage, { type: "project.issues.reopen.request" }>,
+  async handleProjectTrackerReopenRequest(
+    request: Extract<SessionInboundMessage, { type: "project.tracker.reopen.request" }>,
   ): Promise<void> {
     try {
       const cwd = await this.resolveCwd(request.projectId);
-      const issue = await this.aitService.reopenIssue({ cwd, issueId: request.issueId });
+      const tracker = await this.aitService.reopenTracker({ cwd, trackerId: request.trackerId });
       this.host.emit({
-        type: "project.issues.reopen.response",
+        type: "project.tracker.reopen.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
-          issue,
+          tracker,
           error: null,
           errorCode: null,
         },
@@ -240,33 +243,33 @@ export class IssuesSession {
     } catch (error) {
       this.logFailure(request.type, error);
       this.host.emit({
-        type: "project.issues.reopen.response",
+        type: "project.tracker.reopen.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
-          issue: null,
+          tracker: null,
           ...this.toErrorTuple(error),
         },
       });
     }
   }
 
-  async handleProjectIssuesCancelRequest(
-    request: Extract<SessionInboundMessage, { type: "project.issues.cancel.request" }>,
+  async handleProjectTrackerCancelRequest(
+    request: Extract<SessionInboundMessage, { type: "project.tracker.cancel.request" }>,
   ): Promise<void> {
     try {
       const cwd = await this.resolveCwd(request.projectId);
-      const issue = await this.aitService.cancelIssue({
+      const tracker = await this.aitService.cancelTracker({
         cwd,
-        issueId: request.issueId,
+        trackerId: request.trackerId,
         reason: request.reason,
       });
       this.host.emit({
-        type: "project.issues.cancel.response",
+        type: "project.tracker.cancel.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
-          issue,
+          tracker,
           error: null,
           errorCode: null,
         },
@@ -274,29 +277,29 @@ export class IssuesSession {
     } catch (error) {
       this.logFailure(request.type, error);
       this.host.emit({
-        type: "project.issues.cancel.response",
+        type: "project.tracker.cancel.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
-          issue: null,
+          tracker: null,
           ...this.toErrorTuple(error),
         },
       });
     }
   }
 
-  async handleProjectIssuesNoteAddRequest(
-    request: Extract<SessionInboundMessage, { type: "project.issues.note_add.request" }>,
+  async handleProjectTrackerNoteAddRequest(
+    request: Extract<SessionInboundMessage, { type: "project.tracker.note_add.request" }>,
   ): Promise<void> {
     try {
       const cwd = await this.resolveCwd(request.projectId);
       const note = await this.aitService.addNote({
         cwd,
-        issueId: request.issueId,
+        trackerId: request.trackerId,
         body: request.body,
       });
       this.host.emit({
-        type: "project.issues.note_add.response",
+        type: "project.tracker.note_add.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
@@ -308,7 +311,7 @@ export class IssuesSession {
     } catch (error) {
       this.logFailure(request.type, error);
       this.host.emit({
-        type: "project.issues.note_add.response",
+        type: "project.tracker.note_add.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
@@ -319,14 +322,14 @@ export class IssuesSession {
     }
   }
 
-  async handleProjectIssuesInitRequest(
-    request: Extract<SessionInboundMessage, { type: "project.issues.init.request" }>,
+  async handleProjectTrackerInitRequest(
+    request: Extract<SessionInboundMessage, { type: "project.tracker.init.request" }>,
   ): Promise<void> {
     try {
       const cwd = await this.resolveCwd(request.projectId);
       const { initialised } = await this.aitService.initTracker({ cwd, prefix: request.prefix });
       this.host.emit({
-        type: "project.issues.init.response",
+        type: "project.tracker.init.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
@@ -338,7 +341,7 @@ export class IssuesSession {
     } catch (error) {
       this.logFailure(request.type, error);
       this.host.emit({
-        type: "project.issues.init.response",
+        type: "project.tracker.init.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,

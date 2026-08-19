@@ -1,10 +1,10 @@
 import type {
   AggregateLoadState,
-  AggregatedIssue,
-  IssueProjectError,
-} from "@/issues/use-aggregated-issues";
+  AggregatedTracker,
+  TrackerProjectError,
+} from "@/tracker/use-aggregated-trackers";
 
-export type IssuesScreenBodyState =
+export type TrackerScreenBodyState =
   | { kind: "no-projects" }
   | { kind: "loading" }
   | { kind: "cli-missing" }
@@ -13,12 +13,12 @@ export type IssuesScreenBodyState =
   | { kind: "empty" }
   | { kind: "content" };
 
-export interface ResolveIssuesScreenBodyStateInput {
+export interface ResolveTrackerScreenBodyStateInput {
   hasAnyProject: boolean;
-  loadState: AggregateLoadState<AggregatedIssue>;
+  loadState: AggregateLoadState<AggregatedTracker>;
   selectedProjectId: string | "all";
-  projectErrors: IssueProjectError[];
-  visibleIssuesCount: number;
+  projectErrors: TrackerProjectError[];
+  visibleTrackersCount: number;
 }
 
 /**
@@ -28,9 +28,9 @@ export interface ResolveIssuesScreenBodyStateInput {
  * is a banner instead (rendered by the screen alongside empty/content) — the
  * rest of the board still renders from whatever projects succeeded.
  */
-export function resolveIssuesScreenBodyState(
-  input: ResolveIssuesScreenBodyStateInput,
-): IssuesScreenBodyState {
+export function resolveTrackerScreenBodyState(
+  input: ResolveTrackerScreenBodyStateInput,
+): TrackerScreenBodyState {
   if (!input.hasAnyProject) {
     return { kind: "no-projects" };
   }
@@ -51,7 +51,7 @@ export function resolveIssuesScreenBodyState(
       return { kind: "load-error", message: projectError.message };
     }
   }
-  if (input.visibleIssuesCount === 0) {
+  if (input.visibleTrackersCount === 0) {
     return { kind: "empty" };
   }
   return { kind: "content" };

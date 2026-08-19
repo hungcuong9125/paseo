@@ -1,11 +1,11 @@
-import type { IssueSummary } from "@getpaseo/protocol/issues/types";
+import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 import { describe, expect, it } from "vitest";
 import { buildKanbanBoard } from "./kanban-grouping";
 
-function issue({
+function tracker({
   id,
   ...overrides
-}: Partial<IssueSummary> & Pick<IssueSummary, "id">): IssueSummary {
+}: Partial<TrackerSummary> & Pick<TrackerSummary, "id">): TrackerSummary {
   return {
     id,
     title: id,
@@ -19,12 +19,12 @@ function issue({
 
 describe("buildKanbanBoard", () => {
   it("builds a flat epic column with children ordered by priority then id", () => {
-    const epic = issue({ id: "proj-E", title: "Editor", type: "epic", priority: "P1" });
+    const epic = tracker({ id: "proj-E", title: "Editor", type: "epic", priority: "P1" });
     const model = buildKanbanBoard([
-      issue({ id: "proj-E.2", parentId: epic.id, priority: "P2" }),
+      tracker({ id: "proj-E.2", parentId: epic.id, priority: "P2" }),
       epic,
-      issue({ id: "proj-E.3", parentId: epic.id, priority: "P0" }),
-      issue({ id: "proj-E.1", parentId: epic.id, priority: "P2" }),
+      tracker({ id: "proj-E.3", parentId: epic.id, priority: "P0" }),
+      tracker({ id: "proj-E.1", parentId: epic.id, priority: "P2" }),
     ]);
 
     expect(model.activeColumns).toHaveLength(1);
@@ -38,7 +38,7 @@ describe("buildKanbanBoard", () => {
       subColumns: [],
     });
     expect(
-      model.activeColumns[0]?.children.map(({ issue: child, depth }) => [child.id, depth]),
+      model.activeColumns[0]?.children.map(({ tracker: child, depth }) => [child.id, depth]),
     ).toEqual([
       ["proj-E.3", 0],
       ["proj-E.1", 0],
@@ -49,30 +49,30 @@ describe("buildKanbanBoard", () => {
   });
 
   it("splits a nested epic into General and direct-child sub-columns", () => {
-    const epic = issue({ id: "proj-E", title: "Editor", type: "epic" });
-    const group = issue({ id: "proj-E.2", title: "Keyboard", parentId: epic.id });
+    const epic = tracker({ id: "proj-E", title: "Editor", type: "epic" });
+    const group = tracker({ id: "proj-E.2", title: "Keyboard", parentId: epic.id });
     const model = buildKanbanBoard([
       epic,
       group,
-      issue({ id: "proj-E.1", title: "Loose task", parentId: epic.id, priority: "P0" }),
-      issue({ id: "proj-E.2.2", parentId: group.id, priority: "P2" }),
-      issue({
+      tracker({ id: "proj-E.1", title: "Loose task", parentId: epic.id, priority: "P0" }),
+      tracker({ id: "proj-E.2.2", parentId: group.id, priority: "P2" }),
+      tracker({
         id: "proj-E.2.1",
         parentId: group.id,
         priority: "P1",
         status: "closed",
       }),
-      issue({ id: "proj-E.2.1.1", parentId: "proj-E.2.1", priority: "P0" }),
+      tracker({ id: "proj-E.2.1.1", parentId: "proj-E.2.1", priority: "P0" }),
     ]);
 
     const column = model.activeColumns[0];
     expect(column?.children).toEqual([]);
     expect(column?.subColumns.map(({ title }) => title)).toEqual(["General", "Keyboard"]);
-    expect(column?.subColumns[0]?.children.map(({ issue: child }) => child.id)).toEqual([
+    expect(column?.subColumns[0]?.children.map(({ tracker: child }) => child.id)).toEqual([
       "proj-E.1",
     ]);
     expect(
-      column?.subColumns[1]?.children.map(({ issue: child, depth, childCount, doneCount }) => [
+      column?.subColumns[1]?.children.map(({ tracker: child, depth, childCount, doneCount }) => [
         child.id,
         depth,
         childCount,
@@ -87,37 +87,37 @@ describe("buildKanbanBoard", () => {
   });
 
   it("groups epics under initiatives and marks completed initiative sections quiet", () => {
-    const activeInitiative = issue({
+    const activeInitiative = tracker({
       id: "proj-I1",
       title: "Active initiative",
       type: "initiative",
       priority: "P0",
     });
-    const quietInitiative = issue({
+    const quietInitiative = tracker({
       id: "proj-I2",
       title: "Quiet initiative",
       type: "initiative",
     });
-    const emptyInitiative = issue({
+    const emptyInitiative = tracker({
       id: "proj-I3",
       title: "Fresh initiative",
       type: "initiative",
       priority: "P3",
     });
-    const activeEpic = issue({
+    const activeEpic = tracker({
       id: "proj-E1",
       title: "Active epic",
       type: "epic",
       parentId: activeInitiative.id,
     });
-    const completedEpic = issue({
+    const completedEpic = tracker({
       id: "proj-E2",
       title: "Completed epic",
       type: "epic",
       parentId: activeInitiative.id,
       status: "closed",
     });
-    const quietEpic = issue({
+    const quietEpic = tracker({
       id: "proj-E3",
       title: "Quiet epic",
       type: "epic",
@@ -159,21 +159,21 @@ describe("buildKanbanBoard", () => {
   });
 
   it("adds orphan task trees to an appended Standalone column", () => {
-    const epic = issue({ id: "proj-E", type: "epic", priority: "P0" });
-    const epicTask = issue({ id: "proj-E.1", parentId: epic.id });
-    const standaloneRoot = issue({ id: "proj-T", priority: "P2" });
-    const standaloneChild = issue({
+    const epic = tracker({ id: "proj-E", type: "epic", priority: "P0" });
+    const epicTask = tracker({ id: "proj-E.1", parentId: epic.id });
+    const standaloneRoot = tracker({ id: "proj-T", priority: "P2" });
+    const standaloneChild = tracker({
       id: "proj-T.1",
       parentId: standaloneRoot.id,
       priority: "P0",
       status: "cancelled",
     });
-    const missingParent = issue({ id: "proj-O", parentId: "missing", priority: "P0" });
+    const missingParent = tracker({ id: "proj-O", parentId: "missing", priority: "P0" });
 
     const model = buildKanbanBoard([
       epic,
       epicTask,
-      issue({ id: "proj-E.1.1", parentId: epicTask.id }),
+      tracker({ id: "proj-E.1.1", parentId: epicTask.id }),
       standaloneRoot,
       standaloneChild,
       missingParent,
@@ -185,7 +185,9 @@ describe("buildKanbanBoard", () => {
       childCount: 3,
       doneCount: 1,
     });
-    expect(model.standalone?.children.map(({ issue: child, depth }) => [child.id, depth])).toEqual([
+    expect(
+      model.standalone?.children.map(({ tracker: child, depth }) => [child.id, depth]),
+    ).toEqual([
       ["proj-O", 0],
       ["proj-T", 0],
       ["proj-T.1", 1],
@@ -194,11 +196,11 @@ describe("buildKanbanBoard", () => {
   });
 
   it("demotes an epic when all of its descendant tasks are done", () => {
-    const epic = issue({ id: "proj-E", title: "Release", type: "epic" });
+    const epic = tracker({ id: "proj-E", title: "Release", type: "epic" });
     const model = buildKanbanBoard([
       epic,
-      issue({ id: "proj-E.1", parentId: epic.id, status: "closed" }),
-      issue({ id: "proj-E.2", parentId: epic.id, status: "cancelled" }),
+      tracker({ id: "proj-E.1", parentId: epic.id, status: "closed" }),
+      tracker({ id: "proj-E.2", parentId: epic.id, status: "cancelled" }),
     ]);
 
     expect(model.activeColumns).toEqual([]);
@@ -212,19 +214,19 @@ describe("buildKanbanBoard", () => {
   });
 
   it("reports all clear only for a non-empty board with no active work", () => {
-    const completedEpic = issue({ id: "proj-E", type: "epic", status: "closed" });
+    const completedEpic = tracker({ id: "proj-E", type: "epic", status: "closed" });
 
     expect(buildKanbanBoard([completedEpic]).allClear).toBe(true);
     expect(buildKanbanBoard([])).toMatchObject({ allClear: false, empty: true });
   });
 
   it("bounds malformed ancestor cycles and keeps their tasks standalone", () => {
-    const first = issue({ id: "proj-T1", parentId: "proj-T2", priority: "P0" });
-    const second = issue({ id: "proj-T2", parentId: "proj-T1", priority: "P1" });
+    const first = tracker({ id: "proj-T1", parentId: "proj-T2", priority: "P0" });
+    const second = tracker({ id: "proj-T2", parentId: "proj-T1", priority: "P1" });
 
     const model = buildKanbanBoard([second, first]);
 
-    expect(model.standalone?.children.map(({ issue: child }) => child.id)).toEqual([
+    expect(model.standalone?.children.map(({ tracker: child }) => child.id)).toEqual([
       first.id,
       second.id,
     ]);

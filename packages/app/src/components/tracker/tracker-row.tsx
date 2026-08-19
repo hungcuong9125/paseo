@@ -2,7 +2,7 @@ import { CheckCircle2, MoreVertical, PlayCircle, RotateCcw, XCircle } from "luci
 import { useCallback, useState, type ReactElement } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import type { IssueSummary } from "@getpaseo/protocol/issues/types";
+import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -10,7 +10,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { IssueStatusIcon, issueStatusLabel } from "@/components/issues/issue-status-icon";
+import { TrackerStatusIcon, trackerStatusLabel } from "@/components/tracker/tracker-status-icon";
 import { isNative } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { settingsStyles } from "@/styles/settings";
@@ -28,14 +28,14 @@ const destructiveColorMapping = (theme: Theme) => ({ color: theme.colors.destruc
 
 const MENU_ICON_SIZE = 14;
 
-export interface IssueRowPending {
+export interface TrackerRowPending {
   start?: boolean;
   close?: boolean;
   reopen?: boolean;
   cancel?: boolean;
 }
 
-export interface IssueRowActions {
+export interface TrackerRowActions {
   onPress: () => void;
   onStart: () => void;
   onClose: () => void;
@@ -43,13 +43,13 @@ export interface IssueRowActions {
   onCancel: () => void;
 }
 
-interface IssueRowProps extends IssueRowActions {
-  issue: IssueSummary;
+interface TrackerRowProps extends TrackerRowActions {
+  tracker: TrackerSummary;
   parentTitle: string | null;
   /** Which project this row belongs to — rendered in the meta line only when
    * the caller is showing more than one project at once (aggregated view). */
   projectLabel?: string | null;
-  pending?: IssueRowPending;
+  pending?: TrackerRowPending;
   isFirst: boolean;
 }
 
@@ -71,7 +71,7 @@ function priorityColorStyle(priority: string) {
   }
 }
 
-function statusTextColorStyle(status: IssueSummary["status"]) {
+function statusTextColorStyle(status: TrackerSummary["status"]) {
   switch (status) {
     case "open":
       return styles.statusOpen;
@@ -86,8 +86,8 @@ function statusTextColorStyle(status: IssueSummary["status"]) {
   }
 }
 
-export function IssueRow({
-  issue,
+export function TrackerRow({
+  tracker,
   parentTitle,
   projectLabel = null,
   pending,
@@ -97,7 +97,7 @@ export function IssueRow({
   onClose,
   onReopen,
   onCancel,
-}: IssueRowProps): ReactElement {
+}: TrackerRowProps): ReactElement {
   const isCompact = useIsCompactFormFactor();
   const [isHovered, setIsHovered] = useState(false);
   const handlePointerEnter = useCallback(() => setIsHovered(true), []);
@@ -124,29 +124,29 @@ export function IssueRow({
         style={rowStyle}
         onPress={onPress}
         accessibilityRole="button"
-        accessibilityLabel={`Open issue ${issue.title}`}
-        testID={`issue-row-${issue.id}`}
+        accessibilityLabel={`Open tracker ${tracker.title}`}
+        testID={`tracker-row-${tracker.id}`}
       >
         <View style={styles.main}>
           <View style={styles.statusIcon}>
-            <IssueStatusIcon status={issue.status} />
+            <TrackerStatusIcon status={tracker.status} />
           </View>
           <View style={styles.textGroup}>
             <Text
               style={[
                 settingsStyles.rowTitle,
-                issue.status === "in_progress" && styles.titleRunning,
-                issue.status === "closed" && styles.titleClosed,
-                issue.status === "cancelled" && styles.titleCancelled,
+                tracker.status === "in_progress" && styles.titleRunning,
+                tracker.status === "closed" && styles.titleClosed,
+                tracker.status === "cancelled" && styles.titleCancelled,
               ]}
               numberOfLines={1}
             >
-              {issue.title}
+              {tracker.title}
             </Text>
             <Text style={settingsStyles.rowHint} numberOfLines={1}>
-              <Text>{issue.id}</Text>
+              <Text>{tracker.id}</Text>
               <Text>{" · "}</Text>
-              <Text style={priorityColorStyle(issue.priority)}>{issue.priority}</Text>
+              <Text style={priorityColorStyle(tracker.priority)}>{tracker.priority}</Text>
               {parentTitle ? (
                 <>
                   <Text>{" · "}</Text>
@@ -164,11 +164,11 @@ export function IssueRow({
         </View>
 
         <View style={styles.trailing}>
-          <Text style={[styles.statusText, statusTextColorStyle(issue.status)]}>
-            {issueStatusLabel(issue.status)}
+          <Text style={[styles.statusText, statusTextColorStyle(tracker.status)]}>
+            {trackerStatusLabel(tracker.status)}
           </Text>
-          <IssueKebabMenu
-            issue={issue}
+          <TrackerKebabMenu
+            tracker={tracker}
             pending={pending}
             onStart={onStart}
             onClose={onClose}
@@ -195,37 +195,37 @@ function renderKebabTriggerIcon({ hovered }: { hovered?: boolean }): ReactElemen
   );
 }
 
-function IssueKebabMenu({
-  issue,
+function TrackerKebabMenu({
+  tracker,
   pending,
   onStart,
   onClose,
   onReopen,
   onCancel,
 }: Pick<
-  IssueRowProps,
-  "issue" | "pending" | "onStart" | "onClose" | "onReopen" | "onCancel"
+  TrackerRowProps,
+  "tracker" | "pending" | "onStart" | "onClose" | "onReopen" | "onCancel"
 >): ReactElement {
-  const isOpenOrInProgress = issue.status === "open" || issue.status === "in_progress";
+  const isOpenOrInProgress = tracker.status === "open" || tracker.status === "in_progress";
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
         hitSlop={8}
         style={kebabTriggerStyle}
         accessibilityRole={isNative ? "button" : undefined}
-        accessibilityLabel="Issue actions"
-        testID={`issue-kebab-${issue.id}`}
+        accessibilityLabel="Tracker actions"
+        testID={`tracker-kebab-${tracker.id}`}
       >
         {renderKebabTriggerIcon}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" width={200}>
-        {issue.status === "open" ? (
+        {tracker.status === "open" ? (
           <DropdownMenuItem
             leading={startLeading}
             status={pending?.start ? "pending" : "idle"}
             pendingLabel="Starting..."
             onSelect={onStart}
-            testID={`issue-menu-start-${issue.id}`}
+            testID={`tracker-menu-start-${tracker.id}`}
           >
             Start
           </DropdownMenuItem>
@@ -236,7 +236,7 @@ function IssueKebabMenu({
             status={pending?.close ? "pending" : "idle"}
             pendingLabel="Closing..."
             onSelect={onClose}
-            testID={`issue-menu-close-${issue.id}`}
+            testID={`tracker-menu-close-${tracker.id}`}
           >
             Close
           </DropdownMenuItem>
@@ -247,7 +247,7 @@ function IssueKebabMenu({
             status={pending?.reopen ? "pending" : "idle"}
             pendingLabel="Reopening..."
             onSelect={onReopen}
-            testID={`issue-menu-reopen-${issue.id}`}
+            testID={`tracker-menu-reopen-${tracker.id}`}
           >
             Reopen
           </DropdownMenuItem>
@@ -261,7 +261,7 @@ function IssueKebabMenu({
               status={pending?.cancel ? "pending" : "idle"}
               pendingLabel="Cancelling..."
               onSelect={onCancel}
-              testID={`issue-menu-cancel-${issue.id}`}
+              testID={`tracker-menu-cancel-${tracker.id}`}
             >
               Cancel
             </DropdownMenuItem>

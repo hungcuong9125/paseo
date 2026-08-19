@@ -1,7 +1,7 @@
 import { Circle, CircleCheck, CircleDot, CircleX } from "lucide-react-native";
 import type { ReactElement } from "react";
 import { withUnistyles } from "react-native-unistyles";
-import type { IssueSummary } from "@getpaseo/protocol/issues/types";
+import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 import type { Theme } from "@/styles/theme";
 
 // Mirrors packages/app/src/components/task-list-row.tsx — same concept (a list
@@ -18,11 +18,11 @@ const ThemedCircleX = withUnistyles(CircleX);
 const mutedIcon = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const extraMutedIcon = (theme: Theme) => ({ color: theme.colors.foregroundExtraMuted });
 
-export function IssueStatusIcon({
+export function TrackerStatusIcon({
   status,
   size = 16,
 }: {
-  status: IssueSummary["status"];
+  status: TrackerSummary["status"];
   size?: number;
 }): ReactElement {
   switch (status) {
@@ -37,7 +37,7 @@ export function IssueStatusIcon({
   }
 }
 
-export function issueStatusLabel(status: IssueSummary["status"]): string {
+export function trackerStatusLabel(status: TrackerSummary["status"]): string {
   switch (status) {
     case "open":
       return "Open";

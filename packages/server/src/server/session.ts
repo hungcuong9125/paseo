@@ -159,7 +159,7 @@ import {
   createGitMetadataGenerator,
 } from "./session/checkout/git-metadata-generator.js";
 import { ScheduleSession } from "./session/schedule/schedule-session.js";
-import { IssuesSession } from "./session/issues/issues-session.js";
+import { TrackerSession } from "./session/tracker/tracker-session.js";
 import type { AitService } from "../services/ait-cli-service.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { WorkspaceFilesSession } from "./session/files/workspace-files-session.js";
@@ -671,7 +671,7 @@ export class Session {
   private readonly voiceSession: VoiceSession;
   private readonly checkoutSession: CheckoutSession;
   private readonly scheduleSession: ScheduleSession;
-  private readonly issuesSession: IssuesSession;
+  private readonly trackerSession: TrackerSession;
   private readonly providerCatalogSession: ProviderCatalogSession;
   private readonly workspaceFilesSession: WorkspaceFilesSession;
   private readonly agentConfigSession: AgentConfigSession;
@@ -836,7 +836,7 @@ export class Session {
       scheduleService,
       logger: this.sessionLogger,
     });
-    this.issuesSession = new IssuesSession({
+    this.trackerSession = new TrackerSession({
       host: { emit: (msg) => this.emit(msg) },
       aitService,
       projectRegistry: this.projectRegistry,
@@ -1844,7 +1844,7 @@ export class Session {
       this.dispatchProviderMessage(msg) ??
       this.dispatchTerminalMessage(msg) ??
       this.dispatchScheduleMessage(msg) ??
-      this.dispatchIssuesMessage(msg) ??
+      this.dispatchTrackerMessage(msg) ??
       this.dispatchMiscMessage(msg);
     if (promise) await promise;
   }
@@ -2284,26 +2284,26 @@ export class Session {
     }
   }
 
-  private dispatchIssuesMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+  private dispatchTrackerMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     switch (msg.type) {
-      case "project.issues.list.request":
-        return this.issuesSession.handleProjectIssuesListRequest(msg);
-      case "project.issues.show.request":
-        return this.issuesSession.handleProjectIssuesShowRequest(msg);
-      case "project.issues.create.request":
-        return this.issuesSession.handleProjectIssuesCreateRequest(msg);
-      case "project.issues.update.request":
-        return this.issuesSession.handleProjectIssuesUpdateRequest(msg);
-      case "project.issues.close.request":
-        return this.issuesSession.handleProjectIssuesCloseRequest(msg);
-      case "project.issues.reopen.request":
-        return this.issuesSession.handleProjectIssuesReopenRequest(msg);
-      case "project.issues.cancel.request":
-        return this.issuesSession.handleProjectIssuesCancelRequest(msg);
-      case "project.issues.note_add.request":
-        return this.issuesSession.handleProjectIssuesNoteAddRequest(msg);
-      case "project.issues.init.request":
-        return this.issuesSession.handleProjectIssuesInitRequest(msg);
+      case "project.tracker.list.request":
+        return this.trackerSession.handleProjectTrackerListRequest(msg);
+      case "project.tracker.show.request":
+        return this.trackerSession.handleProjectTrackerShowRequest(msg);
+      case "project.tracker.create.request":
+        return this.trackerSession.handleProjectTrackerCreateRequest(msg);
+      case "project.tracker.update.request":
+        return this.trackerSession.handleProjectTrackerUpdateRequest(msg);
+      case "project.tracker.close.request":
+        return this.trackerSession.handleProjectTrackerCloseRequest(msg);
+      case "project.tracker.reopen.request":
+        return this.trackerSession.handleProjectTrackerReopenRequest(msg);
+      case "project.tracker.cancel.request":
+        return this.trackerSession.handleProjectTrackerCancelRequest(msg);
+      case "project.tracker.note_add.request":
+        return this.trackerSession.handleProjectTrackerNoteAddRequest(msg);
+      case "project.tracker.init.request":
+        return this.trackerSession.handleProjectTrackerInitRequest(msg);
       default:
         return undefined;
     }

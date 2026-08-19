@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import pino from "pino";
-import { IssuesSession } from "./issues-session.js";
+import { TrackerSession } from "./tracker-session.js";
 import { createStub } from "../../test-utils/class-mocks.js";
 import { findByType } from "../../test-utils/session-stubs.js";
 import type { SessionOutboundMessage } from "../../messages.js";
@@ -18,7 +18,7 @@ function makeSession(ait: { [K in keyof AitService]?: unknown }) {
         ? ({ projectId: PROJECT_ID, rootPath: CWD } as Awaited<ReturnType<ProjectRegistry["get"]>>)
         : null,
   });
-  const session = new IssuesSession({
+  const session = new TrackerSession({
     host: { emit: (message) => emitted.push(message) },
     aitService: createStub<AitService>(ait),
     projectRegistry,
@@ -27,7 +27,7 @@ function makeSession(ait: { [K in keyof AitService]?: unknown }) {
   return { session, emitted };
 }
 
-const SAMPLE_ISSUE = {
+const SAMPLE_TRACKER = {
   id: "proj-1",
   title: "Fix the thing",
   type: "task" as const,
@@ -36,25 +36,25 @@ const SAMPLE_ISSUE = {
   parentId: null,
 };
 
-describe("IssuesSession", () => {
+describe("TrackerSession", () => {
   it("resolves projectId to cwd before calling the ait service", async () => {
     let receivedCwd: string | undefined;
     const { session, emitted } = makeSession({
-      listIssues: async ({ cwd }: { cwd: string }) => {
+      listTrackers: async ({ cwd }: { cwd: string }) => {
         receivedCwd = cwd;
-        return { issues: [SAMPLE_ISSUE], hiddenCount: 0 };
+        return { trackers: [SAMPLE_TRACKER], hiddenCount: 0 };
       },
     });
 
-    await session.handleProjectIssuesListRequest({
-      type: "project.issues.list.request",
+    await session.handleProjectTrackerListRequest({
+      type: "project.tracker.list.request",
       requestId: "r1",
       projectId: PROJECT_ID,
     });
 
     expect(receivedCwd).toBe(CWD);
-    const response = findByType(emitted, "project.issues.list.response");
-    expect(response?.payload.issues).toEqual([SAMPLE_ISSUE]);
+    const response = findByType(emitted, "project.tracker.list.response");
+    expect(response?.payload.trackers).toEqual([SAMPLE_TRACKER]);
     expect(response?.payload.error).toBeNull();
     expect(response?.payload.errorCode).toBeNull();
   });
@@ -62,34 +62,34 @@ describe("IssuesSession", () => {
   it("emits not_found when the projectId does not resolve", async () => {
     const { session, emitted } = makeSession({});
 
-    await session.handleProjectIssuesListRequest({
-      type: "project.issues.list.request",
+    await session.handleProjectTrackerListRequest({
+      type: "project.tracker.list.request",
       requestId: "r2",
       projectId: "prj_does_not_exist",
     });
 
-    const response = findByType(emitted, "project.issues.list.response");
-    expect(response?.payload.issues).toEqual([]);
+    const response = findByType(emitted, "project.tracker.list.response");
+    expect(response?.payload.trackers).toEqual([]);
     expect(response?.payload.errorCode).toBe("not_found");
     expect(response?.payload.error).toContain("prj_does_not_exist");
   });
 
   it("maps an AitCliError's code and message onto the response payload", async () => {
     const { session, emitted } = makeSession({
-      showIssue: async () => {
+      showTracker: async () => {
         throw new AitCliError("uninitialised", "no ait database — run 'ait init' first");
       },
     });
 
-    await session.handleProjectIssuesShowRequest({
-      type: "project.issues.show.request",
+    await session.handleProjectTrackerShowRequest({
+      type: "project.tracker.show.request",
       requestId: "r3",
       projectId: PROJECT_ID,
-      issueId: "proj-1",
+      trackerId: "proj-1",
     });
 
-    const response = findByType(emitted, "project.issues.show.response");
-    expect(response?.payload.issue).toBeNull();
+    const response = findByType(emitted, "project.tracker.show.response");
+    expect(response?.payload.tracker).toBeNull();
     expect(response?.payload.errorCode).toBe("uninitialised");
     expect(response?.payload.error).toBe("no ait database — run 'ait init' first");
   });
@@ -97,18 +97,18 @@ describe("IssuesSession", () => {
   it("passes create fields through to the ait service", async () => {
     let received: unknown;
     const { session, emitted } = makeSession({
-      createIssue: async (options: unknown) => {
+      createTracker: async (options: unknown) => {
         received = options;
-        return SAMPLE_ISSUE;
+        return SAMPLE_TRACKER;
       },
     });
 
-    await session.handleProjectIssuesCreateRequest({
-      type: "project.issues.create.request",
+    await session.handleProjectTrackerCreateRequest({
+      type: "project.tracker.create.request",
       requestId: "r4",
       projectId: PROJECT_ID,
       title: "Fix the thing",
-      issueType: "task",
+      trackerType: "task",
       priority: "P2",
     });
 
@@ -116,31 +116,31 @@ describe("IssuesSession", () => {
       cwd: CWD,
       input: {
         title: "Fix the thing",
-        issueType: "task",
+        trackerType: "task",
         priority: "P2",
         parentId: undefined,
         description: undefined,
       },
     });
-    const response = findByType(emitted, "project.issues.create.response");
-    expect(response?.payload.issue).toEqual(SAMPLE_ISSUE);
+    const response = findByType(emitted, "project.tracker.create.response");
+    expect(response?.payload.tracker).toEqual(SAMPLE_TRACKER);
   });
 
   it("close/reopen/cancel each call their matching ait service method and emit a summary", async () => {
-    const closed = { ...SAMPLE_ISSUE, status: "closed" as const };
+    const closed = { ...SAMPLE_TRACKER, status: "closed" as const };
     const { session, emitted } = makeSession({
-      closeIssue: async () => closed,
+      closeTracker: async () => closed,
     });
 
-    await session.handleProjectIssuesCloseRequest({
-      type: "project.issues.close.request",
+    await session.handleProjectTrackerCloseRequest({
+      type: "project.tracker.close.request",
       requestId: "r5",
       projectId: PROJECT_ID,
-      issueId: SAMPLE_ISSUE.id,
+      trackerId: SAMPLE_TRACKER.id,
     });
 
-    const response = findByType(emitted, "project.issues.close.response");
-    expect(response?.payload.issue).toEqual(closed);
+    const response = findByType(emitted, "project.tracker.close.response");
+    expect(response?.payload.tracker).toEqual(closed);
     expect(response?.payload.error).toBeNull();
   });
 
@@ -150,15 +150,15 @@ describe("IssuesSession", () => {
       addNote: async () => note,
     });
 
-    await session.handleProjectIssuesNoteAddRequest({
-      type: "project.issues.note_add.request",
+    await session.handleProjectTrackerNoteAddRequest({
+      type: "project.tracker.note_add.request",
       requestId: "r6",
       projectId: PROJECT_ID,
-      issueId: SAMPLE_ISSUE.id,
+      trackerId: SAMPLE_TRACKER.id,
       body: "root cause found",
     });
 
-    const response = findByType(emitted, "project.issues.note_add.response");
+    const response = findByType(emitted, "project.tracker.note_add.response");
     expect(response?.payload.note).toEqual(note);
   });
 
@@ -169,13 +169,13 @@ describe("IssuesSession", () => {
       },
     });
 
-    await session.handleProjectIssuesInitRequest({
-      type: "project.issues.init.request",
+    await session.handleProjectTrackerInitRequest({
+      type: "project.tracker.init.request",
       requestId: "r7",
       projectId: PROJECT_ID,
     });
 
-    const response = findByType(emitted, "project.issues.init.response");
+    const response = findByType(emitted, "project.tracker.init.response");
     expect(response?.payload.initialised).toBe(false);
     expect(response?.payload.errorCode).toBe("cli_missing");
   });

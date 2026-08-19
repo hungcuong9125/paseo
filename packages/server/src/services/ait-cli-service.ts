@@ -6,77 +6,80 @@ import {
   createCachedCliPathResolver,
   parseCliJsonOutput,
 } from "./forge-cli-command.js";
-import { IssuesErrorCodeSchema, type IssuesErrorCode } from "@getpaseo/protocol/issues/rpc-schemas";
+import {
+  TrackerErrorCodeSchema,
+  type TrackerErrorCode,
+} from "@getpaseo/protocol/tracker/rpc-schemas";
 import type {
-  CreateIssueInput,
-  IssueDetail,
-  IssueNote,
-  IssuePriority,
-  IssueSummary,
-  IssueType,
-  UpdateIssueInput,
-} from "@getpaseo/protocol/issues/types";
+  CreateTrackerInput,
+  TrackerDetail,
+  TrackerNote,
+  TrackerPriority,
+  TrackerSummary,
+  TrackerType,
+  UpdateTrackerInput,
+} from "@getpaseo/protocol/tracker/types";
 
 const AIT_TIMEOUT_MS = 15_000;
 const AIT_MAX_BUFFER = 10 * 1024 * 1024;
-const KNOWN_ERROR_CODES = new Set<string>(IssuesErrorCodeSchema.options);
+const KNOWN_ERROR_CODES = new Set<string>(TrackerErrorCodeSchema.options);
 
 export class AitCliError extends Error {
-  readonly code: IssuesErrorCode;
+  readonly code: TrackerErrorCode;
 
-  constructor(code: IssuesErrorCode, message: string) {
+  constructor(code: TrackerErrorCode, message: string) {
     super(message);
     this.name = "AitCliError";
     this.code = code;
   }
 }
 
-export interface ListIssuesOptions {
+export interface ListTrackersOptions {
   cwd: string;
   all?: boolean;
 }
 
-export interface ListIssuesResult {
-  issues: IssueSummary[];
+export interface ListTrackersResult {
+  trackers: TrackerSummary[];
   hiddenCount: number;
 }
 
-export interface ShowIssueOptions {
+export interface ShowTrackerOptions {
   cwd: string;
-  issueId: string;
+  trackerId: string;
 }
 
-export interface CreateIssueOptions {
+export interface CreateTrackerOptions {
   cwd: string;
-  input: CreateIssueInput;
+  input: CreateTrackerInput;
 }
 
-export interface UpdateIssueOptions {
+export interface UpdateTrackerOptions {
   cwd: string;
-  issueId: string;
-  input: UpdateIssueInput;
+  trackerId: string;
+  input: UpdateTrackerInput;
 }
 
-export interface CloseIssueOptions {
+export interface CloseTrackerOptions {
   cwd: string;
-  issueId: string;
+  trackerId: string;
   note?: string;
 }
 
-export interface ReopenIssueOptions {
+export interface ReopenTrackerOptions {
   cwd: string;
-  issueId: string;
+  trackerId: string;
 }
 
-export interface CancelIssueOptions {
+export interface CancelTrackerOptions {
   cwd: string;
-  issueId: string;
+  trackerId: string;
   reason?: string;
 }
 
-export interface AddNoteOptions {
+export interface AddTrackerNoteOptions {
   cwd: string;
-  issueId: string;
+  trackerId: string;
   body: string;
 }
 
@@ -86,19 +89,19 @@ export interface InitTrackerOptions {
 }
 
 export interface AitService {
-  listIssues(options: ListIssuesOptions): Promise<ListIssuesResult>;
-  showIssue(options: ShowIssueOptions): Promise<IssueDetail>;
-  createIssue(options: CreateIssueOptions): Promise<IssueSummary>;
-  updateIssue(options: UpdateIssueOptions): Promise<IssueSummary>;
-  closeIssue(options: CloseIssueOptions): Promise<IssueSummary>;
-  reopenIssue(options: ReopenIssueOptions): Promise<IssueSummary>;
-  cancelIssue(options: CancelIssueOptions): Promise<IssueSummary>;
-  addNote(options: AddNoteOptions): Promise<IssueNote>;
+  listTrackers(options: ListTrackersOptions): Promise<ListTrackersResult>;
+  showTracker(options: ShowTrackerOptions): Promise<TrackerDetail>;
+  createTracker(options: CreateTrackerOptions): Promise<TrackerSummary>;
+  updateTracker(options: UpdateTrackerOptions): Promise<TrackerSummary>;
+  closeTracker(options: CloseTrackerOptions): Promise<TrackerSummary>;
+  reopenTracker(options: ReopenTrackerOptions): Promise<TrackerSummary>;
+  cancelTracker(options: CancelTrackerOptions): Promise<TrackerSummary>;
+  addNote(options: AddTrackerNoteOptions): Promise<TrackerNote>;
   initTracker(options: InitTrackerOptions): Promise<{ initialised: boolean }>;
 }
 
 // The `ait` CLI's own wire shapes (snake_case, see the `ait` skill contract). Kept private to
-// this module — callers only ever see the camelCase protocol types from `@getpaseo/protocol/issues`.
+// this module — callers only ever see the camelCase protocol types from `@getpaseo/protocol/tracker`.
 const AitIssueTypeSchema = z.enum(["initiative", "epic", "task"]);
 const AitIssueStatusSchema = z.enum(["open", "in_progress", "closed", "cancelled"]);
 const AitIssuePrioritySchema = z.enum(["P0", "P1", "P2", "P3", "P4"]);
@@ -158,7 +161,7 @@ const AitInitResponseSchema = z.object({
   created: z.boolean(),
 });
 
-function toIssueSummary(raw: z.infer<typeof AitIssueLongSchema>): IssueSummary {
+function toTrackerSummary(raw: z.infer<typeof AitIssueLongSchema>): TrackerSummary {
   return {
     id: raw.id,
     title: raw.title,
@@ -169,11 +172,11 @@ function toIssueSummary(raw: z.infer<typeof AitIssueLongSchema>): IssueSummary {
   };
 }
 
-function toIssueNote(raw: z.infer<typeof AitNoteSchema>): IssueNote {
+function toTrackerNote(raw: z.infer<typeof AitNoteSchema>): TrackerNote {
   return { id: raw.id, body: raw.body, createdAt: raw.created_at };
 }
 
-function toIssueDetail(raw: z.infer<typeof AitShowResponseSchema>): IssueDetail {
+function toTrackerDetail(raw: z.infer<typeof AitShowResponseSchema>): TrackerDetail {
   return {
     id: raw.issue.id,
     title: raw.issue.title,
@@ -185,9 +188,9 @@ function toIssueDetail(raw: z.infer<typeof AitShowResponseSchema>): IssueDetail 
     claimedBy: raw.issue.claimed_by,
     createdAt: raw.issue.created_at,
     updatedAt: raw.issue.updated_at,
-    children: raw.children.map(toIssueSummary),
-    blockedBy: raw.blockers.map(toIssueSummary),
-    notes: raw.notes.map(toIssueNote),
+    children: raw.children.map(toTrackerSummary),
+    blockedBy: raw.blockers.map(toTrackerSummary),
+    notes: raw.notes.map(toTrackerNote),
   };
 }
 
@@ -241,8 +244,8 @@ function parseAitErrorEnvelope(stderr: string): { code: string; message: string 
   return null;
 }
 
-function toIssuesErrorCode(code: string): IssuesErrorCode {
-  return KNOWN_ERROR_CODES.has(code) ? (code as IssuesErrorCode) : "unknown";
+function toTrackerErrorCode(code: string): TrackerErrorCode {
+  return KNOWN_ERROR_CODES.has(code) ? (code as TrackerErrorCode) : "unknown";
 }
 
 function classifyAitError(error: unknown, context: { args: string[] }): AitCliError {
@@ -256,7 +259,7 @@ function classifyAitError(error: unknown, context: { args: string[] }): AitCliEr
   const stderr = bufferOrStringToString(failure.stderr);
   const envelope = parseAitErrorEnvelope(stderr);
   if (envelope) {
-    return new AitCliError(toIssuesErrorCode(envelope.code), envelope.message);
+    return new AitCliError(toTrackerErrorCode(envelope.code), envelope.message);
   }
   const message = stderr.trim() || failure.message || `ait ${context.args.join(" ")} failed`;
   return new AitCliError("unknown", message);
@@ -290,84 +293,96 @@ export function createAitService(): AitService {
     });
   }
 
-  async function getIssueSummary(cwd: string, issueId: string): Promise<IssueSummary> {
-    const raw = await run(["show", issueId], cwd, AitShowResponseSchema);
-    return toIssueSummary(raw.issue);
+  async function getTrackerSummary(cwd: string, trackerId: string): Promise<TrackerSummary> {
+    const raw = await run(["show", trackerId], cwd, AitShowResponseSchema);
+    return toTrackerSummary(raw.issue);
   }
 
-  async function listIssues({ cwd, all }: ListIssuesOptions): Promise<ListIssuesResult> {
+  async function listTrackers({ cwd, all }: ListTrackersOptions): Promise<ListTrackersResult> {
     const args = all ? ["list", "--long", "--all"] : ["list", "--long"];
     const raw = await run(args, cwd, AitListResponseSchema);
     return {
-      issues: raw.issues.map(toIssueSummary),
+      trackers: raw.issues.map(toTrackerSummary),
       hiddenCount: raw.hidden_count ?? 0,
     };
   }
 
-  async function showIssue({ cwd, issueId }: ShowIssueOptions): Promise<IssueDetail> {
-    const raw = await run(["show", issueId], cwd, AitShowResponseSchema);
-    return toIssueDetail(raw);
+  async function showTracker({ cwd, trackerId }: ShowTrackerOptions): Promise<TrackerDetail> {
+    const raw = await run(["show", trackerId], cwd, AitShowResponseSchema);
+    return toTrackerDetail(raw);
   }
 
-  function issueTypeArg(issueType: IssueType | undefined): string[] {
-    return issueType ? ["--type", issueType] : [];
+  function trackerTypeArg(trackerType: TrackerType | undefined): string[] {
+    return trackerType ? ["--type", trackerType] : [];
   }
 
-  function priorityArg(priority: IssuePriority | undefined): string[] {
+  function priorityArg(priority: TrackerPriority | undefined): string[] {
     return priority ? ["--priority", priority] : [];
   }
 
-  async function createIssue({ cwd, input }: CreateIssueOptions): Promise<IssueSummary> {
+  async function createTracker({ cwd, input }: CreateTrackerOptions): Promise<TrackerSummary> {
     const args = [
       "create",
       "--title",
       input.title,
-      ...issueTypeArg(input.issueType),
+      ...trackerTypeArg(input.trackerType),
       ...priorityArg(input.priority),
       ...(input.parentId ? ["--parent", input.parentId] : []),
       ...(input.description ? ["--description", input.description] : []),
     ];
     const ref = await run(args, cwd, AitIssueRefSchema);
-    return getIssueSummary(cwd, ref.id);
+    return getTrackerSummary(cwd, ref.id);
   }
 
-  async function updateIssue({ cwd, issueId, input }: UpdateIssueOptions): Promise<IssueSummary> {
+  async function updateTracker({
+    cwd,
+    trackerId,
+    input,
+  }: UpdateTrackerOptions): Promise<TrackerSummary> {
     const args = [
       "update",
-      issueId,
+      trackerId,
       ...(input.title ? ["--title", input.title] : []),
       ...(input.status ? ["--status", input.status] : []),
       ...priorityArg(input.priority),
     ];
     await run(args, cwd, AitIssueRefSchema);
-    return getIssueSummary(cwd, issueId);
+    return getTrackerSummary(cwd, trackerId);
   }
 
-  async function closeIssue({ cwd, issueId, note }: CloseIssueOptions): Promise<IssueSummary> {
-    const args = ["close", issueId, ...(note ? ["--note", note] : [])];
+  async function closeTracker({
+    cwd,
+    trackerId,
+    note,
+  }: CloseTrackerOptions): Promise<TrackerSummary> {
+    const args = ["close", trackerId, ...(note ? ["--note", note] : [])];
     await run(args, cwd, AitIssueRefSchema);
-    return getIssueSummary(cwd, issueId);
+    return getTrackerSummary(cwd, trackerId);
   }
 
-  async function reopenIssue({ cwd, issueId }: ReopenIssueOptions): Promise<IssueSummary> {
-    await run(["reopen", issueId], cwd, AitIssueRefSchema);
-    return getIssueSummary(cwd, issueId);
+  async function reopenTracker({ cwd, trackerId }: ReopenTrackerOptions): Promise<TrackerSummary> {
+    await run(["reopen", trackerId], cwd, AitIssueRefSchema);
+    return getTrackerSummary(cwd, trackerId);
   }
 
-  async function cancelIssue({ cwd, issueId, reason }: CancelIssueOptions): Promise<IssueSummary> {
-    const args = ["cancel", issueId, ...(reason ? ["--reason", reason] : [])];
+  async function cancelTracker({
+    cwd,
+    trackerId,
+    reason,
+  }: CancelTrackerOptions): Promise<TrackerSummary> {
+    const args = ["cancel", trackerId, ...(reason ? ["--reason", reason] : [])];
     await run(args, cwd, AitIssueRefSchema);
-    return getIssueSummary(cwd, issueId);
+    return getTrackerSummary(cwd, trackerId);
   }
 
-  async function addNote({ cwd, issueId, body }: AddNoteOptions): Promise<IssueNote> {
-    const added = await run(["note", "add", issueId, body], cwd, AitNoteAddResponseSchema);
-    const list = await run(["note", "list", issueId], cwd, AitNoteListResponseSchema);
+  async function addNote({ cwd, trackerId, body }: AddTrackerNoteOptions): Promise<TrackerNote> {
+    const added = await run(["note", "add", trackerId, body], cwd, AitNoteAddResponseSchema);
+    const list = await run(["note", "list", trackerId], cwd, AitNoteListResponseSchema);
     const match = list.notes.find((entry) => entry.id === added.note_id);
     if (!match) {
       throw new AitCliError("unknown", "Note was created but could not be read back");
     }
-    return toIssueNote(match);
+    return toTrackerNote(match);
   }
 
   async function initTracker({
@@ -380,13 +395,13 @@ export function createAitService(): AitService {
   }
 
   return {
-    listIssues,
-    showIssue,
-    createIssue,
-    updateIssue,
-    closeIssue,
-    reopenIssue,
-    cancelIssue,
+    listTrackers,
+    showTracker,
+    createTracker,
+    updateTracker,
+    closeTracker,
+    reopenTracker,
+    cancelTracker,
     addNote,
     initTracker,
   };
