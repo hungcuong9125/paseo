@@ -141,15 +141,23 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     minHeight: 0,
     gap: theme.spacing[2],
+    paddingTop: theme.spacing[2],
   },
   laneSelector: {
     alignSelf: "flex-start",
+    marginHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
   },
   columns: {
     flex: 1,
     minHeight: 0,
     flexDirection: "row",
     gap: theme.spacing[3],
+    // Matches the toolbar's own paddingHorizontal above (tracker-screen.tsx's
+    // `toolbar` style) — neither `kanbanContainer` nor `scrollContent` apply any
+    // horizontal inset, so without this the board content sits flush against
+    // the screen edge while everything above it is properly indented.
+    paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
+    paddingBottom: theme.spacing[3],
   },
   columnFlex: {
     flex: 1,
