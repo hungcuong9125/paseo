@@ -8,6 +8,7 @@ import { settingsStyles } from "@/styles/settings";
 
 interface TrackerTableProps {
   trackers: AggregatedTracker[];
+  parentTrackers: AggregatedTracker[];
   showProjectLabel: boolean;
   onOpenTracker: (tracker: AggregatedTracker) => void;
 }
@@ -21,16 +22,17 @@ interface TrackerTableProps {
  */
 export function TrackerTable({
   trackers,
+  parentTrackers,
   showProjectLabel,
   onOpenTracker,
 }: TrackerTableProps): ReactElement {
   const titleById = useMemo(() => {
     const map = new Map<string, string>();
-    for (const tracker of trackers) {
+    for (const tracker of parentTrackers) {
       map.set(`${tracker.projectId}:${tracker.id}`, tracker.title);
     }
     return map;
-  }, [trackers]);
+  }, [parentTrackers]);
 
   const sortedTrackers = useMemo(
     () =>

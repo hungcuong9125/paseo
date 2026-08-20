@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
-import type { TrackerDetail } from "@getpaseo/protocol/tracker/types";
+import type { TrackerDetail, TrackerSummary } from "@getpaseo/protocol/tracker/types";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import { FormTextInput } from "@/components/ui/form-field";
@@ -61,6 +61,7 @@ function OpenTrackerDetailSheet({
   const client = useHostRuntimeClient(serverId);
   const [state, setState] = useState<DetailState>({ status: "idle" });
   const [noteBody, setNoteBody] = useState("");
+  const [activeTrackerId, setActiveTrackerId] = useState(trackerId);
   const mutations = useTrackerMutations({ serverId, projectId });
 
   const load = useCallback(async (): Promise<void> => {
@@ -70,49 +71,60 @@ function OpenTrackerDetailSheet({
     }
     setState({ status: "loading" });
     try {
-      const tracker = await client.trackerShow({ projectId, trackerId });
+      const tracker = await client.trackerShow({ projectId, trackerId: activeTrackerId });
       setState({ status: "loaded", tracker });
     } catch (error) {
       setState({ status: "error", error: toErrorMessage(error) });
     }
-  }, [client, projectId, trackerId]);
+  }, [activeTrackerId, client, projectId]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const handleStart = useCallback(async (): Promise<void> => {
-    await mutations.updateTracker({ trackerId, status: "in_progress" });
+    await mutations.updateTracker({ trackerId: activeTrackerId, status: "in_progress" });
     await load();
-  }, [mutations, trackerId, load]);
+  }, [activeTrackerId, load, mutations]);
 
   const handleClose = useCallback(async (): Promise<void> => {
-    await mutations.closeTracker({ trackerId });
+    await mutations.closeTracker({ trackerId: activeTrackerId });
     await load();
-  }, [mutations, trackerId, load]);
+  }, [activeTrackerId, load, mutations]);
 
   const handleReopen = useCallback(async (): Promise<void> => {
-    await mutations.reopenTracker(trackerId);
+    await mutations.reopenTracker(activeTrackerId);
     await load();
-  }, [mutations, trackerId, load]);
+  }, [activeTrackerId, load, mutations]);
 
   const handleCancel = useCallback(async (): Promise<void> => {
-    await mutations.cancelTracker({ trackerId });
+    await mutations.cancelTracker({ trackerId: activeTrackerId });
     await load();
-  }, [mutations, trackerId, load]);
+  }, [activeTrackerId, load, mutations]);
 
   const handleAddNote = useCallback(async (): Promise<void> => {
     const body = noteBody.trim();
     if (!body) {
       return;
     }
-    await mutations.addNote({ trackerId, body });
+    await mutations.addNote({ trackerId: activeTrackerId, body });
     setNoteBody("");
     await load();
-  }, [mutations, trackerId, noteBody, load]);
+  }, [activeTrackerId, load, mutations, noteBody]);
+
+  const handleOpenChild = useCallback((childId: string) => {
+    setActiveTrackerId(childId);
+  }, []);
 
   const headerTitle = state.status === "loaded" ? state.tracker.id : "Loading…";
-  const header = useMemo<SheetHeader>(() => ({ title: headerTitle }), [headerTitle]);
+  const headerStatus = state.status === "loaded" ? state.tracker.status : null;
+  const header = useMemo<SheetHeader>(
+    () => ({
+      title: headerTitle,
+      leading: headerStatus ? <TrackerStatusIcon status={headerStatus} size={18} /> : null,
+    }),
+    [headerStatus, headerTitle],
+  );
 
   return (
     <AdaptiveModalSheet
@@ -144,6 +156,7 @@ function OpenTrackerDetailSheet({
           onClose={handleClose}
           onReopen={handleReopen}
           onCancel={handleCancel}
+          onOpenChild={handleOpenChild}
           onAddNote={handleAddNote}
           isAddingNote={mutations.isAddingNote}
         />
@@ -160,6 +173,7 @@ function TrackerDetailContent({
   onClose,
   onReopen,
   onCancel,
+  onOpenChild,
   onAddNote,
   isAddingNote,
 }: {
@@ -170,28 +184,29 @@ function TrackerDetailContent({
   onClose: () => void;
   onReopen: () => void;
   onCancel: () => void;
+  onOpenChild: (childId: string) => void;
   onAddNote: () => void;
   isAddingNote: boolean;
 }): ReactElement {
   const isOpenOrInProgress = tracker.status === "open" || tracker.status === "in_progress";
+  const hasNoteBody = noteBody.trim().length > 0;
+  const notes = useMemo(
+    () => [...tracker.notes].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    [tracker.notes],
+  );
 
   return (
     <View style={styles.content}>
-      <View style={styles.titleRow}>
-        <View style={styles.titleRowIcon}>
-          <TrackerStatusIcon status={tracker.status} size={18} />
-        </View>
-        <Text
-          style={[
-            styles.title,
-            tracker.status === "in_progress" && styles.titleRunning,
-            tracker.status === "closed" && styles.titleClosed,
-            tracker.status === "cancelled" && styles.titleCancelled,
-          ]}
-        >
-          {tracker.title}
-        </Text>
-      </View>
+      <Text
+        style={[
+          styles.title,
+          tracker.status === "in_progress" && styles.titleRunning,
+          tracker.status === "closed" && styles.titleClosed,
+          tracker.status === "cancelled" && styles.titleCancelled,
+        ]}
+      >
+        {tracker.title}
+      </Text>
       <Text style={styles.meta}>
         {trackerStatusLabel(tracker.status)} · {tracker.type} · {tracker.priority}
         {tracker.claimedBy ? ` · claimed by ${tracker.claimedBy}` : ""}
@@ -201,22 +216,50 @@ function TrackerDetailContent({
 
       <View style={styles.actionsRow}>
         {tracker.status === "open" ? (
-          <Button variant="outline" size="sm" onPress={onStart} testID="tracker-detail-start">
+          <Button
+            variant="outline"
+            size="sm"
+            textStyle={styles.actionInProgress}
+            hoverStyle={styles.actionInProgressHover}
+            onPress={onStart}
+            testID="tracker-detail-start"
+          >
             Start
           </Button>
         ) : null}
         {isOpenOrInProgress ? (
-          <Button variant="outline" size="sm" onPress={onClose} testID="tracker-detail-close">
+          <Button
+            variant="outline"
+            size="sm"
+            textStyle={styles.actionClosed}
+            hoverStyle={styles.actionClosedHover}
+            onPress={onClose}
+            testID="tracker-detail-close"
+          >
             Close
           </Button>
         ) : null}
         {!isOpenOrInProgress ? (
-          <Button variant="outline" size="sm" onPress={onReopen} testID="tracker-detail-reopen">
+          <Button
+            variant="outline"
+            size="sm"
+            textStyle={styles.actionOpen}
+            hoverStyle={styles.actionOpenHover}
+            onPress={onReopen}
+            testID="tracker-detail-reopen"
+          >
             Reopen
           </Button>
         ) : null}
         {isOpenOrInProgress ? (
-          <Button variant="ghost" size="sm" onPress={onCancel} testID="tracker-detail-cancel">
+          <Button
+            variant="ghost"
+            size="sm"
+            textStyle={styles.actionCancel}
+            hoverStyle={styles.actionCancelHover}
+            onPress={onCancel}
+            testID="tracker-detail-cancel"
+          >
             Cancel
           </Button>
         ) : null}
@@ -226,9 +269,7 @@ function TrackerDetailContent({
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Children</Text>
           {tracker.children.map((child) => (
-            <Text key={child.id} style={styles.listItem} numberOfLines={1}>
-              {child.id} · {child.title}
-            </Text>
+            <ChildTrackerLink key={child.id} child={child} onPress={onOpenChild} />
           ))}
         </View>
       ) : null}
@@ -246,32 +287,67 @@ function TrackerDetailContent({
 
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Notes</Text>
-        {tracker.notes.length === 0 ? <Text style={styles.emptyNotes}>No notes yet.</Text> : null}
-        {tracker.notes.map((note) => (
+        {notes.length === 0 ? <Text style={styles.emptyNotes}>No notes yet.</Text> : null}
+        {notes.map((note) => (
           <View key={note.id} style={styles.note}>
             <Text style={styles.noteBody}>{note.body}</Text>
             <Text style={styles.noteMeta}>{formatTimeAgo(new Date(note.createdAt))}</Text>
           </View>
         ))}
-        <FormTextInput
-          value={noteBody}
-          onChangeText={onChangeNoteBody}
-          placeholder="Add a note"
-          multiline
-          testID="tracker-detail-note-input"
-        />
-        <Button
-          variant="outline"
-          size="sm"
-          onPress={onAddNote}
-          disabled={noteBody.trim().length === 0 || isAddingNote}
-          loading={isAddingNote}
-          testID="tracker-detail-add-note"
-        >
-          Add note
-        </Button>
+        <View style={styles.noteComposer}>
+          <FormTextInput
+            value={noteBody}
+            onChangeText={onChangeNoteBody}
+            placeholder="Add a note"
+            multiline
+            testID="tracker-detail-note-input"
+          />
+          <Button
+            variant={hasNoteBody ? "default" : "outline"}
+            style={[styles.noteButtonSize, hasNoteBody && styles.addNoteButton]}
+            size="sm"
+            onPress={onAddNote}
+            disabled={!hasNoteBody || isAddingNote}
+            loading={isAddingNote}
+            testID="tracker-detail-add-note"
+          >
+            Add note
+          </Button>
+        </View>
       </View>
     </View>
+  );
+}
+
+function ChildTrackerLink({
+  child,
+  onPress,
+}: {
+  child: TrackerSummary;
+  onPress: (childId: string) => void;
+}): ReactElement {
+  const [hovered, setHovered] = useState(false);
+  const handlePress = useCallback(() => onPress(child.id), [child.id, onPress]);
+  const handleHoverIn = useCallback(() => setHovered(true), []);
+  const handleHoverOut = useCallback(() => setHovered(false), []);
+
+  return (
+    <Pressable
+      accessibilityLabel={`Open child ${child.id}`}
+      accessibilityRole="button"
+      onHoverIn={handleHoverIn}
+      onHoverOut={handleHoverOut}
+      onPress={handlePress}
+    >
+      <View style={styles.childLinkRow}>
+        <View style={styles.childLinkIcon}>
+          <TrackerStatusIcon status={child.status} size={12} colorize />
+        </View>
+        <Text style={[styles.listItem, hovered && styles.listItemHovered]} numberOfLines={1}>
+          {child.id} · {child.title}
+        </Text>
+      </View>
+    </Pressable>
   );
 }
 
@@ -333,6 +409,33 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     gap: theme.spacing[2],
   },
+  actionOpen: {
+    color: theme.colors.palette.blue[600],
+  },
+  actionInProgress: {
+    color: theme.colors.palette.blue[600],
+  },
+  actionClosed: {
+    color: theme.colors.palette.green[600],
+  },
+  actionOpenHover: {
+    borderColor: theme.colors.palette.blue[600],
+    backgroundColor: theme.colors.surface2,
+  },
+  actionInProgressHover: {
+    borderColor: theme.colors.palette.blue[600],
+    backgroundColor: theme.colors.surface2,
+  },
+  actionClosedHover: {
+    borderColor: theme.colors.palette.green[600],
+    backgroundColor: theme.colors.surface2,
+  },
+  actionCancel: {
+    color: theme.colors.statusDanger,
+  },
+  actionCancelHover: {
+    backgroundColor: theme.colors.surface2,
+  },
   section: {
     gap: theme.spacing[2],
     borderTopWidth: 1,
@@ -348,6 +451,18 @@ const styles = StyleSheet.create((theme) => ({
   listItem: {
     color: theme.colors.foreground,
     fontSize: theme.fontSize.sm,
+    flex: 1,
+  },
+  childLinkRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+  },
+  childLinkIcon: {
+    marginTop: 3,
+  },
+  listItemHovered: {
+    color: theme.colors.accent,
   },
   emptyNotes: {
     color: theme.colors.foregroundMuted,
@@ -356,6 +471,18 @@ const styles = StyleSheet.create((theme) => ({
   note: {
     gap: theme.spacing[1],
     paddingBottom: theme.spacing[2],
+  },
+  noteComposer: {
+    gap: theme.spacing[2],
+    paddingVertical: theme.spacing[2],
+  },
+  addNoteButton: {
+    backgroundColor: theme.colors.palette.green[600],
+    borderColor: theme.colors.palette.green[600],
+    borderWidth: 1,
+  },
+  noteButtonSize: {
+    paddingVertical: theme.spacing[3],
   },
   noteBody: {
     color: theme.colors.foreground,

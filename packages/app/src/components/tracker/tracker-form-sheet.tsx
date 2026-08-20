@@ -217,7 +217,7 @@ function OpenTrackerFormSheet({
           loading={isCreating}
           testID="tracker-form-submit"
         >
-          Create
+          Create item
         </Button>
       </View>
     ),
@@ -326,6 +326,7 @@ function ProjectField({
 
 const styles = StyleSheet.create((theme) => ({
   footer: {
+    flex: 1,
     flexDirection: "row",
     gap: theme.spacing[2],
   },

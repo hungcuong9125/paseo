@@ -1,4 +1,12 @@
-import { Fragment, useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+} from "react";
 import {
   Pressable,
   ScrollView,
@@ -18,6 +26,7 @@ import { MenuHeader } from "@/components/headers/menu-header";
 import { TrackerDetailSheet } from "@/components/tracker/tracker-detail-sheet";
 import { TrackerFormSheet } from "@/components/tracker/tracker-form-sheet";
 import { TrackerKanbanBoard } from "@/components/tracker/tracker-kanban-board";
+import { TrackerPagination } from "@/components/tracker/tracker-pagination";
 import { TrackerTable } from "@/components/tracker/tracker-table";
 import {
   DropdownMenu,
@@ -40,6 +49,12 @@ import {
 import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
 import { useAggregatedTrackers } from "@/tracker/use-aggregated-trackers";
 import { getTrackerStatCounts, type TrackerStatCounts } from "@/tracker/tracker-stats";
+import {
+  getTrackerPageCount,
+  getTrackerPageSlice,
+  TRACKER_PAGE_SIZE,
+  type TrackerPageSize,
+} from "@/tracker/tracker-pagination";
 import { useSessionStore } from "@/stores/session-store";
 import type { Theme } from "@/styles/theme";
 import { resolveTrackerScreenBodyState, type TrackerScreenBodyState } from "./tracker-screen-state";
@@ -102,10 +117,13 @@ function TrackerScreenContent(): ReactElement {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedTracker, setSelectedTracker] = useState<AggregatedTracker | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState<TrackerPageSize>(TRACKER_PAGE_SIZE);
 
   useEffect(() => {
     if (selectedProjectId && !projectInputs.some((p) => p.projectId === selectedProjectId)) {
       setSelectedProjectId(null);
+      setCurrentPage(1);
     }
   }, [projectInputs, selectedProjectId]);
 
@@ -134,6 +152,27 @@ function TrackerScreenContent(): ReactElement {
             (tracker) => tracker.type !== "task" || matchesStatFilter(tracker, statFilter),
           ),
     [projectFilteredTrackers, statFilter],
+  );
+  const orderedTrackers = useMemo(
+    () =>
+      [...visibleTrackers].sort(
+        (a, b) => a.projectId.localeCompare(b.projectId) || a.id.localeCompare(b.id),
+      ),
+    [visibleTrackers],
+  );
+  const totalPages = getTrackerPageCount(orderedTrackers.length, pageSize);
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  useEffect(() => {
+    if (currentPage !== safeCurrentPage) {
+      setCurrentPage(safeCurrentPage);
+    }
+  }, [currentPage, safeCurrentPage]);
+  const paginatedTrackers = useMemo(
+    () =>
+      viewMode === "list"
+        ? getTrackerPageSlice(orderedTrackers, safeCurrentPage, pageSize)
+        : orderedTrackers,
+    [orderedTrackers, pageSize, safeCurrentPage, viewMode],
   );
 
   const bodyState = resolveTrackerScreenBodyState({
@@ -170,6 +209,19 @@ function TrackerScreenContent(): ReactElement {
     void initMutations.initTracker();
   }, [initMutations]);
   const handleRetry = useCallback(() => refetch(), [refetch]);
+  const handleSelectProject = useCallback((projectId: string | null) => {
+    setSelectedProjectId(projectId);
+    setCurrentPage(1);
+  }, []);
+  const handleStatFilterChange = useCallback((value: StatFilter) => {
+    setStatFilter(value);
+    setCurrentPage(1);
+  }, []);
+  const handlePageChange = useCallback((page: number) => setCurrentPage(page), []);
+  const handlePageSizeChange = useCallback((nextPageSize: TrackerPageSize) => {
+    setPageSize(nextPageSize);
+    setCurrentPage(1);
+  }, []);
 
   // The Kanban board renders a projection built from AggregatedTracker[] but
   // its own model (and action callbacks) only knows the TrackerSummary shape —
@@ -233,14 +285,15 @@ function TrackerScreenContent(): ReactElement {
       <MenuHeader title="Tracker" />
       <TrackerScreenBody
         bodyState={bodyState}
-        trackers={visibleTrackers}
+        trackers={paginatedTrackers}
+        parentTrackers={orderedTrackers}
         statsTrackers={projectFilteredTrackers}
         showProjectLabel={selectedProjectId === null}
         projects={projectInputs}
         selectedProjectId={selectedProjectId}
-        onSelectProject={setSelectedProjectId}
+        onSelectProject={handleSelectProject}
         statFilter={statFilter}
-        onStatFilterChange={setStatFilter}
+        onStatFilterChange={handleStatFilterChange}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
         projectErrors={projectErrors}
@@ -255,6 +308,12 @@ function TrackerScreenContent(): ReactElement {
         onInitialise={handleInitialise}
         isInitialising={initMutations.isInitialising}
         onRetry={handleRetry}
+        currentPage={safeCurrentPage}
+        pageSize={pageSize}
+        totalItems={orderedTrackers.length}
+        totalPages={totalPages}
+        onPageChange={handlePageChange}
+        onPageSizeChange={handlePageSizeChange}
       />
       <TrackerFormSheet
         projects={projectInputs}
@@ -404,7 +463,11 @@ function PriorityFilterDropdown({ counts }: { counts: TrackerStatCounts }): Reac
           </>
         ) : (
           <>
-            <Text style={[styles.priorityFilterCount, styles.helpP0]}>{priorityTotal}</Text>
+            <Text
+              style={[styles.priorityFilterCount, isHovered && styles.priorityFilterCountHovered]}
+            >
+              {priorityTotal}
+            </Text>
             <Text style={styles.priorityFilterText}>{" PRIORITY"}</Text>
           </>
         )}
@@ -445,6 +508,7 @@ function ProjectErrorsBanner({ errors }: { errors: TrackerProjectError[] }): Rea
 function TrackerScreenBody({
   bodyState,
   trackers,
+  parentTrackers,
   statsTrackers,
   showProjectLabel,
   projects,
@@ -466,9 +530,16 @@ function TrackerScreenBody({
   onInitialise,
   isInitialising,
   onRetry,
+  currentPage,
+  pageSize,
+  totalItems,
+  totalPages,
+  onPageChange,
+  onPageSizeChange,
 }: {
   bodyState: TrackerScreenBodyState;
   trackers: AggregatedTracker[];
+  parentTrackers: AggregatedTracker[];
   statsTrackers: AggregatedTracker[];
   showProjectLabel: boolean;
   projects: TrackerProjectInput[];
@@ -490,7 +561,29 @@ function TrackerScreenBody({
   onInitialise: () => void;
   isInitialising: boolean;
   onRetry: () => void;
+  currentPage: number;
+  pageSize: TrackerPageSize;
+  totalItems: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: TrackerPageSize) => void;
 }): ReactElement | null {
+  const listScrollRef = useRef<ScrollView>(null);
+  const handlePageChange = useCallback(
+    (page: number) => {
+      onPageChange(page);
+      listScrollRef.current?.scrollTo({ y: 0, animated: true });
+    },
+    [onPageChange],
+  );
+  const handlePageSizeChange = useCallback(
+    (nextPageSize: TrackerPageSize) => {
+      onPageSizeChange(nextPageSize);
+      listScrollRef.current?.scrollTo({ y: 0, animated: true });
+    },
+    [onPageSizeChange],
+  );
+
   switch (bodyState.kind) {
     case "no-projects":
       return (
@@ -539,6 +632,7 @@ function TrackerScreenBody({
     case "empty":
       return (
         <ScrollView
+          ref={listScrollRef}
           style={styles.scroll}
           contentContainerStyle={styles.scrollContentEmpty}
           showsVerticalScrollIndicator={false}
@@ -608,6 +702,7 @@ function TrackerScreenBody({
 
       return (
         <ScrollView
+          ref={listScrollRef}
           style={styles.scroll}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
@@ -617,9 +712,20 @@ function TrackerScreenBody({
           {errorsBanner}
           <TrackerTable
             trackers={trackers}
+            parentTrackers={parentTrackers}
             showProjectLabel={showProjectLabel}
             onOpenTracker={onOpenTracker}
           />
+          {totalItems > pageSize ? (
+            <TrackerPagination
+              currentPage={currentPage}
+              pageSize={pageSize}
+              totalItems={totalItems}
+              totalPages={totalPages}
+              onPageChange={handlePageChange}
+              onPageSizeChange={handlePageSizeChange}
+            />
+          ) : null}
         </ScrollView>
       );
     }
@@ -974,9 +1080,12 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
   },
   priorityFilterCount: {
-    color: theme.colors.foreground,
+    color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
-    fontWeight: theme.fontWeight.bold,
+    fontWeight: theme.fontWeight.medium,
+  },
+  priorityFilterCountHovered: {
+    color: theme.colors.palette.red[600],
   },
   priorityFilterTriggerHovered: {
     backgroundColor: theme.colors.surface2,
@@ -1019,6 +1128,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   scrollContent: {
     flexGrow: 1,
+    paddingBottom: theme.spacing[6],
   },
   scrollContentEmpty: {
     flexGrow: 1,
