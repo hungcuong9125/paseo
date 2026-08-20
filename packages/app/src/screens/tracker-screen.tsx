@@ -18,6 +18,7 @@ import {
 } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
 import { useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { ChevronDown, LayoutGrid, ListChecks, Plus } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
@@ -219,6 +220,7 @@ function TrackerScreenContent(): ReactElement {
   const openProjectPicker = useOpenAddProject();
   const queryClient = useQueryClient();
   const toast = useToast();
+  const { t } = useTranslation();
 
   const handleOpenTracker = useCallback(
     (tracker: AggregatedTracker) => setSelectedTracker(tracker),
@@ -277,14 +279,14 @@ function TrackerScreenContent(): ReactElement {
         }
         const client = useSessionStore.getState().sessions[aggregated.serverId]?.client;
         if (!client) {
-          throw new Error("Daemon client unavailable");
+          throw new Error(t("common.errors.daemonClientUnavailable"));
         }
         await callTrackerTransition(client, aggregated, transition);
       } finally {
         void queryClient.invalidateQueries({ queryKey: trackerQueryBaseKey });
       }
     },
-    [kanbanTrackerById, queryClient],
+    [kanbanTrackerById, queryClient, t],
   );
   const handleKanbanTransitionError = useCallback(
     (_trackerId: string, message: string) => toast.error(message),
