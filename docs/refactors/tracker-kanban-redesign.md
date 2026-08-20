@@ -2,7 +2,7 @@
 
 `packages/app/src/tracker/kanban-grouping.ts` (300 lines) and `packages/app/src/components/tracker/tracker-kanban-board.tsx` (920 lines) build a board that cannot be used. This document states why, what to build instead, and what stays unresolved.
 
-Status: **implemented and live.** Two plan-review rounds returned accept-with-changes; every required change was applied before implementation. All five sequencing steps plus the Type-filter follow-up are built, reviewed, and merged — the board is wired into `tracker-screen.tsx`, and the dead hierarchy board (`kanban-grouping.ts`, the old `tracker-kanban-board.tsx`) is deleted. See "Implementation record" below. Deferred items (Ready filter, per-project swimlanes, optimistic drag, a real-browser DnD spike) remain out of scope by design — see "Deferred" and "Open UNKNOWNs".
+Status: **implemented and live, four lanes.** Two plan-review rounds returned accept-with-changes; every required change was applied before implementation. All five sequencing steps, the Type-filter follow-up, and a post-ship Ready lane (added at Human's explicit request after live-testing, overriding this plan's original "Ready is not a column" position) are built, reviewed, and merged — the board is wired into `tracker-screen.tsx`, and the dead hierarchy board (`kanban-grouping.ts`, the old `tracker-kanban-board.tsx`) is deleted. See "Implementation record" below. Deferred items (the blocked-by marker, per-project swimlanes, optimistic drag, a real-browser DnD spike) remain out of scope by design — see "Deferred" and "Open UNKNOWNs".
 
 ## The diagnosis: two problems, not one
 
@@ -47,25 +47,30 @@ Do not take from it: it still wraps columns in a `horizontal` ScrollView at fixe
 
 ## Columns
 
-Three columns, mapped from `TrackerStatus` (`packages/protocol/src/tracker/types.ts:10`):
+Four columns. Three map directly from `TrackerStatus` (`packages/protocol/src/tracker/types.ts:10`); Ready is a derived split of `open`, added after initial ship per Human's explicit request while live-testing (see "Ready lane" below):
 
-| Column      | `TrackerStatus`        |
-| ----------- | ---------------------- |
-| Open        | `open`                 |
-| In progress | `in_progress`          |
-| Done        | `closed` + `cancelled` |
+| Column      | Membership                                 |
+| ----------- | ------------------------------------------ |
+| Ready       | `open` **and** unblocked (in `readyIds`)   |
+| Open        | `open` **and** blocked (not in `readyIds`) |
+| In progress | `in_progress`                              |
+| Done        | `closed` + `cancelled`                     |
 
-`isDone()` already collapses `closed` and `cancelled` (`kanban-grouping.ts:60-62`). Keep that. A fourth Cancelled column is empty in most projects and costs more than it explains — but the card must mark cancelled distinctly, and the board must never present cancelled as "completed successfully". See "Cards".
+`isDone()` already collapses `closed` and `cancelled` (`kanban-grouping.ts:60-62`). Keep that. A fourth Cancelled column is empty in most projects and costs more than it explains — but the card must mark cancelled distinctly, and the board must never present cancelled as "completed successfully". Both `closed` and `cancelled` now carry their own `<StatusBadge>` on the card (`tracker-kanban-card.tsx`), added after ship when it turned out `closed` had no marker at all — see "Cards".
 
 ### Priority is not a column
 
 `P0`–`P4` is orthogonal to status: an item is `open` **and** `P0` simultaneously, so a Priority column double-counts it. The existing `PRIORITY` toolbar chip stays a filter.
 
-### Ready is not a column
+### Ready lane
 
-`ait ready` is "List issues that are unblocked (all dependencies closed)" (`ait ready --help`). Ready is derived from the dependency graph, not a status — a ready issue is still `open`. A Ready column would overlap Open rather than partition it. `web-ait` agrees: Ready is a summary stat card (`index.html:1986,2004`), never a lane.
+Originally deferred (see the archived rationale in "Deferred" below) — the original plan called this a stat card, matching `web-ait`'s `summary-stat-ready` (`index.html:1986,2004`), not a lane. Human overrode that after live-testing, in explicit contradiction of the original plan and of `web-ait`'s own layout (verified again at implementation time: `web-ait` has no Ready or Cancelled lane anywhere in `index.html`).
 
-Ready is deferred entirely (see "Deferred"). **The toolbar must not display a Ready control until it works.**
+Verified directly against a real `ait` binary before building: `ait ready` returns every issue with no unresolved blocker, spanning **both** `open` and `in_progress` status, and automatically excluding `closed`/`cancelled`. This plan scopes the Ready lane to `open` items only — `in_progress` never moves to Ready regardless of blocker state, since being in progress means work already started. Ready is not a peer `TrackerStatus`; it is a derived boolean over `open` items, computed from a new `readyIds: Set<string>` fetched via `project.tracker.ready` (protocol RPC added for this, gated on `server_info.features.aitTrackerReady` since older daemons cannot serve it — see "Implementation record").
+
+This reclassifies "Open" within the Kanban board specifically: it now means "open and blocked", not every `open` item. The List view is unaffected — its own `statFilter === "open"` still means `tracker.status === "open"`, full stop. The Kanban toolbar's Open filter chip projects **both** Ready and Open lanes together (they are the same underlying status, split only visually), so selecting "Open" never hides unblocked items. `p0`–`p4` filters also include Ready. `buildTrackerBoard` degrades to "everything open-status stays in Open, nothing is Ready" when `readyIds` is empty (loading, or the server predates the capability) — it never crashes and never shows a stuck-looking permanently-empty Ready column as the reason something is missing.
+
+The move-menu's transition matrix (`tracker-transitions.ts`) is unaffected: `TrackerLane` there stays `"open" | "in_progress" | "done"`, since Ready is never itself a status to transition into. The UI layer (`tracker-kanban-column.tsx`) maps a card's display lane to its effective transition lane (`ready` → `open`) before consulting the matrix.
 
 ## Toolbar contract
 
@@ -247,9 +252,11 @@ Steps 1–4 touch no owned file. Two dependencies to sequence around:
 
 ## Deferred
 
-- **Ready filter and the blocked marker.** Both need dependency data that the list path does not carry. Adding them means a new `project.tracker.ready.request` RPC shelling to `ait ready`, a new server handler, and another `ait` spawn per refresh. Until then the toolbar shows no Ready control.
+- **The blocked marker on Open cards.** `ait list --long` returns no per-item blocker detail (only membership in `readyIds`, which is enough to place the card, not enough to show _why_ it's blocked or _by what_). A card in the Open lane is knowably blocked by construction; showing which tracker blocks it would need `ait dep tree` or similar, a separate RPC not built here.
 - **Per-project swimlanes.** The project chip is sufficient for the first pass.
 - **Optimistic drag.** Revisit once live tracker sync is stable.
+
+Resolved after initial ship, overriding the original plan: **Ready filter.** Originally scoped as a deferred stat-only control (see "Ready lane" above for the full account) — built as a real lane after Human requested it live-testing the shipped board, via a new `project.tracker.ready` RPC (`packages/protocol/src/tracker/rpc-schemas.ts`, `AitService.listReadyIds`, gated on `server_info.features.aitTrackerReady`).
 
 ## Open UNKNOWNs
 
@@ -260,7 +267,7 @@ Resolved during implementation: **Type filter default** — built exactly as pro
 
 ## Implementation record
 
-**Status: fully implemented and wired.** All five sequencing steps plus the type-filter follow-up are merged. 16 commits on `feat/ait-issues-menu-v040`:
+**Status: fully implemented and wired, including the post-ship Ready lane.** All five sequencing steps, the type-filter follow-up, and the Ready lane are merged. 20 commits on `feat/ait-issues-menu-v040`:
 
 - `41db50ba6` — protocol: `claimedBy`/`updatedAt` on `TrackerSummary`.
 - `a45ff5f7a`, `d518d2ee9` — status board model (`buildTrackerBoard`) + Kanban card, i18n across 9 locales.
@@ -273,7 +280,13 @@ Resolved during implementation: **Type filter default** — built exactly as pro
 - `a0c963e0b` — base dependency: `TrackerStatFilter`/`matchesTrackerStatFilter` generalized to per-level p0–p4 and wired to real filtering (Human-confirmed non-mockup behavior).
 - `2f628064a` — cleanup: `tracker-board-model.ts` reconciled to import the real `TrackerStatFilter`/`compareTrackers` instead of carrying duplicate local copies, once both landed.
 - `836943582` — Kanban Type filter (Tasks/Epics/Initiatives/All), closing the "Which types appear on the board" gap found in Lead re-review after step 5 landed.
+- `716a4b006` — fix: horizontal padding restored on the Kanban board (columns sat flush against the screen edge; the toolbar above them was correctly padded, the board wasn't).
+- `f4a373877` — fix: `closed` items get their own `<StatusBadge>`, symmetric to `cancelled` — previously only `cancelled` had a marker, so a closed item in the Done lane looked identical to an unlabeled one.
+- `f74afe227` — new `project.tracker.ready` RPC end-to-end (protocol + server), gated on `server_info.features.aitTrackerReady`.
+- `2ab9db101` — Ready lane wired into the board: `buildTrackerBoard` gains a `readyIds` parameter and a 4th lane, capability-gated fan-out fetch across projects, Open toolbar filter now projects Ready+Open together, transition-lane mapping (`ready` → `open`) at the UI layer.
 
 Every commit reviewed against this document and independently re-verified (typecheck across all 10 workspaces, lint, tests re-run outside the implementing agent's own report) before acceptance — including two correctness issues caught only by that independent re-verification: the native gesture conflict (`509981153`) and the untranslated string (`239c3ce11`), neither of which the implementing agent's own test run had caught.
+
+The Ready lane (`f74afe227`, `2ab9db101`) was **not** in the originally accepted plan — the plan explicitly argued against it, matching `web-ait`'s own layout. Human overrode that after live-testing the shipped 3-lane board and asked for it directly; see "Ready lane" above for the full account and the technical verification (real `ait` binary, isolated temp project) that shaped the design before building.
 
 Remaining: step 5 (toolbar contract, wiring, dead-code deletion) — see "Sequencing".
