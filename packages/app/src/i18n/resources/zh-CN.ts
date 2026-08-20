@@ -2437,8 +2437,6 @@ export const zhCN: TranslationResources = {
   },
   tracker: {
     card: {
-      cancelled: "已取消",
-      closed: "已关闭",
       childProgress: "{{done}}/{{count}}",
       claimedBy: "由 {{name}} 认领",
     },
@@ -2480,7 +2478,7 @@ export const zhCN: TranslationResources = {
     },
     list: {
       section: {
-        open: "待处理",
+        open: "待办",
         inProgress: "进行中",
         done: "已完成",
         cancelled: "已取消",

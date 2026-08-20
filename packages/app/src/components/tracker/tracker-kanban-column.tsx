@@ -120,7 +120,6 @@ export function TrackerKanbanColumn({
         ) : (
           visibleCards.map((card) => {
             const tracker = card.tracker;
-            const parent = tracker.parentId ? hierarchy.trackerMap.get(tracker.parentId) : null;
             const stats = hierarchy.descendantStats(tracker.id);
             const pending = isPending(tracker.id);
             const cardTestID = `tracker-kanban-card-${tracker.id}`;
@@ -131,7 +130,6 @@ export function TrackerKanbanColumn({
                 priority={tracker.priority}
                 status={tracker.status}
                 projectLabel={getProjectLabel?.(tracker) ?? null}
-                parentTitle={parent?.title ?? null}
                 childCount={stats.childCount}
                 doneCount={stats.doneCount}
                 claimedBy={tracker.claimedBy ?? null}

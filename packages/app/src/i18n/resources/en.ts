@@ -2480,8 +2480,6 @@ export const en = {
   },
   tracker: {
     card: {
-      cancelled: "Cancelled",
-      closed: "Closed",
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Claimed by {{name}}",
     },
@@ -2523,7 +2521,7 @@ export const en = {
     },
     list: {
       section: {
-        open: "Open",
+        open: "Todo",
         inProgress: "In progress",
         done: "Done",
         cancelled: "Cancelled",

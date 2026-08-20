@@ -2466,8 +2466,6 @@ export const ar: TranslationResources = {
   },
   tracker: {
     card: {
-      cancelled: "ملغى",
-      closed: "مغلق",
       childProgress: "{{done}}/{{count}}",
       claimedBy: "تمت المطالبة به بواسطة {{name}}",
     },
@@ -2509,7 +2507,7 @@ export const ar: TranslationResources = {
     },
     list: {
       section: {
-        open: "مفتوح",
+        open: "مهام",
         inProgress: "قيد التنفيذ",
         done: "مكتمل",
         cancelled: "ملغى",

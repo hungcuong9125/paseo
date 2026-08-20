@@ -4,6 +4,7 @@ import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import type { TrackerPriority, TrackerStatus } from "@getpaseo/protocol/tracker/types";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { TrackerStatusIcon } from "@/components/tracker/tracker-status-icon";
 
 export interface TrackerKanbanCardProps {
   id: string;
@@ -12,8 +13,6 @@ export interface TrackerKanbanCardProps {
   status: TrackerStatus;
   /** Rendered as a chip only when passed — relevant in multi-project (aggregated) context. */
   projectLabel?: string | null;
-  /** Resolved by the caller via the hierarchy helper; the hierarchy signal a status board would otherwise lose. */
-  parentTitle?: string | null;
   childCount?: number;
   doneCount?: number;
   claimedBy?: string | null;
@@ -26,35 +25,27 @@ export function TrackerKanbanCard({
   priority,
   status,
   projectLabel = null,
-  parentTitle = null,
   childCount,
   doneCount,
   claimedBy = null,
   testID,
 }: TrackerKanbanCardProps): ReactElement {
   const { t } = useTranslation();
-  const isCancelled = status === "cancelled";
-  const isClosed = status === "closed";
   const hasChildren = typeof childCount === "number" && childCount > 0;
 
   return (
     <View style={styles.card} testID={testID ?? `tracker-kanban-card-${id}`}>
       <View style={styles.metaRow}>
+        <TrackerStatusIcon status={status} size={14} />
         <Text style={styles.meta} numberOfLines={1}>
           {id}
           {" · "}
           {priority}
         </Text>
-        {projectLabel ? <StatusBadge label={projectLabel} variant="muted" /> : null}
       </View>
       <Text style={styles.title} numberOfLines={2}>
         {title}
       </Text>
-      {parentTitle ? (
-        <Text style={styles.parentTitle} numberOfLines={1}>
-          {parentTitle}
-        </Text>
-      ) : null}
       {hasChildren ? (
         <Text style={styles.childProgress}>
           {t("tracker.card.childProgress", { done: doneCount ?? 0, count: childCount })}
@@ -65,8 +56,13 @@ export function TrackerKanbanCard({
           {t("tracker.card.claimedBy", { name: claimedBy })}
         </Text>
       ) : null}
-      {isCancelled ? <StatusBadge label={t("tracker.card.cancelled")} variant="error" /> : null}
-      {isClosed ? <StatusBadge label={t("tracker.card.closed")} variant="success" /> : null}
+      {/* Content-sized, not stretched — a bare child of this column-flex View
+          would otherwise default to cross-axis stretch (full card width). */}
+      {projectLabel ? (
+        <View style={styles.projectChipWrap}>
+          <StatusBadge label={projectLabel} variant="muted" />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -83,10 +79,10 @@ const styles = StyleSheet.create((theme) => ({
   metaRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: theme.spacing[2],
+    gap: theme.spacing[1.5],
   },
   meta: {
+    flex: 1,
     fontSize: theme.fontSize.xs,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foregroundMuted,
@@ -95,11 +91,6 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foreground,
-  },
-  parentTitle: {
-    fontSize: theme.fontSize.xs,
-    fontWeight: theme.fontWeight.normal,
-    color: theme.colors.foregroundMuted,
   },
   childProgress: {
     fontSize: theme.fontSize.xs,
@@ -110,5 +101,8 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.xs,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foregroundMuted,
+  },
+  projectChipWrap: {
+    alignSelf: "flex-start",
   },
 }));

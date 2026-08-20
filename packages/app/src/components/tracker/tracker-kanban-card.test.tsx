@@ -13,8 +13,6 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, options?: Record<string, unknown>) => {
       const templates: Record<string, string> = {
-        "tracker.card.cancelled": "Cancelled",
-        "tracker.card.closed": "Closed",
         "tracker.card.childProgress": "{{done}}/{{count}}",
         "tracker.card.claimedBy": "Claimed by {{name}}",
       };
@@ -42,7 +40,6 @@ describe("TrackerKanbanCard", () => {
       <TrackerKanbanCard
         {...baseProps}
         projectLabel="paseo"
-        parentTitle="Ship the redesign"
         childCount={7}
         doneCount={3}
         claimedBy="ada"
@@ -53,7 +50,6 @@ describe("TrackerKanbanCard", () => {
     expect(screen.getByText(/P1/)).toBeTruthy();
     expect(screen.getByText("paseo")).toBeTruthy();
     expect(screen.getByText("Fix the thing")).toBeTruthy();
-    expect(screen.getByText("Ship the redesign")).toBeTruthy();
     expect(screen.getByText("3/7")).toBeTruthy();
     expect(screen.getByText("Claimed by ada")).toBeTruthy();
   });
@@ -64,7 +60,6 @@ describe("TrackerKanbanCard", () => {
     expect(screen.getByText("Fix the thing")).toBeTruthy();
     expect(screen.queryByText("3/7")).toBeNull();
     expect(screen.queryByText(/Claimed by/)).toBeNull();
-    expect(screen.queryByText("Cancelled")).toBeNull();
     expect(screen.queryByText(/No tasks/i)).toBeNull();
     expect(screen.queryByText(/Standalone/i)).toBeNull();
     expect(screen.queryByText(/General/i)).toBeNull();
@@ -77,31 +72,23 @@ describe("TrackerKanbanCard", () => {
     expect(screen.queryByText("0/0")).toBeNull();
   });
 
-  it("marks cancelled items distinctly from closed items", () => {
-    const { rerender } = render(<TrackerKanbanCard {...baseProps} status="closed" />);
-    expect(screen.queryByText("Cancelled")).toBeNull();
-    expect(screen.getByText("Closed")).toBeTruthy();
-
-    rerender(<TrackerKanbanCard {...baseProps} status="cancelled" />);
-    expect(screen.getByText("Cancelled")).toBeTruthy();
-    expect(screen.queryByText("Closed")).toBeNull();
-  });
-
-  it("shows neither badge for open or in_progress items", () => {
-    const { rerender } = render(<TrackerKanbanCard {...baseProps} status="open" />);
-    expect(screen.queryByText("Cancelled")).toBeNull();
-    expect(screen.queryByText("Closed")).toBeNull();
-
-    rerender(<TrackerKanbanCard {...baseProps} status="in_progress" />);
-    expect(screen.queryByText("Cancelled")).toBeNull();
-    expect(screen.queryByText("Closed")).toBeNull();
-  });
-
   it("shows the project chip only when a project label is passed", () => {
     const { rerender } = render(<TrackerKanbanCard {...baseProps} />);
     expect(screen.queryByText("paseo")).toBeNull();
 
     rerender(<TrackerKanbanCard {...baseProps} projectLabel="paseo" />);
     expect(screen.getByText("paseo")).toBeTruthy();
+  });
+
+  it("renders TrackerStatusIcon without crashing for every status", () => {
+    // The lucide icon stub used under test renders null, so this can't assert
+    // on the icon's DOM output — TrackerStatusIcon's own per-status icon
+    // choice is that component's concern. This only confirms the card wires
+    // every TrackerStatus value through without throwing.
+    const { rerender } = render(<TrackerKanbanCard {...baseProps} status="open" />);
+    rerender(<TrackerKanbanCard {...baseProps} status="in_progress" />);
+    rerender(<TrackerKanbanCard {...baseProps} status="closed" />);
+    rerender(<TrackerKanbanCard {...baseProps} status="cancelled" />);
+    expect(screen.getByText("Fix the thing")).toBeTruthy();
   });
 });

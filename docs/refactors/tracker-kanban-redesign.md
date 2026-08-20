@@ -143,13 +143,13 @@ The current card shows a truncated title, `Open P0`, and `No tasks` — meaningl
 
 Card content, each line dropped when empty:
 
-1. Tracker id + priority + project chip (multi-project only)
+1. Meta row: `TrackerStatusIcon` (same status→icon mapping as the detail sheet's `○ tracker-id.n` header) + `id · priority`
 2. Title, clamped to two lines
-3. Parent epic title — the hierarchy signal a status board would otherwise lose
-4. Child progress `3/7`, only when the item has children
-5. `claimedBy` agent
+3. Child progress `3/7`, only when the item has children
+4. `claimedBy` agent
+5. Project chip (multi-project only), sized to its content — never stretched to the card's full width
 
-Cancelled items in the Done lane carry a distinct marker, not the success treatment used for `closed`.
+Revised after live-testing (Human feedback, this round): the parent-epic-title line was removed from both the Kanban card and the List row — it rendered inconsistently (present only for items with a parent, absent for standalone ones) and read as noise, not signal. The per-lane `<StatusBadge>` for `closed`/`cancelled` (added in `f4a373877`) was also removed from the card: lane position already conveys status, and duplicating it as a text badge was redundant once the meta-row status icon shipped. The status icon carries that signal now, matching the detail sheet's own convention instead of inventing a second one.
 
 ### Data contract — no per-card fetch
 
@@ -192,11 +192,17 @@ Per-project swimlanes are deferred. With ~10 projects a default swimlane layout 
 
 ## List view
 
-Added after ship, per Human's explicit request (`paseo-PQNMc.2`): the List view groups into one section per real `TrackerStatus` — Open, In progress, Done, Cancelled. Unlike Kanban it does **not** split Open into Ready/Open; that split is Kanban-derived `readyIds` data the List view never fetches, and List's own `statFilter === "open"` keeps its literal meaning (`tracker.status === "open"`, full stop — see "Toolbar contract" above).
+Added after ship, per Human's explicit request (`paseo-PQNMc.2`): the List view groups into one section per real `TrackerStatus` — Todo (`open`), In progress, Done, Cancelled. The section label reads "Todo" now, not "Open" — renamed alongside the Kanban Open→Todo display rename so the two views use one vocabulary; the underlying `TrackerStatus` value and the `tracker-table-section-open` testID are unchanged, only the `tracker.list.section.open` i18n string moved to the same translated value as `tracker.kanban.lane.open` in every locale. Unlike Kanban it does **not** split Open into Ready/Open; that split is Kanban-derived `readyIds` data the List view never fetches, and List's own `statFilter === "open"` keeps its literal meaning (`tracker.status === "open"`, full stop — see "Toolbar contract" above).
+
+List's own status filter chip row defaults to `"all"`, matching Kanban's existing `"all"` default — the original `"open"` default hid every other status behind an extra click for no documented reason, and diverged from Kanban's own default for no reason either.
 
 Each section uses the same incremental-reveal pattern as the Kanban Done lane (50 rows, "Show more"), grouped over the **complete** filtered set, never a page slice — an early version grouped the paginated slice instead, which broke the entire premise (section membership and counts changed arbitrarily as the user paged, with items invisible on other pages and no indication they existed). Flat page-based pagination (`tracker-pagination.ts`/`.tsx`) is deleted; nothing in the tracker feature paginates anymore.
 
 The Tasks/Epics/Initiatives/All type filter — originally Kanban-only (see "Sequencing") — is now one shared `typeFilter` state driving both views' tracker sets, always visible in the toolbar regardless of `viewMode`. Composes with `listStatFilter`: type narrows first, then the stat filter applies.
+
+`getTrackerStatCounts` (`tracker-stats.ts`) used to hardcode `tracker.type === "task"` internally, so the toolbar's OPEN/IN PROGRESS/PRIORITY/DONE/ALL counts never moved when the Tasks/Epics/Initiatives filter changed — a real bug, caught by Human live-testing. Fixed by removing the internal filter and requiring the caller to pre-filter by type before counting; `tracker-screen.tsx` now feeds it the already-type-filtered `kanbanTrackers` set.
+
+The OPEN/IN PROGRESS/PRIORITY/DONE/ALL chip row is styled to match the Tasks/Epics/Initiatives `SegmentedControl`: full pill border-radius, `theme.colors.surface2` on hover, solid `theme.colors.foreground` background with `theme.colors.surface0` text when active/selected — one visual language for every filter control in the toolbar instead of two.
 
 ## Status transitions
 

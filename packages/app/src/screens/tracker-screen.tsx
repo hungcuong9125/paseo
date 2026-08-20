@@ -107,6 +107,7 @@ function callTrackerTransition(
 
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+const inverseColorMapping = (theme: Theme) => ({ color: theme.colors.surface0 });
 const EMPTY_TRACKERS: AggregatedTracker[] = [];
 const EMPTY_READY_IDS: ReadonlySet<string> = new Set();
 
@@ -170,8 +171,9 @@ function TrackerScreenContent(): ReactElement {
   // Two independent filter states rendered through the same toolbar control (see
   // docs/refactors/tracker-kanban-redesign.md, "Toolbar contract"): in List mode
   // statFilter filters the dataset; in Kanban mode it only projects which lanes
-  // are visible. Sharing one state would open the board on a single Open lane.
-  const [listStatFilter, setListStatFilter] = useState<StatFilter>("open");
+  // are visible. Both default to "all" so arriving at the screen shows
+  // everything rather than a filtered subset that reads as "missing items".
+  const [listStatFilter, setListStatFilter] = useState<StatFilter>("all");
   const [kanbanStatFilter, setKanbanStatFilter] = useState<StatFilter>("all");
   // Shared by BOTH views: which tracker granularities are included. Defaults to
   // "task" (preserves the board's original default; the List view inherits it).
@@ -346,8 +348,7 @@ function TrackerScreenContent(): ReactElement {
       <TrackerScreenBody
         bodyState={bodyState}
         trackers={orderedTrackers}
-        parentTrackers={orderedTrackers}
-        statsTrackers={projectFilteredTrackers}
+        statsTrackers={kanbanTrackers}
         kanbanTrackers={kanbanTrackers}
         kanbanReadyIds={readyIds}
         showProjectLabel={selectedProjectId === null}
@@ -508,16 +509,18 @@ function PriorityFilterDropdown({
     (filter: PriorityStatFilter) => onStatFilterChange(filter),
     [onStatFilterChange],
   );
+  const isActive = selectedLevel != null;
   const triggerStyle = useCallback(
     ({ pressed }: PressableStateCallbackType) => [
       styles.priorityFilterTrigger,
-      (isHovered || pressed) && styles.priorityFilterTriggerHovered,
+      isActive
+        ? styles.priorityFilterTriggerActive
+        : (isHovered || pressed) && styles.priorityFilterTriggerHovered,
     ],
-    [isHovered],
+    [isHovered, isActive],
   );
   const handleHoverIn = useCallback(() => setIsHovered(true), []);
   const handleHoverOut = useCallback(() => setIsHovered(false), []);
-  const selectedStyle = selectedLevel ? priorityHelpColorStyle(selectedLevel.id) : styles.helpP0;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -528,10 +531,12 @@ function PriorityFilterDropdown({
       >
         {selectedLevel != null ? (
           <>
-            <Text style={[styles.priorityFilterCount, selectedStyle]}>
+            <Text style={[styles.priorityFilterCount, styles.priorityFilterCountActive]}>
               {counts[selectedLevel.filter]}
             </Text>
-            <Text style={[styles.priorityFilterText, selectedStyle]}>{` ${selectedLevel.id}`}</Text>
+            <Text style={[styles.priorityFilterText, styles.priorityFilterTextActive]}>
+              {` ${selectedLevel.id}`}
+            </Text>
           </>
         ) : (
           <>
@@ -543,7 +548,10 @@ function PriorityFilterDropdown({
             <Text style={styles.priorityFilterText}>{" PRIORITY"}</Text>
           </>
         )}
-        <ThemedChevronDown size={14} uniProps={mutedColorMapping} />
+        <ThemedChevronDown
+          size={14}
+          uniProps={isActive ? inverseColorMapping : mutedColorMapping}
+        />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" width={240}>
         <DropdownMenuItem selected={selectedLevel === null} onSelect={handleSelectAll}>
@@ -580,7 +588,6 @@ function ProjectErrorsBanner({ errors }: { errors: TrackerProjectError[] }): Rea
 function TrackerScreenBody({
   bodyState,
   trackers,
-  parentTrackers,
   statsTrackers,
   kanbanTrackers,
   kanbanReadyIds,
@@ -607,7 +614,6 @@ function TrackerScreenBody({
 }: {
   bodyState: TrackerScreenBodyState;
   trackers: AggregatedTracker[];
-  parentTrackers: AggregatedTracker[];
   statsTrackers: AggregatedTracker[];
   kanbanTrackers: AggregatedTracker[];
   kanbanReadyIds: ReadonlySet<string>;
@@ -775,7 +781,6 @@ function TrackerScreenBody({
           {errorsBanner}
           <TrackerTable
             trackers={trackers}
-            parentTrackers={parentTrackers}
             showProjectLabel={showProjectLabel}
             onOpenTracker={onOpenTracker}
           />
@@ -846,14 +851,20 @@ function StatFilterPillView({
   const handlePress = useCallback(() => onSelect(def.value), [onSelect, def.value]);
   const handleHoverIn = useCallback(() => setIsHovered(true), []);
   const handleHoverOut = useCallback(() => setIsHovered(false), []);
+  // Same pill geometry and hover/active treatment as the Tasks/Epics/Initiatives
+  // SegmentedControl: a solid theme.colors.foreground pill when active, the same
+  // surface2 hover wash otherwise (see segmented-control.tsx's segmentSelected /
+  // segmentHover). The per-status semantic hue (statColorOpen etc.) only applies
+  // at rest/hover — an active pill is a solid fill, so it uses the inverse
+  // (surface0) text colour instead, matching labelSelected there.
   const pillStyle = useCallback(
     ({ pressed }: PressableStateCallbackType) => [
       styles.statCard,
-      (Boolean(isHovered) || pressed) && !active && styles.statCardHovered,
+      active ? styles.statCardActive : (Boolean(isHovered) || pressed) && styles.statCardHovered,
     ],
     [isHovered, active],
   );
-  const showColor = active || isHovered;
+  const showSemanticColor = !active && isHovered;
   const accessibilityState = useMemo(() => ({ selected: active }), [active]);
   return (
     <Pressable
@@ -866,7 +877,12 @@ function StatFilterPillView({
       accessibilityLabel={`Filter: ${def.label}`}
       testID={`trackers-stat-${def.value}`}
     >
-      <Text style={[styles.statNumber, showColor && statNumberColorStyle(def.value)]}>
+      <Text
+        style={[
+          styles.statNumber,
+          active ? styles.statNumberActive : showSemanticColor && statNumberColorStyle(def.value),
+        ]}
+      >
         {def.count}
       </Text>
       <Text style={[styles.statLabel, active && styles.statLabelActive]}>{def.label}</Text>
@@ -1078,24 +1094,32 @@ const styles = StyleSheet.create((theme) => ({
     opacity: theme.opacity[50],
     marginHorizontal: theme.spacing[1],
   },
-  // No background/border at rest — same bare-pill idiom as the workspace
-  // tab row's inactive tabs. Hover uses the same surface2 wash as row hover
-  // (see TrackerRow / agent-list.tsx); selected only changes text colour.
+  // Same pill geometry as the Tasks/Epics/Initiatives SegmentedControl
+  // (full-radius, surface2 hover, solid foreground when active — see
+  // segmented-control.tsx's segment/segmentHover/segmentSelected).
   statCard: {
     flexDirection: "row",
     alignItems: "baseline",
     gap: theme.spacing[1.5],
     paddingVertical: theme.spacing[1],
     paddingHorizontal: theme.spacing[2],
-    borderRadius: theme.borderRadius.md,
+    borderRadius: theme.borderRadius.full,
   },
   statCardHovered: {
     backgroundColor: theme.colors.surface2,
+  },
+  statCardActive: {
+    backgroundColor: theme.colors.foreground,
   },
   statNumber: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.medium,
+  },
+  // Inverse text on the solid active pill — matches SegmentedControl's
+  // labelSelected (theme.colors.surface0), overriding the per-status hue.
+  statNumberActive: {
+    color: theme.colors.surface0,
   },
   statColorOpen: {
     color: theme.colors.palette.blue[600],
@@ -1133,13 +1157,16 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[1],
     paddingVertical: theme.spacing[1],
     paddingHorizontal: theme.spacing[2],
-    borderRadius: theme.borderRadius.md,
+    borderRadius: theme.borderRadius.full,
   },
   priorityFilterText: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.xs,
     textTransform: "uppercase",
     letterSpacing: 0.5,
+  },
+  priorityFilterTextActive: {
+    color: theme.colors.surface0,
   },
   priorityFilterLevel: {
     fontSize: theme.fontSize.xs,
@@ -1165,8 +1192,14 @@ const styles = StyleSheet.create((theme) => ({
   priorityFilterCountHovered: {
     color: theme.colors.palette.red[600],
   },
+  priorityFilterCountActive: {
+    color: theme.colors.surface0,
+  },
   priorityFilterTriggerHovered: {
     backgroundColor: theme.colors.surface2,
+  },
+  priorityFilterTriggerActive: {
+    backgroundColor: theme.colors.foreground,
   },
   statLabel: {
     color: theme.colors.foregroundMuted,
@@ -1175,7 +1208,7 @@ const styles = StyleSheet.create((theme) => ({
     letterSpacing: 0.5,
   },
   statLabelActive: {
-    color: theme.colors.foreground,
+    color: theme.colors.surface0,
     fontWeight: theme.fontWeight.medium,
   },
   projectPickerTrigger: {

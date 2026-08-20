@@ -2522,8 +2522,6 @@ export const es: TranslationResources = {
   },
   tracker: {
     card: {
-      cancelled: "Cancelada",
-      closed: "Cerrada",
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Reclamado por {{name}}",
     },
@@ -2565,7 +2563,7 @@ export const es: TranslationResources = {
     },
     list: {
       section: {
-        open: "Abierto",
+        open: "Por hacer",
         inProgress: "En progreso",
         done: "Hecho",
         cancelled: "Cancelado",

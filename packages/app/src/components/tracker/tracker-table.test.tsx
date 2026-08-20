@@ -41,7 +41,7 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, opts?: { count?: number }) => {
       const templates: Record<string, string> = {
-        "tracker.list.section.open": "Open",
+        "tracker.list.section.open": "Todo",
         "tracker.list.section.inProgress": "In progress",
         "tracker.list.section.done": "Done",
         "tracker.list.section.cancelled": "Cancelled",
@@ -101,7 +101,6 @@ function renderTable(trackers: AggregatedTracker[]): { container: HTMLElement; r
     root.render(
       React.createElement(TrackerTable, {
         trackers,
-        parentTrackers: [],
         showProjectLabel: false,
         onOpenTracker: vi.fn(),
       }),
@@ -162,7 +161,7 @@ describe("TrackerTable status grouping", () => {
     const cancSection = c.querySelector('[data-testid="tracker-table-section-cancelled"]');
 
     // count text is the last child of the header; the section also holds its rows.
-    expect(openSection?.textContent).toContain("Open");
+    expect(openSection?.textContent).toContain("Todo");
     expect(openSection?.textContent).toContain("2");
     expect(ipSection?.textContent).toContain("In progress");
     expect(ipSection?.textContent).toContain("2");

@@ -2491,8 +2491,6 @@ export const ja: TranslationResources = {
   },
   tracker: {
     card: {
-      cancelled: "キャンセル済み",
-      closed: "クローズ済み",
       childProgress: "{{done}}/{{count}}",
       claimedBy: "{{name}} が担当",
     },
@@ -2534,7 +2532,7 @@ export const ja: TranslationResources = {
     },
     list: {
       section: {
-        open: "未対応",
+        open: "やること",
         inProgress: "進行中",
         done: "完了",
         cancelled: "キャンセル",

@@ -45,7 +45,6 @@ export interface TrackerRowActions {
 
 interface TrackerRowProps extends TrackerRowActions {
   tracker: TrackerSummary;
-  parentTitle: string | null;
   /** Which project this row belongs to — rendered in the meta line only when
    * the caller is showing more than one project at once (aggregated view). */
   projectLabel?: string | null;
@@ -88,7 +87,6 @@ function statusTextColorStyle(status: TrackerSummary["status"]) {
 
 export function TrackerRow({
   tracker,
-  parentTitle,
   projectLabel = null,
   pending,
   isFirst,
@@ -147,12 +145,6 @@ export function TrackerRow({
               <Text>{tracker.id}</Text>
               <Text>{" · "}</Text>
               <Text style={priorityColorStyle(tracker.priority)}>{tracker.priority}</Text>
-              {parentTitle ? (
-                <>
-                  <Text>{" · "}</Text>
-                  <Text>{`in ${parentTitle}`}</Text>
-                </>
-              ) : null}
               {projectLabel ? (
                 <>
                   <Text>{" · "}</Text>

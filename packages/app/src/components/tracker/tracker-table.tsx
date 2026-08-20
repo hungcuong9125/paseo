@@ -10,7 +10,6 @@ import { settingsStyles } from "@/styles/settings";
 
 interface TrackerTableProps {
   trackers: AggregatedTracker[];
-  parentTrackers: AggregatedTracker[];
   showProjectLabel: boolean;
   onOpenTracker: (tracker: AggregatedTracker) => void;
 }
@@ -19,7 +18,8 @@ interface TrackerTableProps {
 // Unlike the Kanban board, List does NOT split `open` into Ready/Backlog (that
 // split is Kanban-derived `readyIds` data List never fetches); each status gets
 // exactly one section. Section copy is its own `tracker.list.section.*` set,
-// distinct from the Kanban lane labels (which display "Todo"/"Backlog").
+// naming-aligned with the Kanban lane labels (Todo/In progress/Done/Cancelled)
+// even though List never shows a Backlog section.
 const LIST_SECTIONS: ReadonlyArray<{ status: TrackerStatus; labelKey: string }> = [
   { status: "open", labelKey: "tracker.list.section.open" },
   { status: "in_progress", labelKey: "tracker.list.section.inProgress" },
@@ -52,7 +52,6 @@ const INITIAL_REVEAL: Readonly<Record<TrackerStatus, number>> = {
  */
 export function TrackerTable({
   trackers,
-  parentTrackers,
   showProjectLabel,
   onOpenTracker,
 }: TrackerTableProps): ReactElement {
@@ -60,14 +59,6 @@ export function TrackerTable({
   const [revealCounts, setRevealCounts] = useState<Record<TrackerStatus, number>>(() => ({
     ...INITIAL_REVEAL,
   }));
-
-  const titleById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const tracker of parentTrackers) {
-      map.set(`${tracker.projectId}:${tracker.id}`, tracker.title);
-    }
-    return map;
-  }, [parentTrackers]);
 
   const sortedTrackers = useMemo(
     () =>
@@ -132,11 +123,6 @@ export function TrackerTable({
                 <TrackerTableRow
                   key={`${tracker.serverId}:${tracker.projectId}:${tracker.id}`}
                   tracker={tracker}
-                  parentTitle={
-                    tracker.parentId
-                      ? (titleById.get(`${tracker.projectId}:${tracker.parentId}`) ?? null)
-                      : null
-                  }
                   projectLabel={showProjectLabel ? tracker.projectName : null}
                   isFirst={index === 0}
                   onOpenTracker={onOpenTracker}
@@ -169,13 +155,11 @@ const NO_PENDING: TrackerRowPending = {};
 
 function TrackerTableRow({
   tracker,
-  parentTitle,
   projectLabel,
   isFirst,
   onOpenTracker,
 }: {
   tracker: AggregatedTracker;
-  parentTitle: string | null;
   projectLabel: string | null;
   isFirst: boolean;
   onOpenTracker: (tracker: AggregatedTracker) => void;
@@ -227,7 +211,6 @@ function TrackerTableRow({
   return (
     <TrackerRow
       tracker={tracker}
-      parentTitle={parentTitle}
       projectLabel={projectLabel}
       isFirst={isFirst}
       pending={pending}

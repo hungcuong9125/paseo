@@ -2506,8 +2506,6 @@ export const ptBR: TranslationResources = {
   },
   tracker: {
     card: {
-      cancelled: "Cancelada",
-      closed: "Fechada",
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Reivindicado por {{name}}",
     },
@@ -2549,7 +2547,7 @@ export const ptBR: TranslationResources = {
     },
     list: {
       section: {
-        open: "Aberto",
+        open: "A fazer",
         inProgress: "Em progresso",
         done: "Concluído",
         cancelled: "Cancelado",

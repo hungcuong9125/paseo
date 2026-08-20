@@ -20,7 +20,7 @@ function tracker(
 }
 
 describe("getTrackerStatCounts", () => {
-  it("counts tasks across projects without counting structural containers", () => {
+  it("counts across projects by status/priority only — the caller applies the type filter first", () => {
     const trackers = [
       tracker("a-epic-open", { type: "epic", status: "open", priority: "P1" }),
       tracker("a-task-open", { type: "task", status: "open", priority: "P0" }),
@@ -37,15 +37,36 @@ describe("getTrackerStatCounts", () => {
     ];
 
     expect(getTrackerStatCounts(trackers)).toEqual({
+      open: 3,
+      inProgress: 2,
+      p0: 2,
+      p1: 1,
+      p2: 2,
+      p3: 0,
+      p4: 0,
+      done: 3,
+      all: 8,
+    });
+  });
+
+  it("reflects only epics when the caller pre-filters to epics — the toolbar counts must track the selected type filter, not always tasks", () => {
+    const trackers = [
+      tracker("a-epic-open", { type: "epic", status: "open", priority: "P1" }),
+      tracker("a-task-open", { type: "task", status: "open", priority: "P0" }),
+      tracker("b-epic-progress", { type: "epic", status: "in_progress", priority: "P0" }),
+    ];
+    const epicsOnly = trackers.filter((t) => t.type === "epic");
+
+    expect(getTrackerStatCounts(epicsOnly)).toEqual({
       open: 1,
       inProgress: 1,
       p0: 1,
-      p1: 0,
-      p2: 1,
+      p1: 1,
+      p2: 0,
       p3: 0,
       p4: 0,
-      done: 2,
-      all: 4,
+      done: 0,
+      all: 2,
     });
   });
 

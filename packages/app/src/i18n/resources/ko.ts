@@ -2483,8 +2483,6 @@ export const ko: TranslationResources = {
   },
   tracker: {
     card: {
-      cancelled: "취소됨",
-      closed: "닫힘",
       childProgress: "{{done}}/{{count}}",
       claimedBy: "{{name}}님이 담당",
     },
@@ -2526,7 +2524,7 @@ export const ko: TranslationResources = {
     },
     list: {
       section: {
-        open: "열림",
+        open: "할 일",
         inProgress: "진행 중",
         done: "완료",
         cancelled: "취소됨",

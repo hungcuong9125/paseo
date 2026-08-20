@@ -50,17 +50,21 @@ export function matchesTrackerStatFilter(
   }
 }
 
+// Counts whatever set it is given — it does not filter by `type` itself. The
+// caller applies the Tasks/Epics/Initiatives/All type filter first (the same
+// `typeFilter` that drives the tracker set shown on screen), so these counts
+// track whichever granularity is currently selected instead of always
+// counting tasks regardless of it.
 export function getTrackerStatCounts(trackers: readonly TrackerSummary[]): TrackerStatCounts {
-  const tasks = trackers.filter((tracker) => tracker.type === "task");
-  const done = tasks.filter(
-    (task) => task.status === "closed" || task.status === "cancelled",
+  const done = trackers.filter(
+    (tracker) => tracker.status === "closed" || tracker.status === "cancelled",
   ).length;
-  const inProgress = tasks.filter((task) => task.status === "in_progress").length;
-  const activeTasks = tasks.filter(
-    (task) => task.status === "open" || task.status === "in_progress",
+  const inProgress = trackers.filter((tracker) => tracker.status === "in_progress").length;
+  const active = trackers.filter(
+    (tracker) => tracker.status === "open" || tracker.status === "in_progress",
   );
   const priorityCount = (priority: string): number =>
-    activeTasks.filter((task) => task.priority === priority).length;
+    active.filter((tracker) => tracker.priority === priority).length;
 
   const p0 = priorityCount("P0");
   const p1 = priorityCount("P1");
@@ -69,7 +73,7 @@ export function getTrackerStatCounts(trackers: readonly TrackerSummary[]): Track
   const p4 = priorityCount("P4");
 
   return {
-    open: tasks.length - done - inProgress,
+    open: trackers.length - done - inProgress,
     inProgress,
     p0,
     p1,
@@ -77,6 +81,6 @@ export function getTrackerStatCounts(trackers: readonly TrackerSummary[]): Track
     p3,
     p4,
     done,
-    all: tasks.length,
+    all: trackers.length,
   };
 }

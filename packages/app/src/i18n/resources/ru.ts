@@ -2511,8 +2511,6 @@ export const ru: TranslationResources = {
   },
   tracker: {
     card: {
-      cancelled: "Отменено",
-      closed: "Закрыто",
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Закреплено за {{name}}",
     },
@@ -2554,7 +2552,7 @@ export const ru: TranslationResources = {
     },
     list: {
       section: {
-        open: "Открыто",
+        open: "К выполнению",
         inProgress: "В работе",
         done: "Готово",
         cancelled: "Отменено",
