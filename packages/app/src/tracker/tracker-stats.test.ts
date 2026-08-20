@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AggregatedTracker } from "./aggregated-trackers";
-import { getTrackerStatCounts } from "./tracker-stats";
+import { getTrackerStatCounts, matchesTrackerStatFilter } from "./tracker-stats";
 
 function tracker(
   id: string,
@@ -47,5 +47,44 @@ describe("getTrackerStatCounts", () => {
       done: 2,
       all: 4,
     });
+  });
+
+  it("matches status and active priority filters across tracker types", () => {
+    const doneTask = tracker("done-task", { type: "task", status: "closed", priority: "P0" });
+    expect(
+      matchesTrackerStatFilter(
+        tracker("open-epic", { type: "epic", status: "open", priority: "P1" }),
+        "open",
+      ),
+    ).toBe(true);
+    expect(
+      matchesTrackerStatFilter(
+        tracker("progress-initiative", {
+          type: "initiative",
+          status: "in_progress",
+          priority: "P2",
+        }),
+        "in_progress",
+      ),
+    ).toBe(true);
+    expect(matchesTrackerStatFilter(doneTask, "done")).toBe(true);
+    expect(matchesTrackerStatFilter(doneTask, "p0")).toBe(false);
+    expect(matchesTrackerStatFilter(doneTask, "all")).toBe(true);
+
+    const priorityPairs = [
+      ["P0", "p0"],
+      ["P1", "p1"],
+      ["P2", "p2"],
+      ["P3", "p3"],
+      ["P4", "p4"],
+    ] as const;
+    for (const [priority, filter] of priorityPairs) {
+      expect(
+        matchesTrackerStatFilter(
+          tracker(`active-${priority}`, { type: "initiative", status: "open", priority }),
+          filter,
+        ),
+      ).toBe(true);
+    }
   });
 });
