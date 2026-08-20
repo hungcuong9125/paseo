@@ -1,22 +1,11 @@
-import type {
-  TrackerPriority,
-  TrackerStatus,
-  TrackerSummary,
-} from "@getpaseo/protocol/tracker/types";
+import type { TrackerStatus, TrackerSummary } from "@getpaseo/protocol/tracker/types";
+import { compareTrackers } from "@/tracker/tracker-hierarchy";
+import { matchesTrackerStatFilter, type TrackerStatFilter } from "@/tracker/tracker-stats";
 
-// Same value set as `TrackerStatFilter` in packages/app/src/tracker/tracker-stats.ts,
-// declared locally because that file is an uncommitted diff owned by another agent —
-// do not import from it.
-export type TrackerBoardFilter =
-  | "all"
-  | "open"
-  | "in_progress"
-  | "done"
-  | "p0"
-  | "p1"
-  | "p2"
-  | "p3"
-  | "p4";
+// Same domain as the toolbar's filter, reused directly — see "Toolbar contract"
+// in docs/refactors/tracker-kanban-redesign.md: Kanban gives this one control a
+// second meaning (lane projection) rather than inventing a parallel filter type.
+export type TrackerBoardFilter = TrackerStatFilter;
 
 export type TrackerBoardLaneKey = "open" | "in_progress" | "done";
 
@@ -72,37 +61,10 @@ function visibleLanesForFilter(filter: TrackerBoardFilter): readonly TrackerBoar
   }
 }
 
-function priorityForFilter(filter: TrackerBoardFilter): TrackerPriority | null {
-  switch (filter) {
-    case "p0":
-      return "P0";
-    case "p1":
-      return "P1";
-    case "p2":
-      return "P2";
-    case "p3":
-      return "P3";
-    case "p4":
-      return "P4";
-    default:
-      return null;
-  }
-}
-
-// Mirrors matchesTrackerStatFilter's p0-p4 semantics in
-// packages/app/src/tracker/tracker-stats.ts ("active AND that priority").
-// Not imported — that file is an uncommitted diff owned by another agent.
-function matchesPriority(tracker: TrackerSummary, priority: TrackerPriority): boolean {
-  const active = tracker.status === "open" || tracker.status === "in_progress";
-  return active && tracker.priority === priority;
-}
-
-// TODO: import compareTrackers from tracker-hierarchy.ts once the sibling
-// extraction task lands (docs/refactors/tracker-kanban-redesign.md, "What
-// survives from kanban-grouping.ts"). Priority then id, same as the
-// unexported compareTrackers in kanban-grouping.ts.
-function compareByPriorityThenId(left: TrackerSummary, right: TrackerSummary): number {
-  return left.priority.localeCompare(right.priority) || left.id.localeCompare(right.id);
+function isPriorityFilter(filter: TrackerBoardFilter): filter is "p0" | "p1" | "p2" | "p3" | "p4" {
+  return (
+    filter === "p0" || filter === "p1" || filter === "p2" || filter === "p3" || filter === "p4"
+  );
 }
 
 // `updatedAt` is optional on TrackerSummary (older callers may not populate
@@ -132,7 +94,7 @@ export function buildTrackerBoard(
   filter: TrackerBoardFilter,
 ): TrackerBoard {
   const visibleLanes = visibleLanesForFilter(filter);
-  const priority = priorityForFilter(filter);
+  const isPriority = isPriorityFilter(filter);
 
   const open: TrackerBoardCard[] = [];
   const inProgress: TrackerBoardCard[] = [];
@@ -143,7 +105,7 @@ export function buildTrackerBoard(
     if (!visibleLanes.includes(lane)) {
       continue;
     }
-    if (priority && !matchesPriority(tracker, priority)) {
+    if (isPriority && !matchesTrackerStatFilter(tracker, filter)) {
       continue;
     }
 
@@ -161,8 +123,8 @@ export function buildTrackerBoard(
     }
   }
 
-  open.sort((a, b) => compareByPriorityThenId(a.tracker, b.tracker));
-  inProgress.sort((a, b) => compareByPriorityThenId(a.tracker, b.tracker));
+  open.sort((a, b) => compareTrackers(a.tracker, b.tracker));
+  inProgress.sort((a, b) => compareTrackers(a.tracker, b.tracker));
   done.sort((a, b) => compareByRecency(a.tracker, b.tracker));
 
   return { visibleLanes, open, in_progress: inProgress, done };
