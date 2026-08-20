@@ -2527,4 +2527,11 @@ export const fr: TranslationResources = {
       },
     },
   },
+  tracker: {
+    card: {
+      cancelled: "Annulée",
+      childProgress: "{{done}}/{{count}}",
+      claimedBy: "Revendiqué par {{name}}",
+    },
+  },
 };

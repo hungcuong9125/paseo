@@ -2489,4 +2489,11 @@ export const ja: TranslationResources = {
       },
     },
   },
+  tracker: {
+    card: {
+      cancelled: "キャンセル済み",
+      childProgress: "{{done}}/{{count}}",
+      claimedBy: "{{name}} が担当",
+    },
+  },
 } as const;

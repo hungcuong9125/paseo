@@ -2464,4 +2464,11 @@ export const ar: TranslationResources = {
       },
     },
   },
+  tracker: {
+    card: {
+      cancelled: "ملغى",
+      childProgress: "{{done}}/{{count}}",
+      claimedBy: "تمت المطالبة به بواسطة {{name}}",
+    },
+  },
 };

@@ -2435,4 +2435,11 @@ export const zhCN: TranslationResources = {
       },
     },
   },
+  tracker: {
+    card: {
+      cancelled: "已取消",
+      childProgress: "{{done}}/{{count}}",
+      claimedBy: "由 {{name}} 认领",
+    },
+  },
 };

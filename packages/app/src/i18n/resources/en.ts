@@ -2478,6 +2478,13 @@ export const en = {
       },
     },
   },
+  tracker: {
+    card: {
+      cancelled: "Cancelled",
+      childProgress: "{{done}}/{{count}}",
+      claimedBy: "Claimed by {{name}}",
+    },
+  },
 } as const;
 
 type WidenStringLeaves<T> = {

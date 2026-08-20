@@ -2509,4 +2509,11 @@ export const ru: TranslationResources = {
       },
     },
   },
+  tracker: {
+    card: {
+      cancelled: "Отменено",
+      childProgress: "{{done}}/{{count}}",
+      claimedBy: "Закреплено за {{name}}",
+    },
+  },
 };

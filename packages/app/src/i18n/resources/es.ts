@@ -2520,4 +2520,11 @@ export const es: TranslationResources = {
       },
     },
   },
+  tracker: {
+    card: {
+      cancelled: "Cancelada",
+      childProgress: "{{done}}/{{count}}",
+      claimedBy: "Reclamado por {{name}}",
+    },
+  },
 };
