@@ -216,4 +216,55 @@ describe("TrackerSession", () => {
     expect(response?.payload.initialised).toBe(false);
     expect(response?.payload.errorCode).toBe("cli_missing");
   });
+
+  it("ready emits the ready id list from the ait service", async () => {
+    const { session, emitted } = makeSession({
+      listReadyIds: async () => ["proj-1", "proj-2"],
+    });
+
+    await session.handleProjectTrackerReadyRequest({
+      type: "project.tracker.ready.request",
+      requestId: "r8",
+      projectId: PROJECT_ID,
+    });
+
+    const response = findByType(emitted, "project.tracker.ready.response");
+    expect(response?.payload.readyIds).toEqual(["proj-1", "proj-2"]);
+    expect(response?.payload.error).toBeNull();
+    expect(response?.payload.errorCode).toBeNull();
+  });
+
+  it("ready emits not_found when the projectId does not resolve", async () => {
+    const { session, emitted } = makeSession({});
+
+    await session.handleProjectTrackerReadyRequest({
+      type: "project.tracker.ready.request",
+      requestId: "r9",
+      projectId: "prj_does_not_exist",
+    });
+
+    const response = findByType(emitted, "project.tracker.ready.response");
+    expect(response?.payload.readyIds).toEqual([]);
+    expect(response?.payload.errorCode).toBe("not_found");
+    expect(response?.payload.error).toContain("prj_does_not_exist");
+  });
+
+  it("ready maps a cli_missing AitCliError onto the response payload", async () => {
+    const { session, emitted } = makeSession({
+      listReadyIds: async () => {
+        throw new AitCliError("cli_missing", "The 'ait' CLI is not installed on this host.");
+      },
+    });
+
+    await session.handleProjectTrackerReadyRequest({
+      type: "project.tracker.ready.request",
+      requestId: "r10",
+      projectId: PROJECT_ID,
+    });
+
+    const response = findByType(emitted, "project.tracker.ready.response");
+    expect(response?.payload.readyIds).toEqual([]);
+    expect(response?.payload.errorCode).toBe("cli_missing");
+    expect(response?.payload.error).toBe("The 'ait' CLI is not installed on this host.");
+  });
 });

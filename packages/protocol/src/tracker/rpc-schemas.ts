@@ -101,6 +101,12 @@ export const ProjectTrackerInitRequestSchema = z.object({
   prefix: z.string().trim().min(1).optional(),
 });
 
+export const ProjectTrackerReadyRequestSchema = z.object({
+  type: z.literal("project.tracker.ready.request"),
+  requestId: z.string(),
+  projectId: z.string(),
+});
+
 export const ProjectTrackerListResponseSchema = z.object({
   type: z.literal("project.tracker.list.response"),
   payload: z.object({
@@ -210,6 +216,17 @@ export const ProjectTrackerInitResponseSchema = z.object({
     requestId: z.string(),
     projectId: z.string(),
     initialised: z.boolean(),
+    error: z.string().nullable(),
+    errorCode: TrackerErrorCodeSchema.nullable(),
+  }),
+});
+
+export const ProjectTrackerReadyResponseSchema = z.object({
+  type: z.literal("project.tracker.ready.response"),
+  payload: z.object({
+    requestId: z.string(),
+    projectId: z.string(),
+    readyIds: z.array(z.string()),
     error: z.string().nullable(),
     errorCode: TrackerErrorCodeSchema.nullable(),
   }),

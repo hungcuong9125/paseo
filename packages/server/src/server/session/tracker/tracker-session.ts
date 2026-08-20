@@ -453,4 +453,34 @@ export class TrackerSession {
       });
     }
   }
+
+  async handleProjectTrackerReadyRequest(
+    request: Extract<SessionInboundMessage, { type: "project.tracker.ready.request" }>,
+  ): Promise<void> {
+    try {
+      const cwd = await this.resolveCwd(request.projectId);
+      const readyIds = await this.aitService.listReadyIds({ cwd });
+      this.host.emit({
+        type: "project.tracker.ready.response",
+        payload: {
+          requestId: request.requestId,
+          projectId: request.projectId,
+          readyIds,
+          error: null,
+          errorCode: null,
+        },
+      });
+    } catch (error) {
+      this.logFailure(request.type, error);
+      this.host.emit({
+        type: "project.tracker.ready.response",
+        payload: {
+          requestId: request.requestId,
+          projectId: request.projectId,
+          readyIds: [],
+          ...this.toErrorTuple(error),
+        },
+      });
+    }
+  }
 }

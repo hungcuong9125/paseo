@@ -2312,6 +2312,8 @@ export class Session {
         return this.trackerSession.handleProjectTrackerNoteAddRequest(msg);
       case "project.tracker.init.request":
         return this.trackerSession.handleProjectTrackerInitRequest(msg);
+      case "project.tracker.ready.request":
+        return this.trackerSession.handleProjectTrackerReadyRequest(msg);
       default:
         return undefined;
     }

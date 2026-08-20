@@ -88,6 +88,10 @@ export interface InitTrackerOptions {
   prefix?: string;
 }
 
+export interface ListReadyIdsOptions {
+  cwd: string;
+}
+
 export interface AitService {
   listTrackers(options: ListTrackersOptions): Promise<ListTrackersResult>;
   showTracker(options: ShowTrackerOptions): Promise<TrackerDetail>;
@@ -98,6 +102,7 @@ export interface AitService {
   cancelTracker(options: CancelTrackerOptions): Promise<TrackerSummary>;
   addNote(options: AddTrackerNoteOptions): Promise<TrackerNote>;
   initTracker(options: InitTrackerOptions): Promise<{ initialised: boolean }>;
+  listReadyIds(options: ListReadyIdsOptions): Promise<string[]>;
 }
 
 // The `ait` CLI's own wire shapes (snake_case, see the `ait` skill contract). Kept private to
@@ -159,6 +164,10 @@ const AitNoteListResponseSchema = z.object({
 
 const AitInitResponseSchema = z.object({
   created: z.boolean(),
+});
+
+const AitReadyResponseSchema = z.object({
+  issues: z.array(AitIssueRefSchema),
 });
 
 function toTrackerSummary(raw: z.infer<typeof AitIssueLongSchema>): TrackerSummary {
@@ -396,6 +405,11 @@ export function createAitService(): AitService {
     return { initialised: raw.created };
   }
 
+  async function listReadyIds({ cwd }: ListReadyIdsOptions): Promise<string[]> {
+    const raw = await run(["ready"], cwd, AitReadyResponseSchema);
+    return raw.issues.map((issue) => issue.id);
+  }
+
   return {
     listTrackers,
     showTracker,
@@ -406,5 +420,6 @@ export function createAitService(): AitService {
     cancelTracker,
     addNote,
     initTracker,
+    listReadyIds,
   };
 }

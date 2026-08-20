@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AitCliError, createAitService, type AitService } from "./ait-cli-service.js";
 
@@ -177,5 +178,21 @@ describe("createAitService", () => {
     const error = await service.listTrackers({ cwd }).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(AitCliError);
     expect((error as AitCliError).message.length).toBeGreaterThan(0);
+  });
+
+  it("lists ready ids, excluding a blocked tracker and closed trackers", async () => {
+    await service.initTracker({ cwd });
+    const unblocked = await service.createTracker({ cwd, input: { title: "Ready to go" } });
+    const blocker = await service.createTracker({ cwd, input: { title: "Blocks the other" } });
+    const blocked = await service.createTracker({ cwd, input: { title: "Waits on blocker" } });
+    const willClose = await service.createTracker({ cwd, input: { title: "Will be closed" } });
+    await service.closeTracker({ cwd, trackerId: willClose.id });
+
+    execFileSync("ait", ["dep", "add", blocked.id, blocker.id], { cwd });
+
+    const ready = await service.listReadyIds({ cwd });
+    expect(ready).toEqual(expect.arrayContaining([unblocked.id, blocker.id]));
+    expect(ready).not.toContain(blocked.id);
+    expect(ready).not.toContain(willClose.id);
   });
 });

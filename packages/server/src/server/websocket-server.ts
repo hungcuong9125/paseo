@@ -1624,6 +1624,8 @@ export class VoiceAssistantWebSocketServer {
         aitTracker: true,
         // COMPAT(aitTrackerLive): added in v0.4.1, remove gate after 2027-02-19.
         aitTrackerLive: true,
+        // COMPAT(aitTrackerReady): added in v0.4.1, remove gate after 2027-02-19.
+        aitTrackerReady: true,
         // COMPAT(providerRemoval): added in v0.1.105, drop the gate when floor >= v0.1.105.
         providerRemoval: true,
         // COMPAT(importSessionWorkspaceTarget): added in v0.1.110, remove gate after 2027-01-16.
