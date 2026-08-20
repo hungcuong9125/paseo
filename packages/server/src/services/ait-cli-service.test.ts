@@ -41,17 +41,18 @@ describe("createAitService", () => {
 
     const created = await service.createTracker({
       cwd,
-      input: { title: "Fix the thing", priority: "P1" },
+      input: { title: "Fix the thing", priority: "P1", description: "Because it's broken" },
     });
     expect(created.title).toBe("Fix the thing");
     expect(created.priority).toBe("P1");
     expect(created.status).toBe("open");
     expect(created.type).toBe("task");
     expect(created.parentId).toBeNull();
+    expect(created.description).toBe("Because it's broken");
 
     const shown = await service.showTracker({ cwd, trackerId: created.id });
     expect(shown.title).toBe("Fix the thing");
-    expect(shown.description).toBeNull();
+    expect(shown.description).toBe("Because it's broken");
     expect(shown.children).toEqual([]);
     expect(shown.blockedBy).toEqual([]);
     expect(shown.notes).toEqual([]);
@@ -81,17 +82,25 @@ describe("createAitService", () => {
     expect(started.status).toBe("in_progress");
     expect(started.parentId).toBe(epic.id);
 
+    expect(task.createdAt).toBeTruthy();
+    expect(task.closedAt).toBeNull();
+
     const closed = await service.closeTracker({ cwd, trackerId: task.id });
     expect(closed.status).toBe("closed");
     expect(closed.parentId).toBe(epic.id);
+    expect(closed.closedAt).toBeTruthy();
 
     const reopened = await service.reopenTracker({ cwd, trackerId: task.id });
     expect(reopened.status).toBe("open");
     expect(reopened.parentId).toBe(epic.id);
+    // `ait` clears `closed_at` on reopen — it marks "currently closed", not "was ever closed".
+    expect(reopened.closedAt).toBeNull();
 
     const cancelled = await service.cancelTracker({ cwd, trackerId: task.id });
     expect(cancelled.status).toBe("cancelled");
     expect(cancelled.parentId).toBe(epic.id);
+    // `ait` never sets `closed_at` for a cancellation — only for the `closed` status.
+    expect(cancelled.closedAt).toBeNull();
 
     const reopenedFromCancelled = await service.reopenTracker({ cwd, trackerId: task.id });
     expect(reopenedFromCancelled.status).toBe("open");

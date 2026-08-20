@@ -2485,6 +2485,8 @@ export const ko: TranslationResources = {
     card: {
       childProgress: "{{done}}/{{count}}",
       claimedBy: "{{name}}님이 담당",
+      created: "{{time}}에 생성됨",
+      closed: "{{time}}에 종료됨",
     },
     kanban: {
       lane: {

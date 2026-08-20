@@ -3,6 +3,7 @@ const testTheme = {
   colors: {
     foreground: "#111111",
     foregroundMuted: "#666666",
+    foregroundExtraMuted: "#a1a1aa",
     statusSuccess: "#15803d",
     statusDanger: "#b91c1c",
     statusWarning: "#d97706",
@@ -10,6 +11,16 @@ const testTheme = {
     surface1: "#fafafa",
     surface2: "#f4f4f5",
     border: "#e4e4e7",
+    palette: {
+      red: { 600: "#dc2626" },
+      orange: { 600: "#ea580c" },
+      yellow: { 600: "#ca8a04" },
+      sky: { 600: "#0284c7" },
+      slate: { 400: "#94a3b8" },
+      blue: { 600: "#2563eb" },
+      amber: { 700: "#b45309" },
+      green: { 600: "#16a34a" },
+    },
   },
   spacing: [0, 4, 8, 12, 16, 20, 24, 28, 32],
   fontSize: {

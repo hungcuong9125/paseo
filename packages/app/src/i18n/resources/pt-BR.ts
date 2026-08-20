@@ -2508,6 +2508,8 @@ export const ptBR: TranslationResources = {
     card: {
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Reivindicado por {{name}}",
+      created: "Criado {{time}}",
+      closed: "Fechado {{time}}",
     },
     kanban: {
       lane: {

@@ -2493,6 +2493,8 @@ export const ja: TranslationResources = {
     card: {
       childProgress: "{{done}}/{{count}}",
       claimedBy: "{{name}} が担当",
+      created: "{{time}}に作成",
+      closed: "{{time}}にクローズ",
     },
     kanban: {
       lane: {

@@ -5,6 +5,7 @@ import { StyleSheet } from "react-native-unistyles";
 import type { TrackerPriority, TrackerStatus } from "@getpaseo/protocol/tracker/types";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { TrackerStatusIcon } from "@/components/tracker/tracker-status-icon";
+import { formatTimeAgo } from "@/utils/time";
 
 export interface TrackerKanbanCardProps {
   id: string;
@@ -13,10 +14,32 @@ export interface TrackerKanbanCardProps {
   status: TrackerStatus;
   /** Rendered as a chip only when passed — relevant in multi-project (aggregated) context. */
   projectLabel?: string | null;
+  description?: string | null;
   childCount?: number;
   doneCount?: number;
   claimedBy?: string | null;
+  createdAt?: string | null;
+  /** Only meaningful for `closed` — `ait` never sets this for `cancelled`. */
+  closedAt?: string | null;
   testID?: string;
+}
+
+// Same severity scale as tracker-row.tsx's List rows: red (critical) → orange → yellow → sky →
+// slate (nice-to-have). Kept as a local switch (not a shared import) because each file's colors
+// are theme-bound inside its own StyleSheet.create factory — see docs/unistyles.md.
+function priorityColorStyle(priority: TrackerPriority) {
+  switch (priority) {
+    case "P0":
+      return styles.prioP0;
+    case "P1":
+      return styles.prioP1;
+    case "P2":
+      return styles.prioP2;
+    case "P3":
+      return styles.prioP3;
+    default:
+      return styles.prioP4;
+  }
 }
 
 export function TrackerKanbanCard({
@@ -25,30 +48,37 @@ export function TrackerKanbanCard({
   priority,
   status,
   projectLabel = null,
+  description = null,
   childCount,
   doneCount,
   claimedBy = null,
+  createdAt = null,
+  closedAt = null,
   testID,
 }: TrackerKanbanCardProps): ReactElement {
   const { t } = useTranslation();
   const hasChildren = typeof childCount === "number" && childCount > 0;
+  const showClosedAt = status === "closed" && Boolean(closedAt);
 
   return (
     <View style={styles.card} testID={testID ?? `tracker-kanban-card-${id}`}>
       <View style={styles.metaRow}>
-        <TrackerStatusIcon status={status} size={14} />
+        <TrackerStatusIcon status={status} size={11} />
         <Text style={styles.meta} numberOfLines={1}>
           {id}
           {" · "}
-          {priority}
+          <Text style={priorityColorStyle(priority)}>{priority}</Text>
+          {hasChildren
+            ? ` · ${t("tracker.card.childProgress", { done: doneCount ?? 0, count: childCount })}`
+            : null}
         </Text>
       </View>
       <Text style={styles.title} numberOfLines={2}>
         {title}
       </Text>
-      {hasChildren ? (
-        <Text style={styles.childProgress}>
-          {t("tracker.card.childProgress", { done: doneCount ?? 0, count: childCount })}
+      {description ? (
+        <Text style={styles.description} numberOfLines={1}>
+          {description}
         </Text>
       ) : null}
       {claimedBy ? (
@@ -56,11 +86,19 @@ export function TrackerKanbanCard({
           {t("tracker.card.claimedBy", { name: claimedBy })}
         </Text>
       ) : null}
+      {createdAt ? (
+        <Text style={styles.dates} numberOfLines={1}>
+          {t("tracker.card.created", { time: formatTimeAgo(new Date(createdAt)) })}
+          {showClosedAt && closedAt
+            ? ` · ${t("tracker.card.closed", { time: formatTimeAgo(new Date(closedAt)) })}`
+            : null}
+        </Text>
+      ) : null}
       {/* Content-sized, not stretched — a bare child of this column-flex View
           would otherwise default to cross-axis stretch (full card width). */}
       {projectLabel ? (
         <View style={styles.projectChipWrap}>
-          <StatusBadge label={projectLabel} variant="muted" />
+          <StatusBadge label={projectLabel} variant="muted" size="sm" />
         </View>
       ) : null}
     </View>
@@ -92,7 +130,7 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foreground,
   },
-  childProgress: {
+  description: {
     fontSize: theme.fontSize.xs,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foregroundMuted,
@@ -102,7 +140,27 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foregroundMuted,
   },
+  dates: {
+    fontSize: theme.fontSize.xs,
+    fontWeight: theme.fontWeight.normal,
+    color: theme.colors.foregroundExtraMuted,
+  },
   projectChipWrap: {
     alignSelf: "flex-start",
+  },
+  prioP0: {
+    color: theme.colors.palette.red[600],
+  },
+  prioP1: {
+    color: theme.colors.palette.orange[600],
+  },
+  prioP2: {
+    color: theme.colors.palette.yellow[600],
+  },
+  prioP3: {
+    color: theme.colors.palette.sky[600],
+  },
+  prioP4: {
+    color: theme.colors.palette.slate[400],
   },
 }));

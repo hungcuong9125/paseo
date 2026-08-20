@@ -2513,6 +2513,8 @@ export const ru: TranslationResources = {
     card: {
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Закреплено за {{name}}",
+      created: "Создано {{time}}",
+      closed: "Закрыто {{time}}",
     },
     kanban: {
       lane: {

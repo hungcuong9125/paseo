@@ -130,6 +130,9 @@ const AitIssueLongSchema = z.object({
   claimed_by: z.string().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
+  // Present on every `ait` build this service targets, but kept optional so an older CLI
+  // that predates the column doesn't fail the whole list/show response over one field.
+  closed_at: z.string().nullable().optional(),
 });
 
 const AitListResponseSchema = z.object({
@@ -179,7 +182,10 @@ function toTrackerSummary(raw: z.infer<typeof AitIssueLongSchema>): TrackerSumma
     priority: raw.priority,
     parentId: raw.parent_id,
     claimedBy: raw.claimed_by,
+    createdAt: raw.created_at,
     updatedAt: raw.updated_at,
+    closedAt: raw.closed_at ?? null,
+    description: raw.description.length > 0 ? raw.description : null,
   };
 }
 
@@ -199,6 +205,7 @@ function toTrackerDetail(raw: z.infer<typeof AitShowResponseSchema>): TrackerDet
     claimedBy: raw.issue.claimed_by,
     createdAt: raw.issue.created_at,
     updatedAt: raw.issue.updated_at,
+    closedAt: raw.issue.closed_at ?? null,
     children: raw.children.map(toTrackerSummary),
     blockedBy: raw.blockers.map(toTrackerSummary),
     notes: raw.notes.map(toTrackerNote),

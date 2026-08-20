@@ -2439,6 +2439,8 @@ export const zhCN: TranslationResources = {
     card: {
       childProgress: "{{done}}/{{count}}",
       claimedBy: "由 {{name}} 认领",
+      created: "创建于 {{time}}",
+      closed: "关闭于 {{time}}",
     },
     kanban: {
       lane: {

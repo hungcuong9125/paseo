@@ -22,7 +22,11 @@ export const TrackerSummarySchema = z.object({
   priority: TrackerPrioritySchema,
   parentId: z.string().nullable(),
   claimedBy: z.string().nullable().optional(),
+  createdAt: z.string().optional(),
   updatedAt: z.string().optional(),
+  // Only ever set for `closed` — `ait` clears it on reopen and never sets it for `cancelled`.
+  closedAt: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
 });
 export type TrackerSummary = z.infer<typeof TrackerSummarySchema>;
 
@@ -45,6 +49,7 @@ export const TrackerDetailSchema = z.object({
   claimedBy: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  closedAt: z.string().nullable().optional(),
   children: z.array(TrackerSummarySchema),
   blockedBy: z.array(TrackerSummarySchema),
   notes: z.array(TrackerNoteSchema),

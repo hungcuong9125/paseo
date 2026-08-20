@@ -130,9 +130,12 @@ export function TrackerKanbanColumn({
                 priority={tracker.priority}
                 status={tracker.status}
                 projectLabel={getProjectLabel?.(tracker) ?? null}
+                description={tracker.description ?? null}
                 childCount={stats.childCount}
                 doneCount={stats.doneCount}
                 claimedBy={tracker.claimedBy ?? null}
+                createdAt={tracker.createdAt ?? null}
+                closedAt={tracker.closedAt ?? null}
                 testID={cardTestID}
               />
             );

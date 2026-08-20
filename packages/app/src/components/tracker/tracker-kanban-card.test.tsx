@@ -15,6 +15,8 @@ vi.mock("react-i18next", () => ({
       const templates: Record<string, string> = {
         "tracker.card.childProgress": "{{done}}/{{count}}",
         "tracker.card.claimedBy": "Claimed by {{name}}",
+        "tracker.card.created": "Created {{time}}",
+        "tracker.card.closed": "Closed {{time}}",
       };
       const template = templates[key] ?? key;
       if (!options) {
@@ -40,26 +42,34 @@ describe("TrackerKanbanCard", () => {
       <TrackerKanbanCard
         {...baseProps}
         projectLabel="paseo"
+        description="A short summary of the work"
         childCount={7}
         doneCount={3}
         claimedBy="ada"
+        createdAt="2024-01-01T00:00:00.000Z"
+        status="closed"
+        closedAt="2024-06-01T00:00:00.000Z"
       />,
     );
 
     expect(screen.getByText(/paseo-abc\.1/)).toBeTruthy();
     expect(screen.getByText(/P1/)).toBeTruthy();
+    expect(screen.getByText(/3\/7/)).toBeTruthy();
     expect(screen.getByText("paseo")).toBeTruthy();
     expect(screen.getByText("Fix the thing")).toBeTruthy();
-    expect(screen.getByText("3/7")).toBeTruthy();
+    expect(screen.getByText("A short summary of the work")).toBeTruthy();
     expect(screen.getByText("Claimed by ada")).toBeTruthy();
+    expect(screen.getByText(/Created/)).toBeTruthy();
+    expect(screen.getByText(/Closed/)).toBeTruthy();
   });
 
   it("omits every optional line when its data is absent, with no hierarchy-board leftover copy", () => {
     render(<TrackerKanbanCard {...baseProps} />);
 
     expect(screen.getByText("Fix the thing")).toBeTruthy();
-    expect(screen.queryByText("3/7")).toBeNull();
+    expect(screen.queryByText(/3\/7/)).toBeNull();
     expect(screen.queryByText(/Claimed by/)).toBeNull();
+    expect(screen.queryByText(/Created/)).toBeNull();
     expect(screen.queryByText(/No tasks/i)).toBeNull();
     expect(screen.queryByText(/Standalone/i)).toBeNull();
     expect(screen.queryByText(/General/i)).toBeNull();
@@ -69,7 +79,29 @@ describe("TrackerKanbanCard", () => {
   it("does not show child progress when childCount is zero", () => {
     render(<TrackerKanbanCard {...baseProps} childCount={0} doneCount={0} />);
 
-    expect(screen.queryByText("0/0")).toBeNull();
+    expect(screen.queryByText(/0\/0/)).toBeNull();
+  });
+
+  it("shows Closed only for status closed, never for cancelled", () => {
+    const { rerender } = render(
+      <TrackerKanbanCard
+        {...baseProps}
+        status="cancelled"
+        createdAt="2024-01-01T00:00:00.000Z"
+        closedAt="2024-06-01T00:00:00.000Z"
+      />,
+    );
+    expect(screen.queryByText(/Closed/)).toBeNull();
+
+    rerender(
+      <TrackerKanbanCard
+        {...baseProps}
+        status="closed"
+        createdAt="2024-01-01T00:00:00.000Z"
+        closedAt="2024-06-01T00:00:00.000Z"
+      />,
+    );
+    expect(screen.getByText(/Closed/)).toBeTruthy();
   });
 
   it("shows the project chip only when a project label is passed", () => {

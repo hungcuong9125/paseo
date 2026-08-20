@@ -2482,6 +2482,8 @@ export const en = {
     card: {
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Claimed by {{name}}",
+      created: "Created {{time}}",
+      closed: "Closed {{time}}",
     },
     kanban: {
       lane: {

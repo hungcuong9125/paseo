@@ -1,5 +1,6 @@
 import { CheckCircle2, MoreVertical, PlayCircle, RotateCcw, XCircle } from "lucide-react-native";
 import { useCallback, useState, type ReactElement } from "react";
+import { useTranslation } from "react-i18next";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
@@ -15,6 +16,7 @@ import { isNative } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { settingsStyles } from "@/styles/settings";
 import type { Theme } from "@/styles/theme";
+import { formatTimeAgo } from "@/utils/time";
 
 const ThemedPlayCircle = withUnistyles(PlayCircle);
 const ThemedCheckCircle2 = withUnistyles(CheckCircle2);
@@ -96,10 +98,12 @@ export function TrackerRow({
   onReopen,
   onCancel,
 }: TrackerRowProps): ReactElement {
+  const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
   const [isHovered, setIsHovered] = useState(false);
   const handlePointerEnter = useCallback(() => setIsHovered(true), []);
   const handlePointerLeave = useCallback(() => setIsHovered(false), []);
+  const showClosedAt = tracker.status === "closed" && Boolean(tracker.closedAt);
 
   const rowStyle = useCallback(
     ({ pressed }: PressableStateCallbackType) => [
@@ -152,6 +156,19 @@ export function TrackerRow({
                 </>
               ) : null}
             </Text>
+            {tracker.description ? (
+              <Text style={styles.description} numberOfLines={1}>
+                {tracker.description}
+              </Text>
+            ) : null}
+            {tracker.createdAt ? (
+              <Text style={styles.dates} numberOfLines={1}>
+                {t("tracker.card.created", { time: formatTimeAgo(new Date(tracker.createdAt)) })}
+                {showClosedAt && tracker.closedAt
+                  ? ` · ${t("tracker.card.closed", { time: formatTimeAgo(new Date(tracker.closedAt)) })}`
+                  : null}
+              </Text>
+            ) : null}
           </View>
         </View>
 
@@ -310,6 +327,14 @@ const styles = StyleSheet.create((theme) => ({
   textGroup: {
     flex: 1,
     minWidth: 0,
+  },
+  description: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundMuted,
+  },
+  dates: {
+    fontSize: theme.fontSize.xs,
+    color: theme.colors.foregroundExtraMuted,
   },
   trailing: {
     flexDirection: "row",

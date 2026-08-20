@@ -194,6 +194,8 @@ function TrackerDetailContent({
     () => [...tracker.notes].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     [tracker.notes],
   );
+  // `closedAt` is only ever set by `ait` for status `closed` — never for `cancelled`.
+  const showClosedAt = tracker.status === "closed" && Boolean(tracker.closedAt);
 
   return (
     <View style={styles.content}>
@@ -210,6 +212,12 @@ function TrackerDetailContent({
       <Text style={styles.meta}>
         {trackerStatusLabel(tracker.status)} · {tracker.type} · {tracker.priority}
         {tracker.claimedBy ? ` · claimed by ${tracker.claimedBy}` : ""}
+      </Text>
+      <Text style={styles.dates}>
+        {`Created ${formatTimeAgo(new Date(tracker.createdAt))}`}
+        {showClosedAt && tracker.closedAt
+          ? ` · Closed ${formatTimeAgo(new Date(tracker.closedAt))}`
+          : ""}
       </Text>
 
       {tracker.description ? <Text style={styles.description}>{tracker.description}</Text> : null}
@@ -400,6 +408,10 @@ const styles = StyleSheet.create((theme) => ({
   meta: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
+  },
+  dates: {
+    color: theme.colors.foregroundExtraMuted,
+    fontSize: theme.fontSize.xs,
   },
   description: {
     color: theme.colors.foreground,

@@ -3,28 +3,32 @@ import { View, Text } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 
 type StatusBadgeVariant = "success" | "error" | "muted";
+type StatusBadgeSize = "sm" | "md";
 
 interface StatusBadgeProps {
   label: string;
   variant?: StatusBadgeVariant;
+  size?: StatusBadgeSize;
 }
 
-export function StatusBadge({ label, variant = "muted" }: StatusBadgeProps) {
+export function StatusBadge({ label, variant = "muted", size = "md" }: StatusBadgeProps) {
   const pillStyle = useMemo(
     () => [
       styles.pill,
+      size === "sm" && styles.pillSmall,
       variant === "success" && styles.pillSuccess,
       variant === "error" && styles.pillError,
     ],
-    [variant],
+    [variant, size],
   );
   const textStyle = useMemo(
     () => [
       styles.pillText,
+      size === "sm" && styles.pillTextSmall,
       variant === "success" && styles.pillTextSuccess,
       variant === "error" && styles.pillTextError,
     ],
-    [variant],
+    [variant, size],
   );
 
   return (
@@ -45,6 +49,10 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[2],
     paddingVertical: 3,
   },
+  pillSmall: {
+    paddingHorizontal: theme.spacing[1.5],
+    paddingVertical: 1,
+  },
   // Tinted from the one status token rather than a palette step, so the pill tracks the
   // theme. `1a`/`33` are the 10%/20% alpha suffixes the identity table uses.
   pillSuccess: {
@@ -59,6 +67,9 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.xs,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foregroundMuted,
+  },
+  pillTextSmall: {
+    fontSize: 10,
   },
   pillTextSuccess: {
     color: theme.colors.statusSuccess,

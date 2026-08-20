@@ -2531,6 +2531,8 @@ export const fr: TranslationResources = {
     card: {
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Revendiqué par {{name}}",
+      created: "Créé {{time}}",
+      closed: "Fermé {{time}}",
     },
     kanban: {
       lane: {

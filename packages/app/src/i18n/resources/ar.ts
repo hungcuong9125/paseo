@@ -2468,6 +2468,8 @@ export const ar: TranslationResources = {
     card: {
       childProgress: "{{done}}/{{count}}",
       claimedBy: "تمت المطالبة به بواسطة {{name}}",
+      created: "تم الإنشاء {{time}}",
+      closed: "أُغلق {{time}}",
     },
     kanban: {
       lane: {
