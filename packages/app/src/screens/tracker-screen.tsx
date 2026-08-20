@@ -22,7 +22,7 @@ import { useTranslation } from "react-i18next";
 import { ChevronDown, LayoutGrid, ListChecks, Plus } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
+import type { TrackerSummary, TrackerType } from "@getpaseo/protocol/tracker/types";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { TrackerDetailSheet } from "@/components/tracker/tracker-detail-sheet";
 import { TrackerFormSheet } from "@/components/tracker/tracker-form-sheet";
@@ -69,6 +69,19 @@ import { resolveTrackerScreenBodyState, type TrackerScreenBodyState } from "./tr
 
 type StatFilter = TrackerStatFilter;
 type ViewMode = "list" | "kanban";
+// The Kanban type filter's domain: the real TrackerType union plus an "all"
+// sentinel for the fourth toggle option. Board default is "task" (see
+// docs/refactors/tracker-kanban-redesign.md, "Which types appear on the
+// board") — filtering happens here, not inside buildTrackerBoard, which stays
+// status-only per its own docstring.
+type KanbanTypeFilter = TrackerType | "all";
+
+const KANBAN_TYPE_FILTER_DEFS: ReadonlyArray<{ value: KanbanTypeFilter; labelKey: string }> = [
+  { value: "task", labelKey: "tracker.kanban.type.tasks" },
+  { value: "epic", labelKey: "tracker.kanban.type.epics" },
+  { value: "initiative", labelKey: "tracker.kanban.type.initiatives" },
+  { value: "all", labelKey: "tracker.kanban.type.all" },
+];
 
 // Extracted to keep the switch's branches out of TrackerScreenContent's own
 // cyclomatic complexity — the one-transition-matrix rule lives in
@@ -128,6 +141,10 @@ function TrackerScreenContent(): ReactElement {
   // are visible. Sharing one state would open the board on a single Open lane.
   const [listStatFilter, setListStatFilter] = useState<StatFilter>("open");
   const [kanbanStatFilter, setKanbanStatFilter] = useState<StatFilter>("all");
+  // Kanban-only: which tracker granularities appear on the board. Defaults to
+  // "task" to preserve today's List-view default (mixing all three
+  // granularities in one lane is what made the old hierarchy board unreadable).
+  const [kanbanTypeFilter, setKanbanTypeFilter] = useState<KanbanTypeFilter>("task");
   const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedTracker, setSelectedTracker] = useState<AggregatedTracker | null>(null);
@@ -171,7 +188,15 @@ function TrackerScreenContent(): ReactElement {
           ),
     [projectFilteredTrackers, listStatFilter],
   );
-  const kanbanTrackers = projectFilteredTrackers;
+  // Type filter is applied here, before the board — buildTrackerBoard's own
+  // partitioning stays status-only (see tracker-board-model.ts docstring).
+  const kanbanTrackers = useMemo(
+    () =>
+      kanbanTypeFilter === "all"
+        ? projectFilteredTrackers
+        : projectFilteredTrackers.filter((tracker) => tracker.type === kanbanTypeFilter),
+    [projectFilteredTrackers, kanbanTypeFilter],
+  );
   const orderedTrackers = useMemo(
     () =>
       [...visibleTrackers].sort(
@@ -247,6 +272,9 @@ function TrackerScreenContent(): ReactElement {
   const handleKanbanStatFilterChange = useCallback((value: StatFilter) => {
     setKanbanStatFilter(value);
   }, []);
+  const handleKanbanTypeFilterChange = useCallback((value: KanbanTypeFilter) => {
+    setKanbanTypeFilter(value);
+  }, []);
   const effectiveStatFilter = useMemo(
     () => (viewMode === "kanban" ? kanbanStatFilter : listStatFilter),
     [viewMode, kanbanStatFilter, listStatFilter],
@@ -319,6 +347,8 @@ function TrackerScreenContent(): ReactElement {
         onStatFilterChange={effectiveOnStatFilterChange}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
+        kanbanTypeFilter={kanbanTypeFilter}
+        onKanbanTypeFilterChange={handleKanbanTypeFilterChange}
         projectErrors={projectErrors}
         onOpenTracker={handleOpenTracker}
         onKanbanTransition={handleKanbanTransition}
@@ -556,6 +586,8 @@ function TrackerScreenBody({
   onStatFilterChange,
   viewMode,
   onViewModeChange,
+  kanbanTypeFilter,
+  onKanbanTypeFilterChange,
   projectErrors,
   onOpenTracker,
   onKanbanTransition,
@@ -586,6 +618,8 @@ function TrackerScreenBody({
   onStatFilterChange: (value: StatFilter) => void;
   viewMode: ViewMode;
   onViewModeChange: (value: ViewMode) => void;
+  kanbanTypeFilter: KanbanTypeFilter;
+  onKanbanTypeFilterChange: (value: KanbanTypeFilter) => void;
   projectErrors: TrackerProjectError[];
   onOpenTracker: (tracker: AggregatedTracker) => void;
   onKanbanTransition: (trackerId: string, transition: TrackerTransition) => Promise<void>;
@@ -689,6 +723,8 @@ function TrackerScreenBody({
             onStatFilterChange={onStatFilterChange}
             viewMode={viewMode}
             onViewModeChange={onViewModeChange}
+            kanbanTypeFilter={kanbanTypeFilter}
+            onKanbanTypeFilterChange={onKanbanTypeFilterChange}
             onCreate={onCreate}
           />
           {projectErrors.length > 0 ? <ProjectErrorsBanner errors={projectErrors} /> : null}
@@ -717,6 +753,8 @@ function TrackerScreenBody({
           onStatFilterChange={onStatFilterChange}
           viewMode={viewMode}
           onViewModeChange={onViewModeChange}
+          kanbanTypeFilter={kanbanTypeFilter}
+          onKanbanTypeFilterChange={onKanbanTypeFilterChange}
           onCreate={onCreate}
         />
       );
@@ -920,6 +958,8 @@ function TrackersToolbar({
   onStatFilterChange,
   viewMode,
   onViewModeChange,
+  kanbanTypeFilter,
+  onKanbanTypeFilterChange,
   onCreate,
 }: {
   statsTrackers: AggregatedTracker[];
@@ -930,8 +970,20 @@ function TrackersToolbar({
   onStatFilterChange: (value: StatFilter) => void;
   viewMode: ViewMode;
   onViewModeChange: (value: ViewMode) => void;
+  kanbanTypeFilter: KanbanTypeFilter;
+  onKanbanTypeFilterChange: (value: KanbanTypeFilter) => void;
   onCreate: () => void;
 }): ReactElement {
+  const { t } = useTranslation();
+  const typeFilterOptions: SegmentedControlOption<KanbanTypeFilter>[] = useMemo(
+    () =>
+      KANBAN_TYPE_FILTER_DEFS.map((def) => ({
+        value: def.value,
+        label: t(def.labelKey),
+        testID: `trackers-kanban-type-filter-${def.value}`,
+      })),
+    [t],
+  );
   return (
     <View style={styles.toolbar}>
       <View style={styles.toolbarMain}>
@@ -949,6 +1001,15 @@ function TrackersToolbar({
         />
       </View>
       <View style={styles.toolbarActions}>
+        {viewMode === "kanban" ? (
+          <SegmentedControl
+            options={typeFilterOptions}
+            value={kanbanTypeFilter}
+            onValueChange={onKanbanTypeFilterChange}
+            size="sm"
+            testID="trackers-kanban-type-filter"
+          />
+        ) : null}
         <SegmentedControl
           options={viewModeOptions}
           value={viewMode}

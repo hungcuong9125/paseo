@@ -2531,6 +2531,12 @@ export const ptBR: TranslationResources = {
         inProgress: "Mover para Em andamento",
         done: "Mover para Concluído",
       },
+      type: {
+        tasks: "Tarefas",
+        epics: "Épicos",
+        initiatives: "Iniciativas",
+        all: "Todos",
+      },
       error: {
         transitionFailed: "Não foi possível mover {{title}}. Tente novamente.",
       },

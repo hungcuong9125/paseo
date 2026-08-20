@@ -2508,6 +2508,12 @@ export const ko: TranslationResources = {
         inProgress: "진행 중으로 이동",
         done: "완료로 이동",
       },
+      type: {
+        tasks: "작업",
+        epics: "에픽",
+        initiatives: "이니셔티브",
+        all: "전체",
+      },
       error: {
         transitionFailed: "{{title}}을(를) 이동할 수 없습니다. 다시 시도하세요.",
       },

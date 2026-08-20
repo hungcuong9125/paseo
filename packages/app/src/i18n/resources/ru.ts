@@ -2536,6 +2536,12 @@ export const ru: TranslationResources = {
         inProgress: "Переместить в «В работе»",
         done: "Переместить в «Готово»",
       },
+      type: {
+        tasks: "Задачи",
+        epics: "Эпики",
+        initiatives: "Инициативы",
+        all: "Все",
+      },
       error: {
         transitionFailed: "Не удалось переместить {{title}}. Попробуйте снова.",
       },

@@ -2491,6 +2491,12 @@ export const ar: TranslationResources = {
         inProgress: "نقل إلى قيد التنفيذ",
         done: "نقل إلى منجز",
       },
+      type: {
+        tasks: "المهام",
+        epics: "الملاحم",
+        initiatives: "المبادرات",
+        all: "الكل",
+      },
       error: {
         transitionFailed: "تعذر نقل {{title}}. حاول مرة أخرى.",
       },

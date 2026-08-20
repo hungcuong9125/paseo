@@ -2554,6 +2554,12 @@ export const fr: TranslationResources = {
         inProgress: "Déplacer vers En cours",
         done: "Déplacer vers Terminé",
       },
+      type: {
+        tasks: "Tâches",
+        epics: "Épopées",
+        initiatives: "Initiatives",
+        all: "Tout",
+      },
       error: {
         transitionFailed: "Impossible de déplacer {{title}}. Réessayez.",
       },

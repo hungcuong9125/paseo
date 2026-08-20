@@ -2547,6 +2547,12 @@ export const es: TranslationResources = {
         inProgress: "Mover a En curso",
         done: "Mover a Hecho",
       },
+      type: {
+        tasks: "Tareas",
+        epics: "Épicas",
+        initiatives: "Iniciativas",
+        all: "Todo",
+      },
       error: {
         transitionFailed: "No se pudo mover {{title}}. Inténtalo de nuevo.",
       },

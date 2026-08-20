@@ -2505,6 +2505,12 @@ export const en = {
         inProgress: "Move to In progress",
         done: "Move to Done",
       },
+      type: {
+        tasks: "Tasks",
+        epics: "Epics",
+        initiatives: "Initiatives",
+        all: "All",
+      },
       error: {
         transitionFailed: "Couldn't move {{title}}. Try again.",
       },

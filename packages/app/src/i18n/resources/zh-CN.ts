@@ -2462,6 +2462,12 @@ export const zhCN: TranslationResources = {
         inProgress: "移动到进行中",
         done: "移动到已完成",
       },
+      type: {
+        tasks: "任务",
+        epics: "史诗",
+        initiatives: "计划",
+        all: "全部",
+      },
       error: {
         transitionFailed: "无法移动 {{title}}。请重试。",
       },

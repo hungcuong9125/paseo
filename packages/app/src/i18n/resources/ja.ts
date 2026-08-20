@@ -2516,6 +2516,12 @@ export const ja: TranslationResources = {
         inProgress: "進行中へ移動",
         done: "完了へ移動",
       },
+      type: {
+        tasks: "タスク",
+        epics: "エピック",
+        initiatives: "イニシアチブ",
+        all: "すべて",
+      },
       error: {
         transitionFailed: "{{title}} を移動できませんでした。もう一度お試しください。",
       },
