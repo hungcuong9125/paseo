@@ -2533,5 +2533,30 @@ export const fr: TranslationResources = {
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Revendiqué par {{name}}",
     },
+    kanban: {
+      lane: {
+        open: "Ouvert",
+        inProgress: "En cours",
+        done: "Terminé",
+      },
+      empty: {
+        open: "Aucun élément ouvert",
+        inProgress: "Aucun élément en cours",
+        done: "Aucun élément terminé",
+      },
+      showMore: "Afficher {{count}} de plus",
+      moveMenu: {
+        trigger: "Déplacer {{title}}",
+        title: "Déplacer vers…",
+      },
+      moveTo: {
+        open: "Déplacer vers Ouvert",
+        inProgress: "Déplacer vers En cours",
+        done: "Déplacer vers Terminé",
+      },
+      error: {
+        transitionFailed: "Impossible de déplacer {{title}}. Réessayez.",
+      },
+    },
   },
 };

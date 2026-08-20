@@ -2510,5 +2510,30 @@ export const ptBR: TranslationResources = {
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Reivindicado por {{name}}",
     },
+    kanban: {
+      lane: {
+        open: "Aberto",
+        inProgress: "Em andamento",
+        done: "Concluído",
+      },
+      empty: {
+        open: "Nenhum item aberto",
+        inProgress: "Nenhum item em andamento",
+        done: "Nenhum item concluído",
+      },
+      showMore: "Mostrar mais {{count}}",
+      moveMenu: {
+        trigger: "Mover {{title}}",
+        title: "Mover para…",
+      },
+      moveTo: {
+        open: "Mover para Aberto",
+        inProgress: "Mover para Em andamento",
+        done: "Mover para Concluído",
+      },
+      error: {
+        transitionFailed: "Não foi possível mover {{title}}. Tente novamente.",
+      },
+    },
   },
 };

@@ -2526,5 +2526,30 @@ export const es: TranslationResources = {
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Reclamado por {{name}}",
     },
+    kanban: {
+      lane: {
+        open: "Abierto",
+        inProgress: "En curso",
+        done: "Hecho",
+      },
+      empty: {
+        open: "No hay elementos abiertos",
+        inProgress: "No hay elementos en curso",
+        done: "No hay elementos completados",
+      },
+      showMore: "Mostrar {{count}} más",
+      moveMenu: {
+        trigger: "Mover {{title}}",
+        title: "Mover a…",
+      },
+      moveTo: {
+        open: "Mover a Abierto",
+        inProgress: "Mover a En curso",
+        done: "Mover a Hecho",
+      },
+      error: {
+        transitionFailed: "No se pudo mover {{title}}. Inténtalo de nuevo.",
+      },
+    },
   },
 };

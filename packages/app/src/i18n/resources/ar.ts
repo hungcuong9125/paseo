@@ -2470,5 +2470,30 @@ export const ar: TranslationResources = {
       childProgress: "{{done}}/{{count}}",
       claimedBy: "تمت المطالبة به بواسطة {{name}}",
     },
+    kanban: {
+      lane: {
+        open: "مفتوح",
+        inProgress: "قيد التنفيذ",
+        done: "منجز",
+      },
+      empty: {
+        open: "لا توجد عناصر مفتوحة",
+        inProgress: "لا توجد عناصر قيد التنفيذ",
+        done: "لا توجد عناصر منجزة",
+      },
+      showMore: "عرض {{count}} المزيد",
+      moveMenu: {
+        trigger: "نقل {{title}}",
+        title: "نقل إلى…",
+      },
+      moveTo: {
+        open: "نقل إلى مفتوح",
+        inProgress: "نقل إلى قيد التنفيذ",
+        done: "نقل إلى منجز",
+      },
+      error: {
+        transitionFailed: "تعذر نقل {{title}}. حاول مرة أخرى.",
+      },
+    },
   },
 };

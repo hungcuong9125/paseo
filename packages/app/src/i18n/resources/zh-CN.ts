@@ -2441,5 +2441,30 @@ export const zhCN: TranslationResources = {
       childProgress: "{{done}}/{{count}}",
       claimedBy: "由 {{name}} 认领",
     },
+    kanban: {
+      lane: {
+        open: "待处理",
+        inProgress: "进行中",
+        done: "已完成",
+      },
+      empty: {
+        open: "没有待处理的事项",
+        inProgress: "没有进行中的事项",
+        done: "没有已完成的事项",
+      },
+      showMore: "显示另外 {{count}} 项",
+      moveMenu: {
+        trigger: "移动 {{title}}",
+        title: "移动到…",
+      },
+      moveTo: {
+        open: "移动到待处理",
+        inProgress: "移动到进行中",
+        done: "移动到已完成",
+      },
+      error: {
+        transitionFailed: "无法移动 {{title}}。请重试。",
+      },
+    },
   },
 };

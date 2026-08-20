@@ -2515,5 +2515,30 @@ export const ru: TranslationResources = {
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Закреплено за {{name}}",
     },
+    kanban: {
+      lane: {
+        open: "Открыто",
+        inProgress: "В работе",
+        done: "Готово",
+      },
+      empty: {
+        open: "Нет открытых задач",
+        inProgress: "Нет задач в работе",
+        done: "Нет завершённых задач",
+      },
+      showMore: "Показать ещё {{count}}",
+      moveMenu: {
+        trigger: "Переместить {{title}}",
+        title: "Переместить в…",
+      },
+      moveTo: {
+        open: "Переместить в «Открыто»",
+        inProgress: "Переместить в «В работе»",
+        done: "Переместить в «Готово»",
+      },
+      error: {
+        transitionFailed: "Не удалось переместить {{title}}. Попробуйте снова.",
+      },
+    },
   },
 };

@@ -2487,5 +2487,30 @@ export const ko: TranslationResources = {
       childProgress: "{{done}}/{{count}}",
       claimedBy: "{{name}}님이 담당",
     },
+    kanban: {
+      lane: {
+        open: "열림",
+        inProgress: "진행 중",
+        done: "완료",
+      },
+      empty: {
+        open: "열린 항목이 없습니다",
+        inProgress: "진행 중인 항목이 없습니다",
+        done: "완료된 항목이 없습니다",
+      },
+      showMore: "{{count}}개 더 보기",
+      moveMenu: {
+        trigger: "{{title}} 이동",
+        title: "이동…",
+      },
+      moveTo: {
+        open: "열림으로 이동",
+        inProgress: "진행 중으로 이동",
+        done: "완료로 이동",
+      },
+      error: {
+        transitionFailed: "{{title}}을(를) 이동할 수 없습니다. 다시 시도하세요.",
+      },
+    },
   },
 };

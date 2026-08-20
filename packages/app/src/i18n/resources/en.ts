@@ -2484,6 +2484,31 @@ export const en = {
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Claimed by {{name}}",
     },
+    kanban: {
+      lane: {
+        open: "Open",
+        inProgress: "In progress",
+        done: "Done",
+      },
+      empty: {
+        open: "No open items",
+        inProgress: "No items in progress",
+        done: "No done items",
+      },
+      showMore: "Show {{count}} more",
+      moveMenu: {
+        trigger: "Move {{title}}",
+        title: "Move to…",
+      },
+      moveTo: {
+        open: "Move to Open",
+        inProgress: "Move to In progress",
+        done: "Move to Done",
+      },
+      error: {
+        transitionFailed: "Couldn't move {{title}}. Try again.",
+      },
+    },
   },
 } as const;
 
