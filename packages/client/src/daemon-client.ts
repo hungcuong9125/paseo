@@ -1073,6 +1073,7 @@ export class DaemonClient {
     }
   >();
   private terminalDirectorySubscriptions = new Map<string, { cwd: string; workspaceId?: string }>();
+  private trackerSubscriptions = new Map<string, { projectId: string; all: boolean }>();
   private fileSubscriptions = new Map<
     string,
     { cwd: string; path: string; onUpdate: (version: FileVersion) => void }
@@ -1358,6 +1359,7 @@ export class DaemonClient {
     this.rejectPingProbe(new Error("Daemon client closed"));
     this.terminalStreams.clearSlots();
     this.fileSubscriptions.clear();
+    this.trackerSubscriptions.clear();
     this.lastServerInfoMessage = null;
     if (this.runtimeMetricsInterval) {
       clearInterval(this.runtimeMetricsInterval);
@@ -2379,6 +2381,18 @@ export class DaemonClient {
       })
         .then((payload) => subscription.onUpdate(payload.initial))
         .catch(() => undefined);
+    }
+  }
+
+  private resubscribeTrackerSubscriptions(): void {
+    for (const [subscriptionId, subscription] of this.trackerSubscriptions) {
+      this.sendSessionMessage({
+        type: "project.tracker.subscribe.request",
+        requestId: this.createRequestId(),
+        subscriptionId,
+        projectId: subscription.projectId,
+        all: subscription.all,
+      });
     }
   }
 
@@ -5229,6 +5243,45 @@ export class DaemonClient {
     return { trackers: payload.trackers, hiddenCount: payload.hiddenCount };
   }
 
+  async trackerSubscribe(options: {
+    projectId: string;
+    all?: boolean;
+    subscriptionId?: string;
+    requestId?: string;
+  }): Promise<
+    Extract<SessionOutboundMessage, { type: "project.tracker.subscribe.response" }>["payload"]
+  > {
+    const subscriptionId = options.subscriptionId ?? crypto.randomUUID();
+    const all = options.all === true;
+    this.trackerSubscriptions.set(subscriptionId, { projectId: options.projectId, all });
+    const requestId = this.createRequestId(options.requestId);
+    try {
+      return await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.subscribe.response">(
+        {
+          requestId,
+          message: {
+            type: "project.tracker.subscribe.request",
+            projectId: options.projectId,
+            subscriptionId,
+            all,
+          },
+        },
+      );
+    } catch (error) {
+      this.trackerSubscriptions.delete(subscriptionId);
+      throw error;
+    }
+  }
+
+  trackerUnsubscribe(subscriptionId: string): void {
+    this.trackerSubscriptions.delete(subscriptionId);
+    this.sendSessionMessage({
+      type: "project.tracker.unsubscribe.request",
+      requestId: this.createRequestId(),
+      subscriptionId,
+    });
+  }
+
   async trackerShow(options: {
     projectId: string;
     trackerId: string;
@@ -5895,6 +5948,7 @@ export class DaemonClient {
           this.resubscribeCheckoutDiffSubscriptions();
           this.resubscribeTerminalDirectorySubscriptions();
           this.resubscribeFileSubscriptions();
+          this.resubscribeTrackerSubscriptions();
           this.flushPendingSendQueue();
           this.resolveConnect();
         }

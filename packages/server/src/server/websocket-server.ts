@@ -13,6 +13,7 @@ import type { ProjectRegistry, WorkspaceRegistry } from "./workspace-registry.js
 import type { ProjectUpdate } from "./workspace-reconciliation-service.js";
 import type { ScheduleService } from "./schedule/service.js";
 import { createAitService, type AitService } from "../services/ait-cli-service.js";
+import { TrackerSyncManager } from "./tracker-sync-manager.js";
 import type { CheckoutDiffManager, CheckoutDiffMetrics } from "./checkout-diff-manager.js";
 import type { DaemonConfigStore, MutableDaemonConfig } from "./daemon-config-store.js";
 import {
@@ -531,6 +532,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly workspaceRegistry: WorkspaceRegistry;
   private readonly scheduleService: ScheduleService;
   private readonly aitService: AitService;
+  private readonly trackerSyncManager: TrackerSyncManager;
   private readonly checkoutDiffManager: CheckoutDiffManager;
   private readonly github: ForgeService;
   private readonly workspaceGitService: WorkspaceGitService;
@@ -647,6 +649,10 @@ export class VoiceAssistantWebSocketServer {
     });
     this.scheduleService = requiredServices.scheduleService;
     this.aitService = aitService ?? createAitService();
+    this.trackerSyncManager = new TrackerSyncManager({
+      aitService: this.aitService,
+      projectRegistry: this.projectRegistry,
+    });
     this.checkoutDiffManager = requiredServices.checkoutDiffManager;
     this.github = github ?? createGitHubService();
     this.workspaceGitService = workspaceGitService ?? createFallbackWorkspaceGitService();
@@ -1046,6 +1052,7 @@ export class VoiceAssistantWebSocketServer {
     await Promise.all(cleanupPromises);
     this.providerSnapshotManager.destroy();
     this.checkoutDiffManager.dispose();
+    await this.trackerSyncManager.close();
     await this.workspaceGitService.dispose();
     this.pendingConnections.clear();
     this.sessions.clear();
@@ -1350,6 +1357,7 @@ export class VoiceAssistantWebSocketServer {
       workspaceRegistry: this.workspaceRegistry,
       scheduleService: this.scheduleService,
       aitService: this.aitService,
+      trackerSyncManager: this.trackerSyncManager,
       checkoutDiffManager: this.checkoutDiffManager,
       github: this.github,
       workspaceGitService: this.workspaceGitService,
@@ -1614,6 +1622,8 @@ export class VoiceAssistantWebSocketServer {
         commitBaseClassification: true,
         // COMPAT(aitTracker): added in v0.4.1, remove gate after 2027-02-19.
         aitTracker: true,
+        // COMPAT(aitTrackerLive): added in v0.4.1, remove gate after 2027-02-19.
+        aitTrackerLive: true,
         // COMPAT(providerRemoval): added in v0.1.105, drop the gate when floor >= v0.1.105.
         providerRemoval: true,
         // COMPAT(importSessionWorkspaceTarget): added in v0.1.110, remove gate after 2027-01-16.

@@ -113,6 +113,42 @@ export const ProjectTrackerListResponseSchema = z.object({
   }),
 });
 
+export const ProjectTrackerSubscribeRequestSchema = z.object({
+  type: z.literal("project.tracker.subscribe.request"),
+  requestId: z.string(),
+  projectId: z.string(),
+  subscriptionId: z.string(),
+  all: z.boolean().optional(),
+});
+
+export const ProjectTrackerUnsubscribeRequestSchema = z.object({
+  // This request intentionally has no response: unsubscribe is an awaited server-side barrier.
+  type: z.literal("project.tracker.unsubscribe.request"),
+  requestId: z.string(),
+  subscriptionId: z.string(),
+});
+
+const ProjectTrackerSnapshotPayloadSchema = z.object({
+  subscriptionId: z.string(),
+  projectId: z.string(),
+  trackers: z.array(TrackerSummarySchema),
+  hiddenCount: z.number().int().nonnegative(),
+  epoch: z.number().int().positive(),
+  generation: z.number().int().positive(),
+  error: z.string().nullable(),
+  errorCode: TrackerErrorCodeSchema.nullable(),
+});
+
+export const ProjectTrackerSubscribeResponseSchema = z.object({
+  type: z.literal("project.tracker.subscribe.response"),
+  payload: ProjectTrackerSnapshotPayloadSchema.extend({ requestId: z.string() }),
+});
+
+export const ProjectTrackerUpdatedSchema = z.object({
+  type: z.literal("project.tracker.updated"),
+  payload: ProjectTrackerSnapshotPayloadSchema,
+});
+
 export const ProjectTrackerShowResponseSchema = z.object({
   type: z.literal("project.tracker.show.response"),
   payload: z.object({

@@ -6,11 +6,15 @@ import { findByType } from "../../test-utils/session-stubs.js";
 import type { SessionOutboundMessage } from "../../messages.js";
 import { AitCliError, type AitService } from "../../../services/ait-cli-service.js";
 import type { ProjectRegistry } from "../../workspace-registry.js";
+import type { TrackerSyncManager } from "../../tracker-sync-manager.js";
 
 const PROJECT_ID = "prj_abc123";
 const CWD = "/repo/my-project";
 
-function makeSession(ait: { [K in keyof AitService]?: unknown }) {
+function makeSession(
+  ait: { [K in keyof AitService]?: unknown },
+  trackerSyncManager?: { [K in keyof TrackerSyncManager]?: unknown },
+) {
   const emitted: SessionOutboundMessage[] = [];
   const projectRegistry = createStub<Pick<ProjectRegistry, "get">>({
     get: async (id: string) =>
@@ -23,6 +27,9 @@ function makeSession(ait: { [K in keyof AitService]?: unknown }) {
     aitService: createStub<AitService>(ait),
     projectRegistry,
     logger: pino({ level: "silent" }),
+    ...(trackerSyncManager
+      ? { trackerSyncManager: createStub<TrackerSyncManager>(trackerSyncManager) }
+      : {}),
   });
   return { session, emitted };
 }
@@ -72,6 +79,36 @@ describe("TrackerSession", () => {
     expect(response?.payload.trackers).toEqual([]);
     expect(response?.payload.errorCode).toBe("not_found");
     expect(response?.payload.error).toContain("prj_does_not_exist");
+  });
+
+  it("preserves manager AIT errors in the legacy list response", async () => {
+    const { session, emitted } = makeSession(
+      {},
+      {
+        list: async () => ({
+          trackers: [],
+          hiddenCount: 0,
+          epoch: 1,
+          generation: 1,
+          error: "no ait database",
+          errorCode: "uninitialised",
+        }),
+      },
+    );
+
+    await session.handleProjectTrackerListRequest({
+      type: "project.tracker.list.request",
+      requestId: "r-list-error",
+      projectId: PROJECT_ID,
+    });
+
+    const response = findByType(emitted, "project.tracker.list.response");
+    expect(response?.payload).toMatchObject({
+      trackers: [],
+      hiddenCount: 0,
+      error: "no ait database",
+      errorCode: "uninitialised",
+    });
   });
 
   it("maps an AitCliError's code and message onto the response payload", async () => {

@@ -43,6 +43,8 @@ import {
 } from "./schedule/rpc-schemas.js";
 import {
   ProjectTrackerListRequestSchema,
+  ProjectTrackerSubscribeRequestSchema,
+  ProjectTrackerUnsubscribeRequestSchema,
   ProjectTrackerShowRequestSchema,
   ProjectTrackerCreateRequestSchema,
   ProjectTrackerUpdateRequestSchema,
@@ -52,6 +54,8 @@ import {
   ProjectTrackerNoteAddRequestSchema,
   ProjectTrackerInitRequestSchema,
   ProjectTrackerListResponseSchema,
+  ProjectTrackerSubscribeResponseSchema,
+  ProjectTrackerUpdatedSchema,
   ProjectTrackerShowResponseSchema,
   ProjectTrackerCreateResponseSchema,
   ProjectTrackerUpdateResponseSchema,
@@ -2885,6 +2889,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ScheduleRunOnceRequestSchema,
   ScheduleUpdateRequestSchema,
   ProjectTrackerListRequestSchema,
+  ProjectTrackerSubscribeRequestSchema,
+  ProjectTrackerUnsubscribeRequestSchema,
   ProjectTrackerShowRequestSchema,
   ProjectTrackerCreateRequestSchema,
   ProjectTrackerUpdateRequestSchema,
@@ -3077,6 +3083,8 @@ export const ServerInfoStatusPayloadSchema = z
         forgeCheckDetails: z.boolean().optional(),
         // COMPAT(forgeSearch): added in v0.1.106, remove github_search fallback after 2026-12-28.
         forgeSearch: z.boolean().optional(),
+        // COMPAT(aitTrackerLive): added in v0.4.1, remove gate after 2027-02-19.
+        aitTrackerLive: z.boolean().optional(),
         // COMPAT(daemonStatusRpc): added in v0.1.76, remove gate after 2026-11-18.
         daemonStatusRpc: z.boolean().optional(),
         // COMPAT(relayConfig): added in v0.2.6, remove gate after 2027-01-31.
@@ -5855,6 +5863,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ScheduleRunOnceResponseSchema,
   ScheduleUpdateResponseSchema,
   ProjectTrackerListResponseSchema,
+  ProjectTrackerSubscribeResponseSchema,
+  ProjectTrackerUpdatedSchema,
   ProjectTrackerShowResponseSchema,
   ProjectTrackerCreateResponseSchema,
   ProjectTrackerUpdateResponseSchema,

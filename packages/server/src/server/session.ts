@@ -161,6 +161,7 @@ import {
 import { ScheduleSession } from "./session/schedule/schedule-session.js";
 import { TrackerSession } from "./session/tracker/tracker-session.js";
 import type { AitService } from "../services/ait-cli-service.js";
+import type { TrackerSyncManager } from "./tracker-sync-manager.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { WorkspaceFilesSession } from "./session/files/workspace-files-session.js";
 import { AgentConfigSession } from "./session/agent-config/agent-config-session.js";
@@ -451,6 +452,7 @@ export interface SessionOptions {
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
   aitService: AitService;
+  trackerSyncManager?: TrackerSyncManager;
   checkoutDiffManager: CheckoutDiffManager;
   github?: ForgeService;
   createAgentMcpTransport?: AgentMcpTransportFactory;
@@ -706,6 +708,7 @@ export class Session {
       filesystem,
       scheduleService,
       aitService,
+      trackerSyncManager,
       checkoutDiffManager,
       github,
       renameCurrentBranch,
@@ -841,6 +844,7 @@ export class Session {
       aitService,
       projectRegistry: this.projectRegistry,
       logger: this.sessionLogger,
+      trackerSyncManager,
     });
     this.providerCatalogSession = new ProviderCatalogSession({
       host: {
@@ -2288,6 +2292,10 @@ export class Session {
     switch (msg.type) {
       case "project.tracker.list.request":
         return this.trackerSession.handleProjectTrackerListRequest(msg);
+      case "project.tracker.subscribe.request":
+        return this.trackerSession.handleProjectTrackerSubscribeRequest(msg);
+      case "project.tracker.unsubscribe.request":
+        return this.trackerSession.handleProjectTrackerUnsubscribeRequest(msg);
       case "project.tracker.show.request":
         return this.trackerSession.handleProjectTrackerShowRequest(msg);
       case "project.tracker.create.request":
@@ -6987,6 +6995,8 @@ export class Session {
     this.terminalController.dispose();
 
     this.checkoutSession.cleanup();
+
+    await this.trackerSession.cleanup();
 
     this.workspaceGitObserver.dispose();
     this.workspaceFilesSession.dispose();
