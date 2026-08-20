@@ -143,19 +143,20 @@ The current card shows a truncated title, `Open P0`, and `No tasks` — meaningl
 
 Card content, each line dropped when empty:
 
-1. Meta row: `TrackerStatusIcon` (same status→icon mapping as the detail sheet's `○ tracker-id.n` header) + `id · priority`
+1. Meta row: `TrackerStatusIcon` (11px, same status→icon mapping as the detail sheet's `○ tracker-id.n` header) + `id · priority (colored, same P0–P4 severity scale as the List row) · child progress` — child progress folded into this line rather than its own, per live-testing feedback
 2. Title, clamped to two lines
-3. Child progress `3/7`, only when the item has children
+3. Description preview, one line, only when the item has a non-empty `description`
 4. `claimedBy` agent
-5. Project chip (multi-project only), sized to its content — never stretched to the card's full width
+5. `createdAt`, and `closedAt` when the item's status is `closed` — never shown for `cancelled`, since `ait` only ever sets `closed_at` on the `closed` transition (`app.go`'s `runStatusChange`, verified against source)
+6. Project chip (multi-project only, `<StatusBadge size="sm">`), sized to its content — never stretched to the card's full width
 
-Revised after live-testing (Human feedback, this round): the parent-epic-title line was removed from both the Kanban card and the List row — it rendered inconsistently (present only for items with a parent, absent for standalone ones) and read as noise, not signal. The per-lane `<StatusBadge>` for `closed`/`cancelled` (added in `f4a373877`) was also removed from the card: lane position already conveys status, and duplicating it as a text badge was redundant once the meta-row status icon shipped. The status icon carries that signal now, matching the detail sheet's own convention instead of inventing a second one.
+Revised after live-testing (Human feedback, this round): the parent-epic-title line was removed from both the Kanban card and the List row — it rendered inconsistently (present only for items with a parent, absent for standalone ones) and read as noise, not signal. The per-lane `<StatusBadge>` for `closed`/`cancelled` (added in `f4a373877`) was also removed from the card: lane position already conveys status, and duplicating it as a text badge was redundant once the meta-row status icon shipped. The status icon carries that signal now, matching the detail sheet's own convention instead of inventing a second one. A later live-testing round folded child progress into the meta row, shrank the icon and project chip, added a description preview (both card and List row), added created/closed timestamps (card, List row, and the detail sheet popup), and colored the priority text to match the List row's severity scale.
 
 ### Data contract — no per-card fetch
 
 Nothing on the card may trigger an `ait show`. Sources:
 
-- `claimedBy` and `updatedAt`: **available and currently discarded.** `AitIssueLongSchema` already parses `claimed_by` (`ait-cli-service.ts:124`) and `updated_at` (`:127`); `toTrackerSummary` drops both (`:164-172`). Fix by adding two optional fields to `TrackerSummarySchema` and stopping the drop. Additive, protocol-compatible, zero extra `ait` spawns. `updatedAt` is what the Done lane sorts on.
+- `claimedBy`, `createdAt`, `updatedAt`, `closedAt`, `description`: **available and (until this round) partly discarded.** `AitIssueLongSchema` already parses `claimed_by`, `created_at`, `updated_at`, and `description`; `closed_at` was added to the schema this round (`z.string().nullable().optional()`, matching `ait`'s own nullable `closed_at TEXT` column — see `store.go:588`). `toTrackerSummary` now copies all five onto `TrackerSummary` instead of dropping `createdAt`/`closedAt`/`description`. Additive, protocol-compatible, zero extra `ait` spawns. `updatedAt` is what the Done lane sorts on; `createdAt`/`closedAt` are display-only.
 - Child progress and parent title: computed client-side from the `parentId` graph already in the list response.
 - `blockedBy`: **not available.** `ait list --long` returns no dependency data. Dropped from the first pass; it shares the Ready decision.
 
