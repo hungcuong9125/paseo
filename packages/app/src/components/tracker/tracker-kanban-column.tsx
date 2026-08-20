@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactElement } from "react";
+import { memo, useCallback, useState, type PropsWithChildren, type ReactElement } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import type { StyleProp, ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
@@ -22,6 +22,37 @@ export function laneTranslationKey(lane: TrackerBoardLaneKey): "open" | "inProgr
 // in full; only Done accumulates without limit.
 const DONE_REVEAL_STEP = 50;
 
+interface TrackerKanbanCardPressableProps {
+  trackerId: string;
+  pending: boolean;
+  onCardPress: (trackerId: string) => void;
+  testID?: string;
+}
+
+// Its own `onPress` is memoized per trackerId instead of allocating a closure
+// inline in the column's card list — see TrackerKanbanMoveItem's identical
+// rationale in tracker-kanban-move-menu.tsx.
+const TrackerKanbanCardPressable = memo(function TrackerKanbanCardPressable({
+  children,
+  trackerId,
+  pending,
+  onCardPress,
+  testID,
+}: PropsWithChildren<TrackerKanbanCardPressableProps>): ReactElement {
+  const handlePress = useCallback(() => onCardPress(trackerId), [onCardPress, trackerId]);
+  return (
+    <Pressable
+      style={[styles.cardWrapper, pending && styles.cardPending]}
+      onPress={handlePress}
+      disabled={pending}
+      accessibilityRole="button"
+      testID={testID}
+    >
+      {children}
+    </Pressable>
+  );
+});
+
 export interface TrackerKanbanColumnProps {
   lane: TrackerBoardLaneKey;
   cards: readonly TrackerBoardCard[];
@@ -29,6 +60,8 @@ export interface TrackerKanbanColumnProps {
   getProjectLabel?: (tracker: TrackerSummary) => string | null;
   isPending: (trackerId: string) => boolean;
   onTransition: (trackerId: string, transition: TrackerTransition) => void;
+  /** Tapping a card body (not the move menu) — omit to render cards non-pressable. */
+  onCardPress?: (trackerId: string) => void;
   style?: StyleProp<ViewStyle>;
 }
 
@@ -39,6 +72,7 @@ export function TrackerKanbanColumn({
   getProjectLabel,
   isPending,
   onTransition,
+  onCardPress,
   style,
 }: TrackerKanbanColumnProps): ReactElement {
   const { t } = useTranslation();
@@ -69,6 +103,20 @@ export function TrackerKanbanColumn({
             const stats = hierarchy.descendantStats(tracker.id);
             const pending = isPending(tracker.id);
             const cardTestID = `tracker-kanban-card-${tracker.id}`;
+            const cardBody = (
+              <TrackerKanbanCard
+                id={tracker.id}
+                title={tracker.title}
+                priority={tracker.priority}
+                status={tracker.status}
+                projectLabel={getProjectLabel?.(tracker) ?? null}
+                parentTitle={parent?.title ?? null}
+                childCount={stats.childCount}
+                doneCount={stats.doneCount}
+                claimedBy={tracker.claimedBy ?? null}
+                testID={cardTestID}
+              />
+            );
             return (
               <TrackerKanbanCardMenu
                 key={tracker.id}
@@ -79,20 +127,20 @@ export function TrackerKanbanColumn({
                 onTransition={onTransition}
                 testID={`${cardTestID}-move`}
               >
-                <View style={[styles.cardWrapper, pending && styles.cardPending]}>
-                  <TrackerKanbanCard
-                    id={tracker.id}
-                    title={tracker.title}
-                    priority={tracker.priority}
-                    status={tracker.status}
-                    projectLabel={getProjectLabel?.(tracker) ?? null}
-                    parentTitle={parent?.title ?? null}
-                    childCount={stats.childCount}
-                    doneCount={stats.doneCount}
-                    claimedBy={tracker.claimedBy ?? null}
-                    testID={cardTestID}
-                  />
-                </View>
+                {onCardPress ? (
+                  <TrackerKanbanCardPressable
+                    trackerId={tracker.id}
+                    pending={pending}
+                    onCardPress={onCardPress}
+                    testID={`${cardTestID}-press`}
+                  >
+                    {cardBody}
+                  </TrackerKanbanCardPressable>
+                ) : (
+                  <View style={[styles.cardWrapper, pending && styles.cardPending]}>
+                    {cardBody}
+                  </View>
+                )}
               </TrackerKanbanCardMenu>
             );
           })

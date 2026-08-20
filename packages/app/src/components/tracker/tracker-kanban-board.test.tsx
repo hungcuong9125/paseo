@@ -5,7 +5,7 @@ import React from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
-import { TrackerKanbanBoard } from "./tracker-kanban-board-v2";
+import { TrackerKanbanBoard } from "./tracker-kanban-board";
 
 beforeEach(() => vi.stubGlobal("React", React));
 afterEach(() => cleanup());
