@@ -2563,5 +2563,14 @@ export const es: TranslationResources = {
         transitionFailed: "No se pudo mover {{title}}. Inténtalo de nuevo.",
       },
     },
+    list: {
+      section: {
+        open: "Abierto",
+        inProgress: "En progreso",
+        done: "Hecho",
+        cancelled: "Cancelado",
+      },
+      showMore: "Mostrar {{count}} más",
+    },
   },
 };

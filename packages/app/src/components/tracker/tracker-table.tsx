@@ -1,6 +1,8 @@
 import { useCallback, useMemo, useState, type ReactElement } from "react";
-import { View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { useTranslation } from "react-i18next";
+import type { TrackerStatus } from "@getpaseo/protocol/tracker/types";
 import { TrackerRow, type TrackerRowPending } from "@/components/tracker/tracker-row";
 import type { AggregatedTracker } from "@/tracker/aggregated-trackers";
 import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
@@ -13,11 +15,39 @@ interface TrackerTableProps {
   onOpenTracker: (tracker: AggregatedTracker) => void;
 }
 
+// The four real statuses, in the order they read top-to-bottom in the List view.
+// Unlike the Kanban board, List does NOT split `open` into Ready/Backlog (that
+// split is Kanban-derived `readyIds` data List never fetches); each status gets
+// exactly one section. Section copy is its own `tracker.list.section.*` set,
+// distinct from the Kanban lane labels (which display "Todo"/"Backlog").
+const LIST_SECTIONS: ReadonlyArray<{ status: TrackerStatus; labelKey: string }> = [
+  { status: "open", labelKey: "tracker.list.section.open" },
+  { status: "in_progress", labelKey: "tracker.list.section.inProgress" },
+  { status: "closed", labelKey: "tracker.list.section.done" },
+  { status: "cancelled", labelKey: "tracker.list.section.cancelled" },
+];
+
+// Mirrors the Kanban board's Done-lane reveal: a long status section renders at
+// most REVEAL_STEP rows with a "Show N more" control that reveals more *within
+// that section only*. One reveal count per section (not shared), so paging one
+// section never disturbs the others. Grouping happens over the full set passed
+// in (no flat pagination), so the per-section membership/count is always the
+// true total for that status.
+const REVEAL_STEP = 50;
+
+const INITIAL_REVEAL: Readonly<Record<TrackerStatus, number>> = {
+  open: REVEAL_STEP,
+  in_progress: REVEAL_STEP,
+  closed: REVEAL_STEP,
+  cancelled: REVEAL_STEP,
+};
+
 /**
- * The trackers list: a single settings-style card of rows sorted by hierarchical
- * ID within each project, so an epic and its children cluster together the way
- * `ait`'s own IDs already encode the tree (`proj-abc`, `proj-abc.1`, `proj-abc.1.1`).
- * Rows carry their own `serverId`/`projectId` (from the aggregated fetch), so this
+ * The trackers list, grouped into one section per real `TrackerStatus` (Open,
+ * In progress, Done, Cancelled). Within a section the rows keep the same
+ * hierarchical ordering `orderedTrackers` already produces (projectId then id)
+ * — grouping only buckets the existing sorted list, it does not re-sort. Rows
+ * carry their own `serverId`/`projectId` (from the aggregated fetch), so this
  * table works identically whether it's showing one project or every project.
  */
 export function TrackerTable({
@@ -26,6 +56,11 @@ export function TrackerTable({
   showProjectLabel,
   onOpenTracker,
 }: TrackerTableProps): ReactElement {
+  const { t } = useTranslation();
+  const [revealCounts, setRevealCounts] = useState<Record<TrackerStatus, number>>(() => ({
+    ...INITIAL_REVEAL,
+  }));
+
   const titleById = useMemo(() => {
     const map = new Map<string, string>();
     for (const tracker of parentTrackers) {
@@ -42,24 +77,90 @@ export function TrackerTable({
     [trackers],
   );
 
+  // Bucket the already-sorted list by status, preserving the sorted order within
+  // each section. Every section always renders (empty sections show a 0 count and
+  // no rows, mirroring how the Kanban board renders empty lanes).
+  const trackersByStatus = useMemo(() => {
+    const buckets = new Map<TrackerStatus, AggregatedTracker[]>();
+    for (const section of LIST_SECTIONS) {
+      buckets.set(section.status, []);
+    }
+    for (const tracker of sortedTrackers) {
+      const bucket = buckets.get(tracker.status);
+      if (bucket) {
+        bucket.push(tracker);
+      }
+    }
+    return buckets;
+  }, [sortedTrackers]);
+
+  const handleShowMore = useCallback((status: TrackerStatus) => {
+    setRevealCounts((current) => ({
+      ...current,
+      [status]: current[status] + REVEAL_STEP,
+    }));
+  }, []);
+
+  // Pre-bind one stable handler per section so the Pressable's onPress prop is
+  // not a fresh closure on every render (mirrors the Kanban column's pattern).
+  const sectionShowMore = useMemo(
+    () =>
+      Object.fromEntries(
+        LIST_SECTIONS.map((section) => [section.status, () => handleShowMore(section.status)]),
+      ) as Record<TrackerStatus, () => void>,
+    [handleShowMore],
+  );
+
   return (
     <View style={styles.listContent} testID="tracker-table">
-      <View style={settingsStyles.card}>
-        {sortedTrackers.map((tracker, index) => (
-          <TrackerTableRow
-            key={`${tracker.serverId}:${tracker.projectId}:${tracker.id}`}
-            tracker={tracker}
-            parentTitle={
-              tracker.parentId
-                ? (titleById.get(`${tracker.projectId}:${tracker.parentId}`) ?? null)
-                : null
-            }
-            projectLabel={showProjectLabel ? tracker.projectName : null}
-            isFirst={index === 0}
-            onOpenTracker={onOpenTracker}
-          />
-        ))}
-      </View>
+      {LIST_SECTIONS.map((section) => {
+        const items = trackersByStatus.get(section.status) ?? [];
+        const revealed = items.slice(0, revealCounts[section.status]);
+        const remaining = Math.max(0, items.length - revealed.length);
+        return (
+          <View
+            key={section.status}
+            style={styles.section}
+            testID={`tracker-table-section-${section.status}`}
+          >
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>{t(section.labelKey)}</Text>
+              <Text style={styles.sectionCount}>{items.length}</Text>
+            </View>
+            <View style={settingsStyles.card}>
+              {revealed.map((tracker, index) => (
+                <TrackerTableRow
+                  key={`${tracker.serverId}:${tracker.projectId}:${tracker.id}`}
+                  tracker={tracker}
+                  parentTitle={
+                    tracker.parentId
+                      ? (titleById.get(`${tracker.projectId}:${tracker.parentId}`) ?? null)
+                      : null
+                  }
+                  projectLabel={showProjectLabel ? tracker.projectName : null}
+                  isFirst={index === 0}
+                  onOpenTracker={onOpenTracker}
+                />
+              ))}
+            </View>
+            {remaining > 0 ? (
+              <Pressable
+                style={styles.showMore}
+                onPress={sectionShowMore[section.status]}
+                accessibilityRole="button"
+                accessibilityLabel={t("tracker.list.showMore", {
+                  count: Math.min(REVEAL_STEP, remaining),
+                })}
+                testID={`tracker-table-section-${section.status}-show-more`}
+              >
+                <Text style={styles.showMoreText}>
+                  {t("tracker.list.showMore", { count: Math.min(REVEAL_STEP, remaining) })}
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+        );
+      })}
     </View>
   );
 }
@@ -143,5 +244,33 @@ const styles = StyleSheet.create((theme) => ({
   listContent: {
     paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
     paddingTop: theme.spacing[4],
+  },
+  section: {
+    marginBottom: theme.spacing[6],
+  },
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    paddingHorizontal: theme.spacing[1],
+    paddingBottom: theme.spacing[2],
+  },
+  sectionTitle: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.medium,
+  },
+  sectionCount: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
+  },
+  showMore: {
+    paddingVertical: theme.spacing[3],
+    paddingHorizontal: theme.spacing[1],
+  },
+  showMoreText: {
+    color: theme.colors.palette.blue[600],
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.medium,
   },
 }));

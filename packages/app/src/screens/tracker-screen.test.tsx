@@ -9,54 +9,56 @@ import type { UseAggregatedTrackersResult } from "@/tracker/use-aggregated-track
 import type { ProjectHostEntry, ProjectSummary } from "@/utils/projects";
 import type { UseProjectsResult } from "@/hooks/use-projects";
 
-const { theme, projectsState, aggregatedState, lastKanbanBoardProps } = vi.hoisted(() => ({
-  theme: {
-    colors: {
-      surface0: "#000",
-      surface1: "#111",
-      surface2: "#222",
-      surface3: "#333",
-      foreground: "#fff",
-      foregroundMuted: "#aaa",
-      border: "#444",
-      palette: {
-        blue: { 600: "#2563eb" },
-        amber: { 700: "#b45309" },
-        red: { 300: "#fca5a5", 600: "#dc2626" },
-        green: { 600: "#16a34a" },
-        orange: { 600: "#ea580c" },
-        yellow: { 600: "#ca8a04" },
-        sky: { 600: "#0284c7" },
-        slate: { 400: "#94a3b8" },
+const { theme, projectsState, aggregatedState, lastKanbanBoardProps, lastListTableProps } =
+  vi.hoisted(() => ({
+    theme: {
+      colors: {
+        surface0: "#000",
+        surface1: "#111",
+        surface2: "#222",
+        surface3: "#333",
+        foreground: "#fff",
+        foregroundMuted: "#aaa",
+        border: "#444",
+        palette: {
+          blue: { 600: "#2563eb" },
+          amber: { 700: "#b45309" },
+          red: { 300: "#fca5a5", 600: "#dc2626" },
+          green: { 600: "#16a34a" },
+          orange: { 600: "#ea580c" },
+          yellow: { 600: "#ca8a04" },
+          sky: { 600: "#0284c7" },
+          slate: { 400: "#94a3b8" },
+        },
       },
+      spacing: { 0: 0, 1: 4, "1.5": 6, 2: 8, 3: 12, 4: 16, 6: 24 },
+      fontSize: { xs: 11, sm: 13, base: 15 },
+      fontWeight: { normal: "400" as const, medium: "500" as const },
+      borderRadius: { md: 6, lg: 8 },
+      borderWidth: { 1: 1 },
+      opacity: { 50: 0.5 },
+      iconSize: { sm: 14, md: 20, lg: 32 },
     },
-    spacing: { 0: 0, 1: 4, "1.5": 6, 2: 8, 3: 12, 4: 16, 6: 24 },
-    fontSize: { xs: 11, sm: 13, base: 15 },
-    fontWeight: { normal: "400" as const, medium: "500" as const },
-    borderRadius: { md: 6, lg: 8 },
-    borderWidth: { 1: 1 },
-    opacity: { 50: 0.5 },
-    iconSize: { sm: 14, md: 20, lg: 32 },
-  },
-  projectsState: {
-    current: {
-      projects: [],
-      hostErrors: [],
-      isLoading: false,
-      isFetching: false,
-      refetch: vi.fn(),
-    } as UseProjectsResult,
-  },
-  aggregatedState: {
-    current: {
-      loadState: { status: "loaded", data: [] },
-      projectErrors: [],
-      refetch: vi.fn(),
-      isRefetching: false,
-    } as UseAggregatedTrackersResult,
-  },
-  lastKanbanBoardProps: { current: null as { trackers: readonly unknown[] } | null },
-}));
+    projectsState: {
+      current: {
+        projects: [],
+        hostErrors: [],
+        isLoading: false,
+        isFetching: false,
+        refetch: vi.fn(),
+      } as UseProjectsResult,
+    },
+    aggregatedState: {
+      current: {
+        loadState: { status: "loaded", data: [] },
+        projectErrors: [],
+        refetch: vi.fn(),
+        isRefetching: false,
+      } as UseAggregatedTrackersResult,
+    },
+    lastKanbanBoardProps: { current: null as { trackers: readonly unknown[] } | null },
+    lastListTableProps: { current: null as { trackers: readonly unknown[] } | null },
+  }));
 
 vi.mock("react-native-unistyles", () => ({
   StyleSheet: {
@@ -146,12 +148,11 @@ vi.mock("@/components/tracker/tracker-form-sheet", () => ({
   TrackerFormSheet: () => null,
 }));
 
-vi.mock("@/components/tracker/tracker-pagination", () => ({
-  TrackerPagination: () => null,
-}));
-
 vi.mock("@/components/tracker/tracker-table", () => ({
-  TrackerTable: () => React.createElement("div", { "data-testid": "mock-tracker-table" }),
+  TrackerTable: (props: { trackers: readonly unknown[] }) => {
+    lastListTableProps.current = props;
+    return React.createElement("div", { "data-testid": "mock-tracker-table" });
+  },
 }));
 
 vi.mock("@/components/tracker/tracker-kanban-board", () => ({
@@ -381,10 +382,10 @@ describe("TrackerScreen kanban type filter", () => {
     });
   }
 
-  it("does not render the type filter control in List mode", () => {
+  it("renders the type filter control in List mode", () => {
     render();
 
-    expect(container?.querySelector('[data-testid="trackers-kanban-type-filter"]')).toBeNull();
+    expect(container?.querySelector('[data-testid="trackers-type-filter"]')).not.toBeNull();
   });
 
   it("defaults to task-only trackers reaching the board on first Kanban render", () => {
@@ -396,7 +397,7 @@ describe("TrackerScreen kanban type filter", () => {
       "task-1",
     );
 
-    const control = container?.querySelector('[data-testid="trackers-kanban-type-filter"]');
+    const control = container?.querySelector('[data-testid="trackers-type-filter"]');
     expect(control).not.toBeNull();
   });
 
@@ -407,7 +408,7 @@ describe("TrackerScreen kanban type filter", () => {
     expect(lastKanbanBoardProps.current?.trackers).toHaveLength(1);
 
     const epicOption = container?.querySelector<HTMLElement>(
-      '[data-testid="trackers-kanban-type-filter-epic"]',
+      '[data-testid="trackers-type-filter-epic"]',
     );
     if (!epicOption) throw new Error("Expected the Epics filter option to render");
     act(() => {
@@ -420,7 +421,7 @@ describe("TrackerScreen kanban type filter", () => {
     );
 
     const allOption = container?.querySelector<HTMLElement>(
-      '[data-testid="trackers-kanban-type-filter-all"]',
+      '[data-testid="trackers-type-filter-all"]',
     );
     if (!allOption) throw new Error("Expected the All filter option to render");
     act(() => {
@@ -428,5 +429,39 @@ describe("TrackerScreen kanban type filter", () => {
     });
 
     expect(lastKanbanBoardProps.current?.trackers).toHaveLength(3);
+  });
+
+  it("type filter applies to the List view's tracker set", () => {
+    render();
+
+    const allOption = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-type-filter-all"]',
+    );
+    expect(allOption).not.toBeNull();
+
+    const listTrackerIds = () =>
+      (lastListTableProps.current?.trackers ?? []).map(
+        (listTracker) => (listTracker as AggregatedTracker).id,
+      );
+
+    // Default shared state is "task" — the List set mirrors the board's default.
+    expect(listTrackerIds()).toEqual(["task-1"]);
+
+    const epicOption = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-type-filter-epic"]',
+    );
+    if (!epicOption) throw new Error("Expected the Epics filter option to render");
+    act(() => {
+      epicOption.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(listTrackerIds()).toEqual(["epic-1"]);
+
+    act(() => {
+      allOption?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+
+    // Same project, so orderedTrackers sorts by id: epic-1 < initiative-1 < task-1.
+    expect(listTrackerIds()).toEqual(["epic-1", "initiative-1", "task-1"]);
   });
 });

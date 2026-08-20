@@ -2570,5 +2570,14 @@ export const fr: TranslationResources = {
         transitionFailed: "Impossible de déplacer {{title}}. Réessayez.",
       },
     },
+    list: {
+      section: {
+        open: "Ouvert",
+        inProgress: "En cours",
+        done: "Terminé",
+        cancelled: "Annulé",
+      },
+      showMore: "Afficher {{count}} de plus",
+    },
   },
 };

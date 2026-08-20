@@ -2507,5 +2507,14 @@ export const ar: TranslationResources = {
         transitionFailed: "تعذر نقل {{title}}. حاول مرة أخرى.",
       },
     },
+    list: {
+      section: {
+        open: "مفتوح",
+        inProgress: "قيد التنفيذ",
+        done: "مكتمل",
+        cancelled: "ملغى",
+      },
+      showMore: "عرض {{count}} المزيد",
+    },
   },
 };

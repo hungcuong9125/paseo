@@ -2532,5 +2532,14 @@ export const ja: TranslationResources = {
         transitionFailed: "{{title}} を移動できませんでした。もう一度お試しください。",
       },
     },
+    list: {
+      section: {
+        open: "未対応",
+        inProgress: "進行中",
+        done: "完了",
+        cancelled: "キャンセル",
+      },
+      showMore: "他 {{count}} 件を表示",
+    },
   },
 } as const;

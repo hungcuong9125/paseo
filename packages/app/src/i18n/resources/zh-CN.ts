@@ -2478,5 +2478,14 @@ export const zhCN: TranslationResources = {
         transitionFailed: "无法移动 {{title}}。请重试。",
       },
     },
+    list: {
+      section: {
+        open: "待处理",
+        inProgress: "进行中",
+        done: "已完成",
+        cancelled: "已取消",
+      },
+      showMore: "显示另外 {{count}} 项",
+    },
   },
 };

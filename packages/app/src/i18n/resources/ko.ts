@@ -2524,5 +2524,14 @@ export const ko: TranslationResources = {
         transitionFailed: "{{title}}을(를) 이동할 수 없습니다. 다시 시도하세요.",
       },
     },
+    list: {
+      section: {
+        open: "열림",
+        inProgress: "진행 중",
+        done: "완료",
+        cancelled: "취소됨",
+      },
+      showMore: "{{count}}개 더 보기",
+    },
   },
 };

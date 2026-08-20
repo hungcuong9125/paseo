@@ -2552,5 +2552,14 @@ export const ru: TranslationResources = {
         transitionFailed: "Не удалось переместить {{title}}. Попробуйте снова.",
       },
     },
+    list: {
+      section: {
+        open: "Открыто",
+        inProgress: "В работе",
+        done: "Готово",
+        cancelled: "Отменено",
+      },
+      showMore: "Показать ещё {{count}}",
+    },
   },
 };

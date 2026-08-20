@@ -2521,6 +2521,15 @@ export const en = {
         transitionFailed: "Couldn't move {{title}}. Try again.",
       },
     },
+    list: {
+      section: {
+        open: "Open",
+        inProgress: "In progress",
+        done: "Done",
+        cancelled: "Cancelled",
+      },
+      showMore: "Show {{count}} more",
+    },
   },
 } as const;
 

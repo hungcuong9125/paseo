@@ -2547,5 +2547,14 @@ export const ptBR: TranslationResources = {
         transitionFailed: "Não foi possível mover {{title}}. Tente novamente.",
       },
     },
+    list: {
+      section: {
+        open: "Aberto",
+        inProgress: "Em progresso",
+        done: "Concluído",
+        cancelled: "Cancelado",
+      },
+      showMore: "Mostrar mais {{count}}",
+    },
   },
 };

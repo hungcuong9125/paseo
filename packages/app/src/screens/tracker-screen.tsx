@@ -27,7 +27,6 @@ import { MenuHeader } from "@/components/headers/menu-header";
 import { TrackerDetailSheet } from "@/components/tracker/tracker-detail-sheet";
 import { TrackerFormSheet } from "@/components/tracker/tracker-form-sheet";
 import { TrackerKanbanBoard } from "@/components/tracker/tracker-kanban-board";
-import { TrackerPagination } from "@/components/tracker/tracker-pagination";
 import { TrackerTable } from "@/components/tracker/tracker-table";
 import {
   DropdownMenu,
@@ -59,12 +58,6 @@ import {
   type TrackerStatCounts,
   type TrackerStatFilter,
 } from "@/tracker/tracker-stats";
-import {
-  getTrackerPageCount,
-  getTrackerPageSlice,
-  TRACKER_PAGE_SIZE,
-  type TrackerPageSize,
-} from "@/tracker/tracker-pagination";
 import type { TrackerTransition } from "@/tracker/tracker-transitions";
 import { useSessionStore } from "@/stores/session-store";
 import type { Theme } from "@/styles/theme";
@@ -72,14 +65,15 @@ import { resolveTrackerScreenBodyState, type TrackerScreenBodyState } from "./tr
 
 type StatFilter = TrackerStatFilter;
 type ViewMode = "list" | "kanban";
-// The Kanban type filter's domain: the real TrackerType union plus an "all"
-// sentinel for the fourth toggle option. Board default is "task" (see
-// docs/refactors/tracker-kanban-redesign.md, "Which types appear on the
-// board") — filtering happens here, not inside buildTrackerBoard, which stays
-// status-only per its own docstring.
-type KanbanTypeFilter = TrackerType | "all";
+// The shared tracker-type filter's domain: the real TrackerType union plus an
+// "all" sentinel for the fourth toggle option. One state drives BOTH the Kanban
+// board's `kanbanTrackers` and the List view's `visibleTrackers` (see the
+// task paseo-PQNMc.2 spec) — filtering happens here, not inside
+// buildTrackerBoard, which stays status-only per its own docstring. Default is
+// "task" (preserves the board's original default; the List view inherits it).
+type TypeFilter = TrackerType | "all";
 
-const KANBAN_TYPE_FILTER_DEFS: ReadonlyArray<{ value: KanbanTypeFilter; labelKey: string }> = [
+const TYPE_FILTER_DEFS: ReadonlyArray<{ value: TypeFilter; labelKey: string }> = [
   { value: "task", labelKey: "tracker.kanban.type.tasks" },
   { value: "epic", labelKey: "tracker.kanban.type.epics" },
   { value: "initiative", labelKey: "tracker.kanban.type.initiatives" },
@@ -179,21 +173,17 @@ function TrackerScreenContent(): ReactElement {
   // are visible. Sharing one state would open the board on a single Open lane.
   const [listStatFilter, setListStatFilter] = useState<StatFilter>("open");
   const [kanbanStatFilter, setKanbanStatFilter] = useState<StatFilter>("all");
-  // Kanban-only: which tracker granularities appear on the board. Defaults to
-  // "task" to preserve today's List-view default (mixing all three
-  // granularities in one lane is what made the old hierarchy board unreadable).
-  const [kanbanTypeFilter, setKanbanTypeFilter] = useState<KanbanTypeFilter>("task");
+  // Shared by BOTH views: which tracker granularities are included. Defaults to
+  // "task" (preserves the board's original default; the List view inherits it).
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("task");
   const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedTracker, setSelectedTracker] = useState<AggregatedTracker | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState<TrackerPageSize>(TRACKER_PAGE_SIZE);
 
   useEffect(() => {
     if (selectedProjectId && !projectInputs.some((p) => p.projectId === selectedProjectId)) {
       setSelectedProjectId(null);
-      setCurrentPage(1);
     }
   }, [projectInputs, selectedProjectId]);
 
@@ -215,25 +205,29 @@ function TrackerScreenContent(): ReactElement {
     [allTrackers, selectedProjectId],
   );
   // List-only: Kanban receives the project-filtered but not status-filtered set
-  // (kanbanTrackers below) — see "Toolbar contract" in the redesign doc.
-  const visibleTrackers = useMemo(
-    () =>
-      listStatFilter === "all"
+  // (kanbanTrackers below) — see "Toolbar contract" in the redesign doc. The
+  // shared typeFilter composes with listStatFilter rather than replacing it:
+  // type filtering narrows the dataset first, then the stat filter applies.
+  const visibleTrackers = useMemo(() => {
+    const typeFiltered =
+      typeFilter === "all"
         ? projectFilteredTrackers
-        : projectFilteredTrackers.filter(
-            (tracker) =>
-              tracker.type !== "task" || matchesTrackerStatFilter(tracker, listStatFilter),
-          ),
-    [projectFilteredTrackers, listStatFilter],
-  );
+        : projectFilteredTrackers.filter((tracker) => tracker.type === typeFilter);
+    return listStatFilter === "all"
+      ? typeFiltered
+      : typeFiltered.filter(
+          (tracker) => tracker.type !== "task" || matchesTrackerStatFilter(tracker, listStatFilter),
+        );
+  }, [projectFilteredTrackers, typeFilter, listStatFilter]);
   // Type filter is applied here, before the board — buildTrackerBoard's own
-  // partitioning stays status-only (see tracker-board-model.ts docstring).
+  // partitioning stays status-only (see tracker-board-model.ts docstring). The
+  // same shared typeFilter drives the List view's visibleTrackers above.
   const kanbanTrackers = useMemo(
     () =>
-      kanbanTypeFilter === "all"
+      typeFilter === "all"
         ? projectFilteredTrackers
-        : projectFilteredTrackers.filter((tracker) => tracker.type === kanbanTypeFilter),
-    [projectFilteredTrackers, kanbanTypeFilter],
+        : projectFilteredTrackers.filter((tracker) => tracker.type === typeFilter),
+    [projectFilteredTrackers, typeFilter],
   );
   const readyIds = useTrackerReadyIds({ viewMode, projects: projectInputs, selectedProjectId });
   const orderedTrackers = useMemo(
@@ -243,21 +237,6 @@ function TrackerScreenContent(): ReactElement {
       ),
     [visibleTrackers],
   );
-  const totalPages = getTrackerPageCount(orderedTrackers.length, pageSize);
-  const safeCurrentPage = Math.min(currentPage, totalPages);
-  useEffect(() => {
-    if (currentPage !== safeCurrentPage) {
-      setCurrentPage(safeCurrentPage);
-    }
-  }, [currentPage, safeCurrentPage]);
-  const paginatedTrackers = useMemo(
-    () =>
-      viewMode === "list"
-        ? getTrackerPageSlice(orderedTrackers, safeCurrentPage, pageSize)
-        : orderedTrackers,
-    [orderedTrackers, pageSize, safeCurrentPage, viewMode],
-  );
-
   // Kanban's statFilter projects lanes, it never filters the dataset, so its
   // emptiness is driven by the project-filtered set, not the List filter.
   const visibleTrackersCount = useMemo(
@@ -302,17 +281,15 @@ function TrackerScreenContent(): ReactElement {
   const handleRetry = useCallback(() => refetch(), [refetch]);
   const handleSelectProject = useCallback((projectId: string | null) => {
     setSelectedProjectId(projectId);
-    setCurrentPage(1);
   }, []);
   const handleListStatFilterChange = useCallback((value: StatFilter) => {
     setListStatFilter(value);
-    setCurrentPage(1);
   }, []);
   const handleKanbanStatFilterChange = useCallback((value: StatFilter) => {
     setKanbanStatFilter(value);
   }, []);
-  const handleKanbanTypeFilterChange = useCallback((value: KanbanTypeFilter) => {
-    setKanbanTypeFilter(value);
+  const handleTypeFilterChange = useCallback((value: TypeFilter) => {
+    setTypeFilter(value);
   }, []);
   const effectiveStatFilter = useMemo(
     () => (viewMode === "kanban" ? kanbanStatFilter : listStatFilter),
@@ -322,12 +299,6 @@ function TrackerScreenContent(): ReactElement {
     () => (viewMode === "kanban" ? handleKanbanStatFilterChange : handleListStatFilterChange),
     [viewMode, handleKanbanStatFilterChange, handleListStatFilterChange],
   );
-  const handlePageChange = useCallback((page: number) => setCurrentPage(page), []);
-  const handlePageSizeChange = useCallback((nextPageSize: TrackerPageSize) => {
-    setPageSize(nextPageSize);
-    setCurrentPage(1);
-  }, []);
-
   // The Kanban board renders a projection built from AggregatedTracker[] but
   // its own model (and onTransition callback) only knows the TrackerSummary/id
   // shape — the runtime objects in `kanbanTrackers` are still the exact
@@ -374,7 +345,7 @@ function TrackerScreenContent(): ReactElement {
       <MenuHeader title="Tracker" />
       <TrackerScreenBody
         bodyState={bodyState}
-        trackers={paginatedTrackers}
+        trackers={orderedTrackers}
         parentTrackers={orderedTrackers}
         statsTrackers={projectFilteredTrackers}
         kanbanTrackers={kanbanTrackers}
@@ -387,8 +358,8 @@ function TrackerScreenContent(): ReactElement {
         onStatFilterChange={effectiveOnStatFilterChange}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
-        kanbanTypeFilter={kanbanTypeFilter}
-        onKanbanTypeFilterChange={handleKanbanTypeFilterChange}
+        typeFilter={typeFilter}
+        onTypeFilterChange={handleTypeFilterChange}
         projectErrors={projectErrors}
         onOpenTracker={handleOpenTracker}
         onKanbanTransition={handleKanbanTransition}
@@ -399,12 +370,6 @@ function TrackerScreenContent(): ReactElement {
         onInitialise={handleInitialise}
         isInitialising={initMutations.isInitialising}
         onRetry={handleRetry}
-        currentPage={safeCurrentPage}
-        pageSize={pageSize}
-        totalItems={orderedTrackers.length}
-        totalPages={totalPages}
-        onPageChange={handlePageChange}
-        onPageSizeChange={handlePageSizeChange}
       />
       <TrackerFormSheet
         projects={projectInputs}
@@ -627,8 +592,8 @@ function TrackerScreenBody({
   onStatFilterChange,
   viewMode,
   onViewModeChange,
-  kanbanTypeFilter,
-  onKanbanTypeFilterChange,
+  typeFilter,
+  onTypeFilterChange,
   projectErrors,
   onOpenTracker,
   onKanbanTransition,
@@ -639,12 +604,6 @@ function TrackerScreenBody({
   onInitialise,
   isInitialising,
   onRetry,
-  currentPage,
-  pageSize,
-  totalItems,
-  totalPages,
-  onPageChange,
-  onPageSizeChange,
 }: {
   bodyState: TrackerScreenBodyState;
   trackers: AggregatedTracker[];
@@ -660,8 +619,8 @@ function TrackerScreenBody({
   onStatFilterChange: (value: StatFilter) => void;
   viewMode: ViewMode;
   onViewModeChange: (value: ViewMode) => void;
-  kanbanTypeFilter: KanbanTypeFilter;
-  onKanbanTypeFilterChange: (value: KanbanTypeFilter) => void;
+  typeFilter: TypeFilter;
+  onTypeFilterChange: (value: TypeFilter) => void;
   projectErrors: TrackerProjectError[];
   onOpenTracker: (tracker: AggregatedTracker) => void;
   onKanbanTransition: (trackerId: string, transition: TrackerTransition) => Promise<void>;
@@ -672,28 +631,8 @@ function TrackerScreenBody({
   onInitialise: () => void;
   isInitialising: boolean;
   onRetry: () => void;
-  currentPage: number;
-  pageSize: TrackerPageSize;
-  totalItems: number;
-  totalPages: number;
-  onPageChange: (page: number) => void;
-  onPageSizeChange: (pageSize: TrackerPageSize) => void;
 }): ReactElement | null {
   const listScrollRef = useRef<ScrollView>(null);
-  const handlePageChange = useCallback(
-    (page: number) => {
-      onPageChange(page);
-      listScrollRef.current?.scrollTo({ y: 0, animated: true });
-    },
-    [onPageChange],
-  );
-  const handlePageSizeChange = useCallback(
-    (nextPageSize: TrackerPageSize) => {
-      onPageSizeChange(nextPageSize);
-      listScrollRef.current?.scrollTo({ y: 0, animated: true });
-    },
-    [onPageSizeChange],
-  );
   // Board trackers are the exact AggregatedTracker instances passed down as
   // kanbanTrackers, so this cast mirrors the same safe pattern used to recover
   // serverId/projectId in TrackerScreenContent.
@@ -765,8 +704,8 @@ function TrackerScreenBody({
             onStatFilterChange={onStatFilterChange}
             viewMode={viewMode}
             onViewModeChange={onViewModeChange}
-            kanbanTypeFilter={kanbanTypeFilter}
-            onKanbanTypeFilterChange={onKanbanTypeFilterChange}
+            typeFilter={typeFilter}
+            onTypeFilterChange={onTypeFilterChange}
             onCreate={onCreate}
           />
           {projectErrors.length > 0 ? <ProjectErrorsBanner errors={projectErrors} /> : null}
@@ -795,8 +734,8 @@ function TrackerScreenBody({
           onStatFilterChange={onStatFilterChange}
           viewMode={viewMode}
           onViewModeChange={onViewModeChange}
-          kanbanTypeFilter={kanbanTypeFilter}
-          onKanbanTypeFilterChange={onKanbanTypeFilterChange}
+          typeFilter={typeFilter}
+          onTypeFilterChange={onTypeFilterChange}
           onCreate={onCreate}
         />
       );
@@ -840,16 +779,6 @@ function TrackerScreenBody({
             showProjectLabel={showProjectLabel}
             onOpenTracker={onOpenTracker}
           />
-          {totalItems > pageSize ? (
-            <TrackerPagination
-              currentPage={currentPage}
-              pageSize={pageSize}
-              totalItems={totalItems}
-              totalPages={totalPages}
-              onPageChange={handlePageChange}
-              onPageSizeChange={handlePageSizeChange}
-            />
-          ) : null}
         </ScrollView>
       );
     }
@@ -1001,8 +930,8 @@ function TrackersToolbar({
   onStatFilterChange,
   viewMode,
   onViewModeChange,
-  kanbanTypeFilter,
-  onKanbanTypeFilterChange,
+  typeFilter,
+  onTypeFilterChange,
   onCreate,
 }: {
   statsTrackers: AggregatedTracker[];
@@ -1013,17 +942,17 @@ function TrackersToolbar({
   onStatFilterChange: (value: StatFilter) => void;
   viewMode: ViewMode;
   onViewModeChange: (value: ViewMode) => void;
-  kanbanTypeFilter: KanbanTypeFilter;
-  onKanbanTypeFilterChange: (value: KanbanTypeFilter) => void;
+  typeFilter: TypeFilter;
+  onTypeFilterChange: (value: TypeFilter) => void;
   onCreate: () => void;
 }): ReactElement {
   const { t } = useTranslation();
-  const typeFilterOptions: SegmentedControlOption<KanbanTypeFilter>[] = useMemo(
+  const typeFilterOptions: SegmentedControlOption<TypeFilter>[] = useMemo(
     () =>
-      KANBAN_TYPE_FILTER_DEFS.map((def) => ({
+      TYPE_FILTER_DEFS.map((def) => ({
         value: def.value,
         label: t(def.labelKey),
-        testID: `trackers-kanban-type-filter-${def.value}`,
+        testID: `trackers-type-filter-${def.value}`,
       })),
     [t],
   );
@@ -1044,15 +973,13 @@ function TrackersToolbar({
         />
       </View>
       <View style={styles.toolbarActions}>
-        {viewMode === "kanban" ? (
-          <SegmentedControl
-            options={typeFilterOptions}
-            value={kanbanTypeFilter}
-            onValueChange={onKanbanTypeFilterChange}
-            size="sm"
-            testID="trackers-kanban-type-filter"
-          />
-        ) : null}
+        <SegmentedControl
+          options={typeFilterOptions}
+          value={typeFilter}
+          onValueChange={onTypeFilterChange}
+          size="sm"
+          testID="trackers-type-filter"
+        />
         <SegmentedControl
           options={viewModeOptions}
           value={viewMode}
