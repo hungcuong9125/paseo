@@ -2,7 +2,7 @@
 
 `packages/app/src/tracker/kanban-grouping.ts` (300 lines) and `packages/app/src/components/tracker/tracker-kanban-board.tsx` (920 lines) build a board that cannot be used. This document states why, what to build instead, and what stays unresolved.
 
-Status: **implemented and live, five lanes** (Backlog, Todo, In progress, Done, Cancelled). Two plan-review rounds returned accept-with-changes; every required change was applied before implementation. All five sequencing steps, the Type-filter follow-up, the post-ship Ready lane (added at Human's explicit request after live-testing, overriding this plan's original "Ready is not a column" position), and the later Cancelled-lane split (paseo-PQNMc.1) are built, reviewed, and merged — the board is wired into `tracker-screen.tsx`, and the dead hierarchy board (`kanban-grouping.ts`, the old `tracker-kanban-board.tsx`) is deleted. See "Implementation record" below. Deferred items (the blocked-by marker, per-project swimlanes, optimistic drag, a real-browser DnD spike) remain out of scope by design — see "Deferred" and "Open UNKNOWNs".
+Status: **implemented and live, five Kanban lanes** (Ready/Backlog, Open/Todo, In progress, Done, Cancelled), **List view grouped to match**. Two plan-review rounds returned accept-with-changes; every required change was applied before implementation. All five sequencing steps, the Type-filter follow-up (now shared across both views), the post-ship Ready lane, the Cancelled-lane split, and the List-view grouping (`paseo-PQNMc`) — several of them explicit Human overrides of this plan's original positions — are built, reviewed, and merged. The board is wired into `tracker-screen.tsx`; the dead hierarchy board (`kanban-grouping.ts`, the old `tracker-kanban-board.tsx`) and the old flat pagination (`tracker-pagination.ts`/`.tsx`) are both deleted. See "Implementation record" below. Deferred items (the blocked-by marker, per-project swimlanes, optimistic drag, real physical drag-and-drop) remain out of scope by explicit choice — see "Deferred" and "Open UNKNOWNs".
 
 ## The diagnosis: two problems, not one
 
@@ -167,8 +167,8 @@ Nothing on the card may trigger an `ait show`. Sources:
 
 Three fixed columns fit a desktop width, so the horizontal ScrollView and its scroll buttons (`tracker-kanban-board.tsx:139-183`) are removed outright.
 
-- **Desktop**: three equal-flex columns side by side, each with one vertical ScrollView and a sticky header.
-- **Compact**: a segmented control (`Open | In progress | Done`) selects one lane, rendered full width. This is the `statFilter` projection above, not a second layout path.
+- **Desktop**: up to five equal-flex columns side by side (Ready, Open, In progress, Done, Cancelled — however many `statFilter` projects), each with one vertical ScrollView and a sticky header.
+- **Compact**: a segmented control over whichever lanes are projected selects one at a time, rendered full width. This is the `statFilter` projection above, not a second layout path.
 
 One `useIsCompactFormFactor()` branch at the top of the board, per `docs/design.md` §9.
 
@@ -178,30 +178,44 @@ One `useIsCompactFormFactor()` branch at the top of the board, per `docs/design.
 
 ### Large Done lane
 
-The reference project shows 168 done items. `tracker-pagination.ts` is page slicing for the list view, not virtualization, and the app ships no `FlashList`.
+The reference project shows 168 done items. The app ships no `FlashList`.
 
 Decision: **incremental reveal**, not virtualization and not pagination. Each lane renders at most 50 cards with a "Show N more" footer. No new dependency, identical on every platform, and it keeps the lane a plain scroll region. Revisit only if a measurement shows 50 cards is already too slow.
 
+The List view later adopted the identical pattern for the same reason (see "List view" below) — `tracker-pagination.ts`, the flat page-slicing utility the List view used before that, is deleted; nothing in the tracker feature uses page-based pagination anymore.
+
 ## Multi-project
 
-Three status columns, not three per project. Cards carry a project chip and retain `serverId`/`projectId` so a mutation targets the right database.
+Status columns, not one set per project. Cards carry a project chip and retain `serverId`/`projectId` so a mutation targets the right database.
 
 Per-project swimlanes are deferred. With ~10 projects a default swimlane layout is 30 regions and reproduces the density problem being fixed.
+
+## List view
+
+Added after ship, per Human's explicit request (`paseo-PQNMc.2`): the List view groups into one section per real `TrackerStatus` — Open, In progress, Done, Cancelled. Unlike Kanban it does **not** split Open into Ready/Open; that split is Kanban-derived `readyIds` data the List view never fetches, and List's own `statFilter === "open"` keeps its literal meaning (`tracker.status === "open"`, full stop — see "Toolbar contract" above).
+
+Each section uses the same incremental-reveal pattern as the Kanban Done lane (50 rows, "Show more"), grouped over the **complete** filtered set, never a page slice — an early version grouped the paginated slice instead, which broke the entire premise (section membership and counts changed arbitrarily as the user paged, with items invisible on other pages and no indication they existed). Flat page-based pagination (`tracker-pagination.ts`/`.tsx`) is deleted; nothing in the tracker feature paginates anymore.
+
+The Tasks/Epics/Initiatives/All type filter — originally Kanban-only (see "Sequencing") — is now one shared `typeFilter` state driving both views' tracker sets, always visible in the toolbar regardless of `viewMode`. Composes with `listStatFilter`: type narrows first, then the stat filter applies.
 
 ## Status transitions
 
 One transition matrix, shared by drag-and-drop and the compact action sheet. Neither surface may offer a transition the other lacks.
 
-| From → To                 | Call                                       | Handler                      |
-| ------------------------- | ------------------------------------------ | ---------------------------- |
-| Open → In progress        | `trackerUpdate({ status: "in_progress" })` | `tracker-session.ts:255-287` |
-| In progress → Open        | `trackerUpdate({ status: "open" })`        | same                         |
-| Open / In progress → Done | `trackerClose({ trackerId })`              | `tracker-session.ts:290-323` |
-| Done → Open               | `trackerReopen({ trackerId })`             | `tracker-session.ts:325-354` |
+| From → To                      | Call                                       | Handler                      |
+| ------------------------------ | ------------------------------------------ | ---------------------------- |
+| Open → In progress             | `trackerUpdate({ status: "in_progress" })` | `tracker-session.ts:255-287` |
+| In progress → Open             | `trackerUpdate({ status: "open" })`        | same                         |
+| Open / In progress → Done      | `trackerClose({ trackerId })`              | `tracker-session.ts:290-323` |
+| Done → Open                    | `trackerReopen({ trackerId })`             | `tracker-session.ts:325-354` |
+| Open / In progress → Cancelled | `trackerCancel({ trackerId })`             | `tracker-session.ts`         |
+| Cancelled → Open               | `trackerReopen({ trackerId })`             | `tracker-session.ts:325-354` |
 
-`UpdateTrackerInput.status` is deliberately narrowed to `open | in_progress` (`types.ts:62`); close/reopen/cancel are dedicated RPCs. The mapping respects that. **Cancel is not a drop target** — it takes a reason, so it stays a kebab-menu action. A drop never changes `parentId`; hierarchy is edited in the detail sheet.
+`UpdateTrackerInput.status` is deliberately narrowed to `open | in_progress` (`types.ts:62`); close/reopen/cancel are dedicated RPCs. The mapping respects that. A drop never changes `parentId`; hierarchy is edited in the detail sheet.
 
-`ait reopen --help` states: "Reopen a closed or cancelled issue (sets status back to open)." Cancelled → Open is therefore supported by the CLI contract. Paseo shells out, so the semantics belong to `ait`, and `ait-cli-service.test.ts:62-93` covering only `closed → open` is **missing coverage, not a missing capability**. Add the cancelled case to that test as part of this work.
+`ait reopen --help` states: "Reopen a closed or cancelled issue (sets status back to open)." Cancelled → Open is therefore supported by the CLI contract, confirmed by an integration test running the real `ait` binary (`ait-cli-service.test.ts`).
+
+**Cancel became a real drop target after ship** (`paseo-PQNMc.1`), reversing this plan's original position. The original reasoning — "it takes a reason, so it stays a kebab-menu action" — rested on a wrong assumption: `ait cancel --reason`/`--note` is **optional**, verified directly against `ait cancel --help` and the existing `trackerCancel` client method signature, not mandatory as first assumed. No reason-collection UI was built; dropping a card on Cancelled calls `trackerCancel` with no reason. `open`/`in_progress` → `cancelled` is real; `done` → `cancelled` and `cancelled` → `in_progress`/`done` all stay null — reopen first.
 
 ### Mutation state machine
 
@@ -265,6 +279,8 @@ Steps 1–4 touch no owned file. Two dependencies to sequence around:
 
 Resolved after initial ship, overriding the original plan: **Ready filter.** Originally scoped as a deferred stat-only control (see "Ready lane" above for the full account) — built as a real lane after Human requested it live-testing the shipped board, via a new `project.tracker.ready` RPC (`packages/protocol/src/tracker/rpc-schemas.ts`, `AitService.listReadyIds`, gated on `server_info.features.aitTrackerReady`).
 
+**Real physical drag-and-drop (mouse/touch drag) is deferred by Human's own explicit choice**, reconfirmed during the `paseo-PQNMc` round — not a technical gap being papered over. Human explicitly asked to leave it out this round rather than spend the time on the still-unresolved `@dnd-kit` cross-container spike (UNKNOWN below). The kebab/long-press "Move to…" surface is the sole interaction for every transition, including the new `cancel` one, on every platform.
+
 ## Open UNKNOWNs
 
 1. **Cost of `ait list --long --all`.** The tracker screen already fetches every status unconditionally for both views (`tracker-screen.tsx:118-122`), so this is a measurement of the status quo, not a cost this plan adds. The 50-card reveal cap bounds _rendering_ only, never transport. 168 done items in the reference project; unknown at real scale. Carried over from the live-sync work, still unmeasured there.
@@ -274,7 +290,7 @@ Resolved during implementation: **Type filter default** — built exactly as pro
 
 ## Implementation record
 
-**Status: fully implemented and wired, including the post-ship Ready lane.** All five sequencing steps, the type-filter follow-up, and the Ready lane are merged. 20 commits on `feat/ait-issues-menu-v040`:
+**Status: fully implemented and wired — five Kanban lanes, grouped List view, shared type filter.** All five sequencing steps, the type-filter follow-up, the Ready lane, the Cancelled lane, and the List-view grouping are merged. 22 commits on `feat/ait-issues-menu-v040`:
 
 - `41db50ba6` — protocol: `claimedBy`/`updatedAt` on `TrackerSummary`.
 - `a45ff5f7a`, `d518d2ee9` — status board model (`buildTrackerBoard`) + Kanban card, i18n across 9 locales.
@@ -291,9 +307,9 @@ Resolved during implementation: **Type filter default** — built exactly as pro
 - `f4a373877` — fix: `closed` items get their own `<StatusBadge>`, symmetric to `cancelled` — previously only `cancelled` had a marker, so a closed item in the Done lane looked identical to an unlabeled one.
 - `f74afe227` — new `project.tracker.ready` RPC end-to-end (protocol + server), gated on `server_info.features.aitTrackerReady`.
 - `2ab9db101` — Ready lane wired into the board: `buildTrackerBoard` gains a `readyIds` parameter and a 4th lane, capability-gated fan-out fetch across projects, Open toolbar filter now projects Ready+Open together, transition-lane mapping (`ready` → `open`) at the UI layer.
+- `2eb5f52c5` — `paseo-PQNMc.1`: Ready/Open lane display text renamed to Backlog/Todo (i18n string values only, internal identifiers unchanged); Cancelled split into its own 5th lane with a real `cancel` transition (`open`/`in_progress` → `cancelled`, `cancelled` → `open` via reopen — no reason-collection UI needed, `ait cancel --reason` is optional, correcting an earlier wrong assumption); Done-lane incremental-reveal cap extended to Cancelled.
+- `08c330694` — `paseo-PQNMc.2`: List view grouped into one section per real `TrackerStatus`, matching Kanban's incremental-reveal pattern instead of flat pagination; the Tasks/Epics/Initiatives/All type filter unified into one shared state driving both views; `tracker-pagination.ts`/`.tsx` and their tests deleted as fully dead code.
 
-Every commit reviewed against this document and independently re-verified (typecheck across all 10 workspaces, lint, tests re-run outside the implementing agent's own report) before acceptance — including two correctness issues caught only by that independent re-verification: the native gesture conflict (`509981153`) and the untranslated string (`239c3ce11`), neither of which the implementing agent's own test run had caught.
+Every commit reviewed against this document and independently re-verified (typecheck across all 10 workspaces, lint, tests re-run outside the implementing agent's own report) before acceptance. Several rounds caught real defects the implementing agent's own verification missed: the native gesture conflict (`509981153`) and the untranslated error string (`239c3ce11`) in the original pass; in the `paseo-PQNMc` round, a missing reveal-cap extension and two stale tests in `2eb5f52c5`, and — most significantly — a pagination-before-grouping architecture defect in `08c330694`'s first candidate (status sections were computed from the paginated page slice, not the full filtered set, so section membership and counts changed arbitrarily as the user paged) that required a full correction round before acceptance, plus one further post-acceptance fix (`tracker.list.showMore` hardcoded English in 8 non-English locales, caught by Lead after the candidate had already passed its own verification).
 
-The Ready lane (`f74afe227`, `2ab9db101`) was **not** in the originally accepted plan — the plan explicitly argued against it, matching `web-ait`'s own layout. Human overrode that after live-testing the shipped 3-lane board and asked for it directly; see "Ready lane" above for the full account and the technical verification (real `ait` binary, isolated temp project) that shaped the design before building.
-
-Remaining: step 5 (toolbar contract, wiring, dead-code deletion) — see "Sequencing".
+The Ready lane (`f74afe227`, `2ab9db101`) and the Cancelled lane (`2eb5f52c5`) were **not** in the originally accepted plan — this document explicitly argued against both, matching `web-ait`'s own layout. Human overrode both after live-testing the shipped board and asked for them directly; see "Ready lane" and "List view" above for the full accounts and the technical verification (real `ait` binary, isolated temp project) that shaped each design before building. Real physical drag-and-drop was reconsidered in the same round and stayed deferred, this time by Human's own explicit choice rather than the earlier tooling constraint — see "Deferred".
