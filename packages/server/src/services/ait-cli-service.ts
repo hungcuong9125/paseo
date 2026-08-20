@@ -169,6 +169,8 @@ function toTrackerSummary(raw: z.infer<typeof AitIssueLongSchema>): TrackerSumma
     status: raw.status,
     priority: raw.priority,
     parentId: raw.parent_id,
+    claimedBy: raw.claimed_by,
+    updatedAt: raw.updated_at,
   };
 }
 

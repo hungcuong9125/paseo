@@ -21,6 +21,8 @@ export const TrackerSummarySchema = z.object({
   status: TrackerStatusSchema,
   priority: TrackerPrioritySchema,
   parentId: z.string().nullable(),
+  claimedBy: z.string().nullable().optional(),
+  updatedAt: z.string().optional(),
 });
 export type TrackerSummary = z.infer<typeof TrackerSummarySchema>;
 

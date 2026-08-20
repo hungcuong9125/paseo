@@ -91,6 +91,10 @@ describe("createAitService", () => {
     const cancelled = await service.cancelTracker({ cwd, trackerId: task.id });
     expect(cancelled.status).toBe("cancelled");
     expect(cancelled.parentId).toBe(epic.id);
+
+    const reopenedFromCancelled = await service.reopenTracker({ cwd, trackerId: task.id });
+    expect(reopenedFromCancelled.status).toBe("open");
+    expect(reopenedFromCancelled.parentId).toBe(epic.id);
   });
 
   it("shows children on the parent after creating a child tracker", async () => {
@@ -105,16 +109,17 @@ describe("createAitService", () => {
     });
 
     const shown = await service.showTracker({ cwd, trackerId: epic.id });
-    expect(shown.children).toEqual([
-      {
-        id: task.id,
-        title: "Task",
-        type: "task",
-        status: "open",
-        priority: "P2",
-        parentId: epic.id,
-      },
-    ]);
+    expect(shown.children).toHaveLength(1);
+    expect(shown.children[0]).toMatchObject({
+      id: task.id,
+      title: "Task",
+      type: "task",
+      status: "open",
+      priority: "P2",
+      parentId: epic.id,
+    });
+    expect(shown.children[0].claimedBy).toBeNull();
+    expect(shown.children[0].updatedAt).toBeTruthy();
   });
 
   it("excludes closed trackers from the default list but includes them with all", async () => {
