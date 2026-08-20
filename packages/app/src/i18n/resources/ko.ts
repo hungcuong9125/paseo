@@ -2490,11 +2490,13 @@ export const ko: TranslationResources = {
     },
     kanban: {
       lane: {
+        ready: "준비됨",
         open: "열림",
         inProgress: "진행 중",
         done: "완료",
       },
       empty: {
+        ready: "준비된 항목이 없습니다",
         open: "열린 항목이 없습니다",
         inProgress: "진행 중인 항목이 없습니다",
         done: "완료된 항목이 없습니다",

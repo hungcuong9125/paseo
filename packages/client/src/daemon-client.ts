@@ -5243,6 +5243,24 @@ export class DaemonClient {
     return { trackers: payload.trackers, hiddenCount: payload.hiddenCount };
   }
 
+  async trackerReady(options: {
+    projectId: string;
+    requestId?: string;
+  }): Promise<{ readyIds: string[] }> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.ready.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.tracker.ready.request",
+          projectId: options.projectId,
+        },
+      });
+    if (payload.error) {
+      throw new TrackerRpcError(payload.errorCode ?? "unknown", payload.error);
+    }
+    return { readyIds: payload.readyIds };
+  }
+
   async trackerSubscribe(options: {
     projectId: string;
     all?: boolean;

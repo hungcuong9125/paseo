@@ -1,4 +1,4 @@
-import type { TrackerStatus, TrackerSummary } from "@getpaseo/protocol/tracker/types";
+import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 import { compareTrackers } from "@/tracker/tracker-hierarchy";
 import { matchesTrackerStatFilter, type TrackerStatFilter } from "@/tracker/tracker-stats";
 
@@ -7,7 +7,7 @@ import { matchesTrackerStatFilter, type TrackerStatFilter } from "@/tracker/trac
 // second meaning (lane projection) rather than inventing a parallel filter type.
 export type TrackerBoardFilter = TrackerStatFilter;
 
-export type TrackerBoardLaneKey = "open" | "in_progress" | "done";
+export type TrackerBoardLaneKey = "ready" | "open" | "in_progress" | "done";
 
 export interface TrackerBoardCard {
   tracker: TrackerSummary;
@@ -23,17 +23,25 @@ export interface TrackerBoard {
    * not be rendered at all (see docs/refactors/tracker-kanban-redesign.md,
    * "Toolbar contract"). */
   visibleLanes: readonly TrackerBoardLaneKey[];
+  ready: TrackerBoardCard[];
   open: TrackerBoardCard[];
   in_progress: TrackerBoardCard[];
   done: TrackerBoardCard[];
 }
 
-const ALL_LANES: readonly TrackerBoardLaneKey[] = ["open", "in_progress", "done"];
+const ALL_LANES: readonly TrackerBoardLaneKey[] = ["ready", "open", "in_progress", "done"];
 
-function laneForStatus(status: TrackerStatus): TrackerBoardLaneKey {
-  switch (status) {
+// Ready is derived, not a peer TrackerStatus: an item is Ready iff it is
+// `open` AND unblocked (its id is in `readyIds`, from `project.tracker.ready`).
+// An `open` item not in `readyIds` is blocked and stays in Open. In progress
+// and Done never depend on `readyIds`.
+function laneForTracker(
+  tracker: TrackerSummary,
+  readyIds: ReadonlySet<string>,
+): TrackerBoardLaneKey {
+  switch (tracker.status) {
     case "open":
-      return "open";
+      return readyIds.has(tracker.id) ? "ready" : "open";
     case "in_progress":
       return "in_progress";
     case "closed":
@@ -47,7 +55,9 @@ function visibleLanesForFilter(filter: TrackerBoardFilter): readonly TrackerBoar
     case "all":
       return ALL_LANES;
     case "open":
-      return ["open"];
+      // Ready and Open are both status==="open" under the hood, split only
+      // visually — selecting the Open filter must not hide unblocked items.
+      return ["ready", "open"];
     case "in_progress":
       return ["in_progress"];
     case "done":
@@ -57,7 +67,7 @@ function visibleLanesForFilter(filter: TrackerBoardFilter): readonly TrackerBoar
     case "p2":
     case "p3":
     case "p4":
-      return ["open", "in_progress"];
+      return ["ready", "open", "in_progress"];
   }
 }
 
@@ -84,24 +94,31 @@ function compareByRecency(left: TrackerSummary, right: TrackerSummary): number {
 }
 
 /**
- * Partitions a flat tracker list into the three Kanban status lanes and
- * projects them through the toolbar's status filter. Partitioning is by
- * `status` alone — `parentId` is never read, so malformed or cyclic hierarchy
- * data cannot affect lane placement.
+ * Partitions a flat tracker list into the four Kanban lanes and projects them
+ * through the toolbar's status filter. Partitioning is by `status` (plus
+ * `readyIds` membership for the open/ready split) alone — `parentId` is never
+ * read, so malformed or cyclic hierarchy data cannot affect lane placement.
+ *
+ * `readyIds` defaults to an empty Set so callers that don't have the data yet
+ * (loading, or the server doesn't advertise the capability) degrade to
+ * "everything open-status stays in Open, nothing is Ready" rather than
+ * crashing or showing a permanently-empty-looking Ready column.
  */
 export function buildTrackerBoard(
   trackers: readonly TrackerSummary[],
   filter: TrackerBoardFilter,
+  readyIds: ReadonlySet<string> = new Set(),
 ): TrackerBoard {
   const visibleLanes = visibleLanesForFilter(filter);
   const isPriority = isPriorityFilter(filter);
 
+  const ready: TrackerBoardCard[] = [];
   const open: TrackerBoardCard[] = [];
   const inProgress: TrackerBoardCard[] = [];
   const done: TrackerBoardCard[] = [];
 
   for (const tracker of trackers) {
-    const lane = laneForStatus(tracker.status);
+    const lane = laneForTracker(tracker, readyIds);
     if (!visibleLanes.includes(lane)) {
       continue;
     }
@@ -111,6 +128,9 @@ export function buildTrackerBoard(
 
     const card: TrackerBoardCard = { tracker, isCancelled: tracker.status === "cancelled" };
     switch (lane) {
+      case "ready":
+        ready.push(card);
+        break;
       case "open":
         open.push(card);
         break;
@@ -123,9 +143,10 @@ export function buildTrackerBoard(
     }
   }
 
+  ready.sort((a, b) => compareTrackers(a.tracker, b.tracker));
   open.sort((a, b) => compareTrackers(a.tracker, b.tracker));
   inProgress.sort((a, b) => compareTrackers(a.tracker, b.tracker));
   done.sort((a, b) => compareByRecency(a.tracker, b.tracker));
 
-  return { visibleLanes, open, in_progress: inProgress, done };
+  return { visibleLanes, ready, open, in_progress: inProgress, done };
 }

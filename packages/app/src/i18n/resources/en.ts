@@ -2487,11 +2487,13 @@ export const en = {
     },
     kanban: {
       lane: {
+        ready: "Ready",
         open: "Open",
         inProgress: "In progress",
         done: "Done",
       },
       empty: {
+        ready: "No ready items",
         open: "No open items",
         inProgress: "No items in progress",
         done: "No done items",

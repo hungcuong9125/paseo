@@ -2518,11 +2518,13 @@ export const ru: TranslationResources = {
     },
     kanban: {
       lane: {
+        ready: "Готовы к работе",
         open: "Открыто",
         inProgress: "В работе",
         done: "Готово",
       },
       empty: {
+        ready: "Нет задач, готовых к работе",
         open: "Нет открытых задач",
         inProgress: "Нет задач в работе",
         done: "Нет завершённых задач",

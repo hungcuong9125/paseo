@@ -2513,11 +2513,13 @@ export const ptBR: TranslationResources = {
     },
     kanban: {
       lane: {
+        ready: "Pronto",
         open: "Aberto",
         inProgress: "Em andamento",
         done: "Concluído",
       },
       empty: {
+        ready: "Nenhum item pronto",
         open: "Nenhum item aberto",
         inProgress: "Nenhum item em andamento",
         done: "Nenhum item concluído",

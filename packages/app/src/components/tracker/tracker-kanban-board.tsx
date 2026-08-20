@@ -17,11 +17,21 @@ import {
 import { buildTrackerHierarchy } from "@/tracker/tracker-hierarchy";
 import { createPendingTrackerSet, type TrackerTransition } from "@/tracker/tracker-transitions";
 
+const EMPTY_READY_IDS: ReadonlySet<string> = new Set();
+
 export interface TrackerKanbanBoardProps {
   /** Project-filtered but NOT status-filtered — the board partitions by status itself. */
   trackers: readonly TrackerSummary[];
   /** Projects the board onto a subset of lanes; see buildTrackerBoard's filter contract. */
   filter: TrackerBoardFilter;
+  /**
+   * Ids of unblocked trackers, from `project.tracker.ready`. An `open` tracker
+   * whose id is here renders in the Ready lane instead of Open; everything
+   * else is unaffected. Omit (or pass an empty Set) while loading or when the
+   * server doesn't advertise the capability — the board degrades to
+   * everything-open-status-stays-Open rather than crashing.
+   */
+  readyIds?: ReadonlySet<string>;
   /**
    * Mutation entry point. The board never mutates `trackers` locally (no optimistic
    * move) — it marks the card pending, awaits this, then clears pending on either
@@ -39,20 +49,18 @@ export interface TrackerKanbanBoardProps {
 }
 
 /**
- * The status-lane Kanban board: three columns (Open, In progress, Done) built from
- * tracker-board-model.ts, tracker-kanban-card.tsx, and tracker-transitions.ts.
+ * The status-lane Kanban board: up to four columns (Ready, Open, In progress, Done)
+ * built from tracker-board-model.ts, tracker-kanban-card.tsx, and tracker-transitions.ts.
  *
  * Desktop renders every lane `buildTrackerBoard` makes visible, side by side, each
  * with one vertical ScrollView. Compact renders exactly one lane at a time, chosen by
  * a local segmented control — the single-lane case of the same `TrackerBoard`, not a
  * second layout path.
- *
- * Still unmounted: nothing wires this into tracker-screen.tsx yet (a separate,
- * later step owns that).
  */
 export function TrackerKanbanBoard({
   trackers,
   filter,
+  readyIds = EMPTY_READY_IDS,
   onTransition,
   onTransitionError,
   getProjectLabel,
@@ -62,7 +70,10 @@ export function TrackerKanbanBoard({
   const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
 
-  const board = useMemo(() => buildTrackerBoard(trackers, filter), [trackers, filter]);
+  const board = useMemo(
+    () => buildTrackerBoard(trackers, filter, readyIds),
+    [trackers, filter, readyIds],
+  );
   const hierarchy = useMemo(() => buildTrackerHierarchy([...trackers]), [trackers]);
 
   const pendingSetRef = useRef(createPendingTrackerSet());

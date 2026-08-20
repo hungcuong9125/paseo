@@ -42,7 +42,10 @@ import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/s
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
 import { useProjects } from "@/hooks/use-projects";
 import { useToast } from "@/contexts/toast-context";
+import { useFetchQuery } from "@/data/query";
+import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import {
+  fetchTrackerReadyIds,
   trackerQueryBaseKey,
   type AggregatedTracker,
   type TrackerProjectError,
@@ -108,6 +111,38 @@ function callTrackerTransition(
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const EMPTY_TRACKERS: AggregatedTracker[] = [];
+const EMPTY_READY_IDS: ReadonlySet<string> = new Set();
+
+// Only fetched in Kanban mode — List never renders a Ready lane. The fetch
+// itself (fetchTrackerReadyIds) is per-project resilient: a project whose
+// server predates `aitTrackerReady`, is offline, or errors just contributes
+// no ids, so that project's items stay in Open rather than blocking the fetch.
+function useTrackerReadyIds(options: {
+  viewMode: ViewMode;
+  projects: readonly TrackerProjectInput[];
+  selectedProjectId: string | null;
+}): ReadonlySet<string> {
+  const relevantProjects = useMemo(
+    () =>
+      options.selectedProjectId
+        ? options.projects.filter((project) => project.projectId === options.selectedProjectId)
+        : options.projects,
+    [options.projects, options.selectedProjectId],
+  );
+  const query = useFetchQuery<ReadonlySet<string>>({
+    queryKey: [
+      ...trackerQueryBaseKey,
+      "ready",
+      relevantProjects.map((project) => `${project.serverId}:${project.projectId}`).join("|"),
+    ],
+    queryFn: () =>
+      fetchTrackerReadyIds({ projects: relevantProjects, runtime: getHostRuntimeStore() }),
+    enabled: options.viewMode === "kanban" && relevantProjects.length > 0,
+    dataShape: "value",
+    staleTimeMs: 5_000,
+  });
+  return query.data ?? EMPTY_READY_IDS;
+}
 
 export function TrackerScreen(): ReactElement {
   const isFocused = useIsFocused();
@@ -197,6 +232,7 @@ function TrackerScreenContent(): ReactElement {
         : projectFilteredTrackers.filter((tracker) => tracker.type === kanbanTypeFilter),
     [projectFilteredTrackers, kanbanTypeFilter],
   );
+  const readyIds = useTrackerReadyIds({ viewMode, projects: projectInputs, selectedProjectId });
   const orderedTrackers = useMemo(
     () =>
       [...visibleTrackers].sort(
@@ -339,6 +375,7 @@ function TrackerScreenContent(): ReactElement {
         parentTrackers={orderedTrackers}
         statsTrackers={projectFilteredTrackers}
         kanbanTrackers={kanbanTrackers}
+        kanbanReadyIds={readyIds}
         showProjectLabel={selectedProjectId === null}
         projects={projectInputs}
         selectedProjectId={selectedProjectId}
@@ -578,6 +615,7 @@ function TrackerScreenBody({
   parentTrackers,
   statsTrackers,
   kanbanTrackers,
+  kanbanReadyIds,
   showProjectLabel,
   projects,
   selectedProjectId,
@@ -610,6 +648,7 @@ function TrackerScreenBody({
   parentTrackers: AggregatedTracker[];
   statsTrackers: AggregatedTracker[];
   kanbanTrackers: AggregatedTracker[];
+  kanbanReadyIds: ReadonlySet<string>;
   showProjectLabel: boolean;
   projects: TrackerProjectInput[];
   selectedProjectId: string | null;
@@ -772,6 +811,7 @@ function TrackerScreenBody({
             <TrackerKanbanBoard
               trackers={kanbanTrackers}
               filter={statFilter}
+              readyIds={kanbanReadyIds}
               onTransition={onKanbanTransition}
               onTransitionError={onKanbanTransitionError}
               getProjectLabel={getKanbanProjectLabel}

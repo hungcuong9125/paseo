@@ -2498,11 +2498,13 @@ export const ja: TranslationResources = {
     },
     kanban: {
       lane: {
+        ready: "着手可能",
         open: "未着手",
         inProgress: "進行中",
         done: "完了",
       },
       empty: {
+        ready: "着手可能な項目はありません",
         open: "未着手の項目はありません",
         inProgress: "進行中の項目はありません",
         done: "完了した項目はありません",

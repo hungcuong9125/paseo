@@ -2444,11 +2444,13 @@ export const zhCN: TranslationResources = {
     },
     kanban: {
       lane: {
+        ready: "就绪",
         open: "待处理",
         inProgress: "进行中",
         done: "已完成",
       },
       empty: {
+        ready: "没有就绪的事项",
         open: "没有待处理的事项",
         inProgress: "没有进行中的事项",
         done: "没有已完成的事项",

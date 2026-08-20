@@ -2536,11 +2536,13 @@ export const fr: TranslationResources = {
     },
     kanban: {
       lane: {
+        ready: "Prêt",
         open: "Ouvert",
         inProgress: "En cours",
         done: "Terminé",
       },
       empty: {
+        ready: "Aucun élément prêt",
         open: "Aucun élément ouvert",
         inProgress: "Aucun élément en cours",
         done: "Aucun élément terminé",

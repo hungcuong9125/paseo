@@ -2473,11 +2473,13 @@ export const ar: TranslationResources = {
     },
     kanban: {
       lane: {
+        ready: "جاهز",
         open: "مفتوح",
         inProgress: "قيد التنفيذ",
         done: "منجز",
       },
       empty: {
+        ready: "لا توجد عناصر جاهزة",
         open: "لا توجد عناصر مفتوحة",
         inProgress: "لا توجد عناصر قيد التنفيذ",
         done: "لا توجد عناصر منجزة",

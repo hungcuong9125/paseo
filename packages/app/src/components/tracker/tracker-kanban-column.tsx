@@ -10,12 +10,21 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { isNative } from "@/constants/platform";
 import type { TrackerBoardCard, TrackerBoardLaneKey } from "@/tracker/tracker-board-model";
 import type { TrackerHierarchy } from "@/tracker/tracker-hierarchy";
-import type { TrackerTransition } from "@/tracker/tracker-transitions";
+import type { TrackerLane, TrackerTransition } from "@/tracker/tracker-transitions";
 
 // Shared by the board (column header/segmented-control labels) and the move menu
 // (per-transition labels) so a lane's i18n key is named in exactly one place.
-export function laneTranslationKey(lane: TrackerBoardLaneKey): "open" | "inProgress" | "done" {
+export function laneTranslationKey(
+  lane: TrackerBoardLaneKey,
+): "ready" | "open" | "inProgress" | "done" {
   return lane === "in_progress" ? "inProgress" : lane;
+}
+
+// tracker-transitions.ts's TrackerLane stays open|in_progress|done — Ready is
+// never itself a status to transition into, only a display split of "open".
+// A card shown in the Ready lane still transitions like an Open one.
+function transitionLaneFor(lane: TrackerBoardLaneKey): TrackerLane {
+  return lane === "ready" ? "open" : lane;
 }
 
 // Doc: "Done lane: incremental reveal — render at most 50 cards with a 'Show N
@@ -85,6 +94,7 @@ export function TrackerKanbanColumn({
 }: TrackerKanbanColumnProps): ReactElement {
   const { t } = useTranslation();
   const [revealCount, setRevealCount] = useState(DONE_REVEAL_STEP);
+  const transitionLane = transitionLaneFor(lane);
 
   const visibleCards = lane === "done" ? cards.slice(0, revealCount) : cards;
   const remaining = lane === "done" ? Math.max(0, cards.length - revealCount) : 0;
@@ -133,7 +143,7 @@ export function TrackerKanbanColumn({
                 key={tracker.id}
                 trackerId={tracker.id}
                 trackerTitle={tracker.title}
-                lane={lane}
+                lane={transitionLane}
                 isPending={pending}
                 onTransition={onTransition}
                 onCardPress={isNative ? onCardPress : undefined}

@@ -87,6 +87,24 @@ vi.mock("@react-navigation/native", () => ({
 
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
+  // The Ready-ids fetch (tracker-screen.tsx) goes through the real
+  // useFetchQuery -> useQuery; it's disabled whenever there are no projects
+  // (the default in this suite), so a static stub is enough — no test here
+  // exercises the readyIds data itself.
+  useQuery: () => ({ data: undefined, isPending: false, isFetching: false, refetch: vi.fn() }),
+  useQueries: () => [],
+  keepPreviousData: Symbol("keepPreviousData"),
+  skipToken: Symbol("skipToken"),
+}));
+
+vi.mock("@/runtime/host-runtime", () => ({
+  // Only reached by the readyIds queryFn, which the disabled query above never
+  // invokes in this suite — stubbed purely so importing the module doesn't
+  // pull in the real query-client singleton.
+  getHostRuntimeStore: () => ({
+    getClient: () => null,
+    getSnapshot: () => null,
+  }),
 }));
 
 vi.mock("@/hooks/use-projects", () => ({

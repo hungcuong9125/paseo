@@ -14,9 +14,11 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, options?: Record<string, unknown>) => {
       const templates: Record<string, string> = {
+        "tracker.kanban.lane.ready": "Ready",
         "tracker.kanban.lane.open": "Open",
         "tracker.kanban.lane.inProgress": "In progress",
         "tracker.kanban.lane.done": "Done",
+        "tracker.kanban.empty.ready": "No ready items",
         "tracker.kanban.empty.open": "No open items",
         "tracker.kanban.empty.inProgress": "No items in progress",
         "tracker.kanban.empty.done": "No done items",
@@ -159,13 +161,47 @@ describe("TrackerKanbanBoard — desktop layout", () => {
 
     render(<TrackerKanbanBoard trackers={trackers} filter="all" onTransition={vi.fn()} />);
 
+    expect(screen.getByTestId("tracker-kanban-column-ready")).toBeTruthy();
     expect(screen.getByTestId("tracker-kanban-column-open")).toBeTruthy();
     expect(screen.getByTestId("tracker-kanban-column-in_progress")).toBeTruthy();
     expect(screen.getByTestId("tracker-kanban-column-done")).toBeTruthy();
 
     expect(screen.getByText("Open one")).toBeTruthy();
     expect(screen.getByText("Doing one")).toBeTruthy();
+    expect(screen.getByText("No ready items")).toBeTruthy();
     expect(screen.getByText("No done items")).toBeTruthy();
+  });
+
+  it("renders an open item as Ready when its id is in readyIds, leaving it out of Open", () => {
+    const trackers = [
+      tracker({ id: "unblocked", status: "open", title: "Unblocked one" }),
+      tracker({ id: "blocked", status: "open", title: "Blocked one" }),
+    ];
+
+    render(
+      <TrackerKanbanBoard
+        trackers={trackers}
+        filter="all"
+        readyIds={new Set(["unblocked"])}
+        onTransition={vi.fn()}
+      />,
+    );
+
+    const readyColumn = screen.getByTestId("tracker-kanban-column-ready");
+    const openColumn = screen.getByTestId("tracker-kanban-column-open");
+    expect(readyColumn.textContent).toContain("Unblocked one");
+    expect(readyColumn.textContent).not.toContain("Blocked one");
+    expect(openColumn.textContent).toContain("Blocked one");
+    expect(openColumn.textContent).not.toContain("Unblocked one");
+  });
+
+  it("degrades to everything-open-stays-Open when readyIds is omitted", () => {
+    const trackers = [tracker({ id: "a", status: "open", title: "Open one" })];
+
+    render(<TrackerKanbanBoard trackers={trackers} filter="all" onTransition={vi.fn()} />);
+
+    expect(screen.getByText("No ready items")).toBeTruthy();
+    expect(screen.getByTestId("tracker-kanban-column-open").textContent).toContain("Open one");
   });
 
   it("passes the project label resolver through to each card's chip, only when it returns one", () => {
@@ -219,7 +255,7 @@ describe("TrackerKanbanBoard — compact single-lane projection", () => {
   beforeEach(() => useIsCompactFormFactorMock.mockReturnValue(true));
   afterEach(() => useIsCompactFormFactorMock.mockReturnValue(false));
 
-  it("renders exactly one lane behind a segmented control and switches lane on selection", () => {
+  it("renders exactly one lane behind a 4-option segmented control (Ready, Open, In progress, Done) and switches lane on selection", () => {
     const trackers = [
       tracker({ id: "a", status: "open", title: "Open one" }),
       tracker({ id: "b", status: "closed", title: "Done one" }),
@@ -227,25 +263,60 @@ describe("TrackerKanbanBoard — compact single-lane projection", () => {
 
     render(<TrackerKanbanBoard trackers={trackers} filter="all" onTransition={vi.fn()} />);
 
-    expect(screen.getByTestId("tracker-kanban-column-open")).toBeTruthy();
+    expect(screen.getByTestId("tracker-kanban-board-lane-selector-ready")).toBeTruthy();
+    expect(screen.getByTestId("tracker-kanban-board-lane-selector-open")).toBeTruthy();
+    expect(screen.getByTestId("tracker-kanban-board-lane-selector-in_progress")).toBeTruthy();
+    expect(screen.getByTestId("tracker-kanban-board-lane-selector-done")).toBeTruthy();
+
+    expect(screen.getByTestId("tracker-kanban-column-ready")).toBeTruthy();
+    expect(screen.queryByTestId("tracker-kanban-column-open")).toBeNull();
     expect(screen.queryByTestId("tracker-kanban-column-in_progress")).toBeNull();
     expect(screen.queryByTestId("tracker-kanban-column-done")).toBeNull();
 
     fireEvent.click(screen.getByTestId("tracker-kanban-board-lane-selector-done"));
 
-    expect(screen.queryByTestId("tracker-kanban-column-open")).toBeNull();
+    expect(screen.queryByTestId("tracker-kanban-column-ready")).toBeNull();
     expect(screen.getByTestId("tracker-kanban-column-done")).toBeTruthy();
     expect(screen.getByText("Done one")).toBeTruthy();
   });
 
   it("renders no segmented control and a single column when the filter already projects one lane", () => {
-    const trackers = [tracker({ id: "a", status: "open", title: "Open one" })];
+    const trackers = [tracker({ id: "a", status: "closed", title: "Done one" })];
 
-    render(<TrackerKanbanBoard trackers={trackers} filter="open" onTransition={vi.fn()} />);
+    render(<TrackerKanbanBoard trackers={trackers} filter="done" onTransition={vi.fn()} />);
 
     expect(screen.queryByTestId("tracker-kanban-board-lane-selector")).toBeNull();
-    expect(screen.getByTestId("tracker-kanban-column-open")).toBeTruthy();
+    expect(screen.getByTestId("tracker-kanban-column-done")).toBeTruthy();
+    expect(screen.queryByTestId("tracker-kanban-column-ready")).toBeNull();
+    expect(screen.queryByTestId("tracker-kanban-column-open")).toBeNull();
     expect(screen.queryByTestId("tracker-kanban-column-in_progress")).toBeNull();
-    expect(screen.queryByTestId("tracker-kanban-column-done")).toBeNull();
+  });
+
+  it("the Open filter still offers both Ready and Open lanes behind the segmented control", () => {
+    const trackers = [
+      tracker({ id: "unblocked", status: "open", title: "Unblocked one" }),
+      tracker({ id: "blocked", status: "open", title: "Blocked one" }),
+    ];
+
+    render(
+      <TrackerKanbanBoard
+        trackers={trackers}
+        filter="open"
+        readyIds={new Set(["unblocked"])}
+        onTransition={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("tracker-kanban-board-lane-selector-ready")).toBeTruthy();
+    expect(screen.getByTestId("tracker-kanban-board-lane-selector-open")).toBeTruthy();
+    expect(screen.queryByTestId("tracker-kanban-board-lane-selector-in_progress")).toBeNull();
+    expect(screen.queryByTestId("tracker-kanban-board-lane-selector-done")).toBeNull();
+
+    expect(screen.getByTestId("tracker-kanban-column-ready").textContent).toContain(
+      "Unblocked one",
+    );
+
+    fireEvent.click(screen.getByTestId("tracker-kanban-board-lane-selector-open"));
+    expect(screen.getByTestId("tracker-kanban-column-open").textContent).toContain("Blocked one");
   });
 });

@@ -143,3 +143,55 @@ function isTrackersConnectionSettling(
   }
   return snapshot.connectionStatus === "connecting" || snapshot.connectionStatus === "idle";
 }
+
+export interface TrackerReadyRuntime {
+  getClient(
+    serverId: string,
+  ): Pick<DaemonClient, "trackerReady" | "getLastServerInfoMessage"> | null;
+  getSnapshot(serverId: string): TrackersRuntimeSnapshot | null | undefined;
+}
+
+export interface FetchTrackerReadyIdsInput {
+  projects: readonly TrackerProjectInput[];
+  runtime: TrackerReadyRuntime;
+}
+
+/**
+ * Fan out `project.tracker.ready` across every known project and merge the
+ * unblocked tracker ids into one flat Set — same resilience posture as
+ * fetchAggregatedTrackers: an offline host, a server that doesn't advertise
+ * `aitTrackerReady` yet, or a project whose RPC fails all just contribute
+ * nothing rather than failing the whole fetch. Per
+ * docs/refactors/tracker-kanban-redesign.md and tracker-board-model.ts's
+ * `readyIds` contract, an id in the result only matters for a tracker whose
+ * status is already "open" — everything else ignores it.
+ */
+export async function fetchTrackerReadyIds(
+  input: FetchTrackerReadyIdsInput,
+): Promise<ReadonlySet<string>> {
+  const readyIds = new Set<string>();
+
+  await Promise.all(
+    input.projects.map(async (project) => {
+      const snapshot = input.runtime.getSnapshot(project.serverId);
+      const isOnline = snapshot?.connectionStatus === "online";
+      const client = input.runtime.getClient(project.serverId);
+      if (!client || !isOnline) {
+        return;
+      }
+      if (client.getLastServerInfoMessage()?.features?.aitTrackerReady !== true) {
+        return;
+      }
+      try {
+        const result = await client.trackerReady({ projectId: project.projectId });
+        for (const id of result.readyIds) {
+          readyIds.add(id);
+        }
+      } catch {
+        // Silently skip, same as an offline host — that project's items just stay in Open.
+      }
+    }),
+  );
+
+  return readyIds;
+}
