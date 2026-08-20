@@ -2507,6 +2507,7 @@ export const ptBR: TranslationResources = {
   tracker: {
     card: {
       cancelled: "Cancelada",
+      closed: "Fechada",
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Reivindicado por {{name}}",
     },

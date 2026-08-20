@@ -2481,6 +2481,7 @@ export const en = {
   tracker: {
     card: {
       cancelled: "Cancelled",
+      closed: "Closed",
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Claimed by {{name}}",
     },

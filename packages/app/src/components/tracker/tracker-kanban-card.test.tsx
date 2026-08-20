@@ -14,6 +14,7 @@ vi.mock("react-i18next", () => ({
     t: (key: string, options?: Record<string, unknown>) => {
       const templates: Record<string, string> = {
         "tracker.card.cancelled": "Cancelled",
+        "tracker.card.closed": "Closed",
         "tracker.card.childProgress": "{{done}}/{{count}}",
         "tracker.card.claimedBy": "Claimed by {{name}}",
       };
@@ -79,9 +80,21 @@ describe("TrackerKanbanCard", () => {
   it("marks cancelled items distinctly from closed items", () => {
     const { rerender } = render(<TrackerKanbanCard {...baseProps} status="closed" />);
     expect(screen.queryByText("Cancelled")).toBeNull();
+    expect(screen.getByText("Closed")).toBeTruthy();
 
     rerender(<TrackerKanbanCard {...baseProps} status="cancelled" />);
     expect(screen.getByText("Cancelled")).toBeTruthy();
+    expect(screen.queryByText("Closed")).toBeNull();
+  });
+
+  it("shows neither badge for open or in_progress items", () => {
+    const { rerender } = render(<TrackerKanbanCard {...baseProps} status="open" />);
+    expect(screen.queryByText("Cancelled")).toBeNull();
+    expect(screen.queryByText("Closed")).toBeNull();
+
+    rerender(<TrackerKanbanCard {...baseProps} status="in_progress" />);
+    expect(screen.queryByText("Cancelled")).toBeNull();
+    expect(screen.queryByText("Closed")).toBeNull();
   });
 
   it("shows the project chip only when a project label is passed", () => {

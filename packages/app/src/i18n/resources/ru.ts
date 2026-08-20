@@ -2512,6 +2512,7 @@ export const ru: TranslationResources = {
   tracker: {
     card: {
       cancelled: "Отменено",
+      closed: "Закрыто",
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Закреплено за {{name}}",
     },

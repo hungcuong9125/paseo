@@ -34,6 +34,7 @@ export function TrackerKanbanCard({
 }: TrackerKanbanCardProps): ReactElement {
   const { t } = useTranslation();
   const isCancelled = status === "cancelled";
+  const isClosed = status === "closed";
   const hasChildren = typeof childCount === "number" && childCount > 0;
 
   return (
@@ -65,6 +66,7 @@ export function TrackerKanbanCard({
         </Text>
       ) : null}
       {isCancelled ? <StatusBadge label={t("tracker.card.cancelled")} variant="error" /> : null}
+      {isClosed ? <StatusBadge label={t("tracker.card.closed")} variant="success" /> : null}
     </View>
   );
 }

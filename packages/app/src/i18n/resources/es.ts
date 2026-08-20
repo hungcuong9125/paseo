@@ -2523,6 +2523,7 @@ export const es: TranslationResources = {
   tracker: {
     card: {
       cancelled: "Cancelada",
+      closed: "Cerrada",
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Reclamado por {{name}}",
     },

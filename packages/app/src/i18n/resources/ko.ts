@@ -2484,6 +2484,7 @@ export const ko: TranslationResources = {
   tracker: {
     card: {
       cancelled: "취소됨",
+      closed: "닫힘",
       childProgress: "{{done}}/{{count}}",
       claimedBy: "{{name}}님이 담당",
     },

@@ -2530,6 +2530,7 @@ export const fr: TranslationResources = {
   tracker: {
     card: {
       cancelled: "Annulée",
+      closed: "Fermée",
       childProgress: "{{done}}/{{count}}",
       claimedBy: "Revendiqué par {{name}}",
     },
