@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import React from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TrackerKanbanCardMenu } from "./tracker-kanban-move-menu";
 
@@ -60,22 +60,30 @@ vi.mock("@/components/ui/context-menu", () => ({
   ContextMenuContent: ({ children, testID }: { children: React.ReactNode; testID?: string }) => (
     <div data-testid={testID}>{children}</div>
   ),
+  // Real ContextMenuTrigger spreads a plain `onPress` straight onto the underlying RN
+  // Pressable alongside its own `onLongPress` — the same component handles both
+  // gestures. This mock forwards `onPress` the same way (as a click handler on the
+  // trigger's own element) so the tap-to-open wiring is exercised without a second,
+  // nested pressable — see TrackerKanbanCardMenu's docstring for why that matters.
   ContextMenuTrigger: ({
     children,
     disabled,
     enabledOnWeb,
     accessibilityLabel,
+    onPress,
   }: {
     children: React.ReactNode;
     disabled?: boolean;
     enabledOnWeb?: boolean;
     accessibilityLabel?: string;
+    onPress?: () => void;
   }) => (
     <div
       data-testid="context-menu-trigger"
       data-enabled-on-web={String(Boolean(enabledOnWeb))}
       data-disabled={String(Boolean(disabled))}
       aria-label={accessibilityLabel}
+      onClick={disabled ? undefined : onPress}
     >
       {children}
     </div>
@@ -132,5 +140,45 @@ describe("TrackerKanbanCardMenu (native long-press surface)", () => {
     );
 
     expect(screen.getByTestId("context-menu-trigger").getAttribute("data-disabled")).toBe("true");
+  });
+
+  it("fires onCardPress from the same trigger that owns long-press, not a nested pressable", () => {
+    const onCardPress = vi.fn();
+    render(
+      <TrackerKanbanCardMenu
+        trackerId="paseo-abc.3"
+        trackerTitle="Tappable thing"
+        lane="open"
+        isPending={false}
+        onTransition={vi.fn()}
+        onCardPress={onCardPress}
+        testID="move"
+      >
+        <span>card body</span>
+      </TrackerKanbanCardMenu>,
+    );
+
+    fireEvent.click(screen.getByTestId("context-menu-trigger"));
+    expect(onCardPress).toHaveBeenCalledWith("paseo-abc.3");
+  });
+
+  it("does not fire onCardPress while pending", () => {
+    const onCardPress = vi.fn();
+    render(
+      <TrackerKanbanCardMenu
+        trackerId="paseo-abc.4"
+        trackerTitle="Pending thing"
+        lane="open"
+        isPending
+        onTransition={vi.fn()}
+        onCardPress={onCardPress}
+        testID="move"
+      >
+        <span>card body</span>
+      </TrackerKanbanCardMenu>,
+    );
+
+    fireEvent.click(screen.getByTestId("context-menu-trigger"));
+    expect(onCardPress).not.toHaveBeenCalled();
   });
 });

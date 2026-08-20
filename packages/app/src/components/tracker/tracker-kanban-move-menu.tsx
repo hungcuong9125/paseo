@@ -89,13 +89,22 @@ export interface TrackerKanbanCardMenuProps {
   lane: TrackerLane;
   isPending: boolean;
   onTransition: (trackerId: string, transition: TrackerTransition) => void;
+  /**
+   * Tapping the card body (not long-press, not the kebab). Native passes this straight
+   * to `ContextMenuTrigger`'s own `onPress` — RN's core `Pressable` natively combines
+   * `onPress` and `onLongPress` on one component — instead of nesting a second Pressable
+   * inside it, which would leave two Pressables racing over the same touch responder.
+   */
+  onCardPress?: (trackerId: string) => void;
   /** testID prefix — item ids append `-item-${to}`, the kebab trigger appends `-trigger`. */
   testID?: string;
 }
 
 /**
  * The shared "Move to..." action sheet. Wraps `children` (the card body):
- * - Native (every width): long-press on the card body opens it, via `ContextMenu`.
+ * - Native (every width): long-press on the card body opens it, via `ContextMenu`; a plain
+ *   tap fires `onCardPress` — both live on the same `ContextMenuTrigger`/`Pressable`, never
+ *   on nested Pressables.
  * - Every platform: a kebab button always renders the same options via `DropdownMenu`,
  *   which is also the screen-reader-reachable path and the web fallback for moving a
  *   card while drag-and-drop is unshipped.
@@ -110,12 +119,16 @@ export function TrackerKanbanCardMenu({
   lane,
   isPending,
   onTransition,
+  onCardPress,
   testID,
 }: PropsWithChildren<TrackerKanbanCardMenuProps>): ReactElement {
   const { t } = useTranslation();
   const options = useMemo(() => availableTrackerTransitions(lane), [lane]);
   const triggerLabel = t("tracker.kanban.moveMenu.trigger", { title: trackerTitle });
   const sheetTitle = t("tracker.kanban.moveMenu.title");
+  const handleCardPress = useCallback(() => {
+    onCardPress?.(trackerId);
+  }, [onCardPress, trackerId]);
 
   return (
     <View style={styles.wrapper}>
@@ -125,6 +138,7 @@ export function TrackerKanbanCardMenu({
             enabledOnWeb={false}
             disabled={isPending}
             accessibilityLabel={triggerLabel}
+            onPress={handleCardPress}
           >
             {children}
           </ContextMenuTrigger>

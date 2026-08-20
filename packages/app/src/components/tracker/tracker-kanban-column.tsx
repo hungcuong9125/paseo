@@ -7,6 +7,7 @@ import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 import { TrackerKanbanCard } from "@/components/tracker/tracker-kanban-card";
 import { TrackerKanbanCardMenu } from "@/components/tracker/tracker-kanban-move-menu";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { isNative } from "@/constants/platform";
 import type { TrackerBoardCard, TrackerBoardLaneKey } from "@/tracker/tracker-board-model";
 import type { TrackerHierarchy } from "@/tracker/tracker-hierarchy";
 import type { TrackerTransition } from "@/tracker/tracker-transitions";
@@ -29,6 +30,13 @@ interface TrackerKanbanCardPressableProps {
   testID?: string;
 }
 
+// Web only. On native, TrackerKanbanCardMenu wraps the card body in ContextMenuTrigger
+// (a Pressable with onLongPress for the move menu) — nesting a second Pressable in there
+// for tap-to-open would leave two Pressables racing over the same touch responder, so
+// native forwards onCardPress into TrackerKanbanCardMenu's own onPress instead (see its
+// docstring). Web's TrackerKanbanCardMenu renders `children` with no outer Pressable at
+// all, so this wrapper is the only one covering the card there — no conflict.
+//
 // Its own `onPress` is memoized per trackerId instead of allocating a closure
 // inline in the column's card list — see TrackerKanbanMoveItem's identical
 // rationale in tracker-kanban-move-menu.tsx.
@@ -117,6 +125,9 @@ export function TrackerKanbanColumn({
                 testID={cardTestID}
               />
             );
+            // Native: onCardPress rides ContextMenuTrigger's own onPress (see
+            // TrackerKanbanCardMenu) — never a second Pressable nested inside it. Web has
+            // no outer Pressable there, so TrackerKanbanCardPressable owns the tap.
             return (
               <TrackerKanbanCardMenu
                 key={tracker.id}
@@ -125,9 +136,10 @@ export function TrackerKanbanColumn({
                 lane={lane}
                 isPending={pending}
                 onTransition={onTransition}
+                onCardPress={isNative ? onCardPress : undefined}
                 testID={`${cardTestID}-move`}
               >
-                {onCardPress ? (
+                {!isNative && onCardPress ? (
                   <TrackerKanbanCardPressable
                     trackerId={tracker.id}
                     pending={pending}
