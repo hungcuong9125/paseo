@@ -4,13 +4,6 @@ import type {
   TrackerSummary,
 } from "@getpaseo/protocol/tracker/types";
 
-// `updatedAt` lands on `TrackerSummary` via a sibling protocol task (see
-// docs/refactors/tracker-kanban-redesign.md, "Data contract — no per-card fetch").
-// Extend locally until it does; switch every reference below to `TrackerSummary` once merged.
-export interface TrackerBoardTracker extends TrackerSummary {
-  updatedAt?: string;
-}
-
 // Same value set as `TrackerStatFilter` in packages/app/src/tracker/tracker-stats.ts,
 // declared locally because that file is an uncommitted diff owned by another agent —
 // do not import from it.
@@ -28,7 +21,7 @@ export type TrackerBoardFilter =
 export type TrackerBoardLaneKey = "open" | "in_progress" | "done";
 
 export interface TrackerBoardCard {
-  tracker: TrackerBoardTracker;
+  tracker: TrackerSummary;
   /** True only for `status === "cancelled"`. Cancelled items share the Done
    * lane with `closed` items but must never render with the plain "success"
    * done treatment — this flag is what lets the card tell the two apart. */
@@ -112,10 +105,10 @@ function compareByPriorityThenId(left: TrackerSummary, right: TrackerSummary): n
   return left.priority.localeCompare(right.priority) || left.id.localeCompare(right.id);
 }
 
-// TODO: switch to a real Date comparison once `updatedAt` is guaranteed on
-// TrackerSummary. ISO-8601 strings sort lexicographically the same as
-// chronologically, which stands in fine until then.
-function compareByRecency(left: TrackerBoardTracker, right: TrackerBoardTracker): number {
+// `updatedAt` is optional on TrackerSummary (older callers may not populate
+// it yet), so missing values still sort last. ISO-8601 strings sort
+// lexicographically the same as chronologically.
+function compareByRecency(left: TrackerSummary, right: TrackerSummary): number {
   if (left.updatedAt && right.updatedAt) {
     return right.updatedAt.localeCompare(left.updatedAt);
   }
@@ -135,7 +128,7 @@ function compareByRecency(left: TrackerBoardTracker, right: TrackerBoardTracker)
  * data cannot affect lane placement.
  */
 export function buildTrackerBoard(
-  trackers: readonly TrackerBoardTracker[],
+  trackers: readonly TrackerSummary[],
   filter: TrackerBoardFilter,
 ): TrackerBoard {
   const visibleLanes = visibleLanesForFilter(filter);

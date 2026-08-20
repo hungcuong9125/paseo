@@ -1,13 +1,8 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildTrackerBoard,
-  type TrackerBoardFilter,
-  type TrackerBoardTracker,
-} from "./tracker-board-model";
+import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
+import { buildTrackerBoard, type TrackerBoardFilter } from "./tracker-board-model";
 
-function tracker(
-  overrides: Partial<TrackerBoardTracker> & Pick<TrackerBoardTracker, "id">,
-): TrackerBoardTracker {
+function tracker(overrides: Partial<TrackerSummary> & Pick<TrackerSummary, "id">): TrackerSummary {
   return {
     title: overrides.id,
     type: "task",
@@ -66,7 +61,7 @@ describe("buildTrackerBoard", () => {
   it.each(["p0", "p1", "p2", "p3", "p4"] as const)(
     "filters %s lane cards to active items matching that priority, excluding done",
     (filter: TrackerBoardFilter) => {
-      const priority = filter.toUpperCase() as TrackerBoardTracker["priority"];
+      const priority = filter.toUpperCase() as TrackerSummary["priority"];
       const otherPriority = priority === "P0" ? "P1" : "P0";
       const trackers = [
         tracker({ id: "match-open", status: "open", priority }),
