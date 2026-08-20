@@ -18,6 +18,7 @@ vi.mock("react-i18next", () => ({
         "tracker.kanban.moveTo.open": "Move to Open",
         "tracker.kanban.moveTo.inProgress": "Move to In progress",
         "tracker.kanban.moveTo.done": "Move to Done",
+        "tracker.kanban.moveTo.cancelled": "Move to Cancelled",
       };
       const template = templates[key] ?? key;
       if (!options) return template;
@@ -121,6 +122,7 @@ describe("TrackerKanbanCardMenu (native long-press surface)", () => {
       "Move to In progress",
     );
     expect(screen.getByTestId("move-context-item-done").textContent).toBe("Move to Done");
+    expect(screen.getByTestId("move-context-item-cancelled").textContent).toBe("Move to Cancelled");
     // The kebab surface is still present on native — it is the screen-reader-guaranteed path.
     expect(screen.getByTestId("move-trigger")).toBeTruthy();
   });

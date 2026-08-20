@@ -14,7 +14,7 @@ function tracker(overrides: Partial<TrackerSummary> & Pick<TrackerSummary, "id">
 }
 
 describe("buildTrackerBoard", () => {
-  it("partitions trackers into open, in_progress, and done lanes by status", () => {
+  it("partitions trackers into open, in_progress, done, and cancelled lanes by status", () => {
     const trackers = [
       tracker({ id: "a", status: "open" }),
       tracker({ id: "b", status: "in_progress" }),
@@ -24,10 +24,11 @@ describe("buildTrackerBoard", () => {
 
     const board = buildTrackerBoard(trackers, "all");
 
-    expect(board.visibleLanes).toEqual(["ready", "open", "in_progress", "done"]);
+    expect(board.visibleLanes).toEqual(["ready", "open", "in_progress", "done", "cancelled"]);
     expect(board.open.map((card) => card.tracker.id)).toEqual(["a"]);
     expect(board.in_progress.map((card) => card.tracker.id)).toEqual(["b"]);
-    expect(board.done.map((card) => card.tracker.id).sort()).toEqual(["c", "d"]);
+    expect(board.done.map((card) => card.tracker.id)).toEqual(["c"]);
+    expect(board.cancelled.map((card) => card.tracker.id)).toEqual(["d"]);
   });
 
   it("splits open items into ready and open by readyIds membership, leaving in_progress and done untouched", () => {
@@ -41,7 +42,7 @@ describe("buildTrackerBoard", () => {
 
     const board = buildTrackerBoard(trackers, "all", readyIds);
 
-    expect(board.visibleLanes).toEqual(["ready", "open", "in_progress", "done"]);
+    expect(board.visibleLanes).toEqual(["ready", "open", "in_progress", "done", "cancelled"]);
     expect(board.ready.map((card) => card.tracker.id)).toEqual(["unblocked"]);
     expect(board.open.map((card) => card.tracker.id)).toEqual(["blocked"]);
     expect(board.in_progress.map((card) => card.tracker.id)).toEqual(["doing"]);
@@ -57,24 +58,40 @@ describe("buildTrackerBoard", () => {
     expect(board.open.map((card) => card.tracker.id)).toEqual(["a", "b"]);
   });
 
-  it("maps cancelled items into the done lane with a distinguishing flag, closed items without it", () => {
+  it("puts cancelled items in their own lane with a distinguishing flag, closed items without it", () => {
+    const trackers = [
+      tracker({ id: "closed-1", status: "closed" }),
+      tracker({ id: "cancelled-1", status: "cancelled" }),
+    ];
+
+    const board = buildTrackerBoard(trackers, "all");
+    const doneById = Object.fromEntries(board.done.map((card) => [card.tracker.id, card]));
+    const cancelledById = Object.fromEntries(
+      board.cancelled.map((card) => [card.tracker.id, card]),
+    );
+
+    expect(doneById["closed-1"]?.isCancelled).toBe(false);
+    expect(cancelledById["cancelled-1"]?.isCancelled).toBe(true);
+  });
+
+  it("keeps cancelled visible alongside done under the done filter (both terminal, both excluded from priority)", () => {
     const trackers = [
       tracker({ id: "closed-1", status: "closed" }),
       tracker({ id: "cancelled-1", status: "cancelled" }),
     ];
 
     const board = buildTrackerBoard(trackers, "done");
-    const byId = Object.fromEntries(board.done.map((card) => [card.tracker.id, card]));
 
-    expect(byId["closed-1"]?.isCancelled).toBe(false);
-    expect(byId["cancelled-1"]?.isCancelled).toBe(true);
+    expect(board.visibleLanes).toEqual(["done", "cancelled"]);
+    expect(board.done.map((card) => card.tracker.id)).toEqual(["closed-1"]);
+    expect(board.cancelled.map((card) => card.tracker.id)).toEqual(["cancelled-1"]);
   });
 
   it.each([
-    ["all", ["ready", "open", "in_progress", "done"]],
+    ["all", ["ready", "open", "in_progress", "done", "cancelled"]],
     ["open", ["ready", "open"]],
     ["in_progress", ["in_progress"]],
-    ["done", ["done"]],
+    ["done", ["done", "cancelled"]],
     ["p0", ["ready", "open", "in_progress"]],
     ["p1", ["ready", "open", "in_progress"]],
     ["p2", ["ready", "open", "in_progress"]],

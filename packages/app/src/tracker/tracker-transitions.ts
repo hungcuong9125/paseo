@@ -6,17 +6,20 @@
 // surfaces can never disagree on which transitions exist. Wiring to
 // useTrackerMutations is a downstream task (see docs/refactors/tracker-kanban-redesign.md).
 
-// The three board columns. `done` collapses `closed` and `cancelled`.
-export type TrackerLane = "open" | "in_progress" | "done";
+// The four board columns. `done` holds `closed` items; `cancelled` is its own
+// lane. `ready` is never a TrackerLane — it's a display-only split of `open`
+// resolved at the UI layer (tracker-kanban-column.tsx's `transitionLaneFor`).
+export type TrackerLane = "open" | "in_progress" | "done" | "cancelled";
 
 // The mutation a drop implies, as a framework-free description the caller wires
-// to useTrackerMutations. `cancel` is intentionally absent: it takes a reason and
-// is only ever a kebab-menu action, never a drop target.
+// to useTrackerMutations. `cancel` is a real transition now (cancelled is a lane,
+// and cancel-without-reason is a single kebab action), so it is part of the union.
 export type TrackerTransition =
   | { kind: "update"; status: "in_progress" }
   | { kind: "update"; status: "open" }
   | { kind: "close" }
-  | { kind: "reopen" };
+  | { kind: "reopen" }
+  | { kind: "cancel" };
 
 // Returns the mutation a drop from `from` to `to` should trigger, or null when
 // the board must not offer that transition (same lane, unsupported pairs, or
@@ -32,7 +35,11 @@ export function getTrackerTransition(from: TrackerLane, to: TrackerLane): Tracke
     case "open->done":
     case "in_progress->done":
       return { kind: "close" };
+    case "open->cancelled":
+    case "in_progress->cancelled":
+      return { kind: "cancel" };
     case "done->open":
+    case "cancelled->open":
       // Covers both closed->open and cancelled->open. ait reopen's help text:
       // "Reopen a closed or cancelled issue (sets status back to open)".
       return { kind: "reopen" };

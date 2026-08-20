@@ -2498,16 +2498,18 @@ export const ja: TranslationResources = {
     },
     kanban: {
       lane: {
-        ready: "着手可能",
-        open: "未着手",
+        ready: "バックログ",
+        open: "やること",
         inProgress: "進行中",
         done: "完了",
+        cancelled: "キャンセル",
       },
       empty: {
-        ready: "着手可能な項目はありません",
-        open: "未着手の項目はありません",
+        ready: "バックログの項目はありません",
+        open: "やることの項目はありません",
         inProgress: "進行中の項目はありません",
         done: "完了した項目はありません",
+        cancelled: "キャンセルした項目はありません",
       },
       showMore: "他 {{count}} 件を表示",
       moveMenu: {
@@ -2518,6 +2520,7 @@ export const ja: TranslationResources = {
         open: "未着手へ移動",
         inProgress: "進行中へ移動",
         done: "完了へ移動",
+        cancelled: "キャンセルへ移動",
       },
       type: {
         tasks: "タスク",

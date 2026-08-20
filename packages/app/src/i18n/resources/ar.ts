@@ -2473,16 +2473,18 @@ export const ar: TranslationResources = {
     },
     kanban: {
       lane: {
-        ready: "جاهز",
-        open: "مفتوح",
+        ready: "التراكم",
+        open: "مهام",
         inProgress: "قيد التنفيذ",
         done: "منجز",
+        cancelled: "ملغى",
       },
       empty: {
-        ready: "لا توجد عناصر جاهزة",
-        open: "لا توجد عناصر مفتوحة",
+        ready: "لا توجد عناصر في التراكم",
+        open: "لا توجد مهام",
         inProgress: "لا توجد عناصر قيد التنفيذ",
         done: "لا توجد عناصر منجزة",
+        cancelled: "لا توجد عناصر ملغاة",
       },
       showMore: "عرض {{count}} المزيد",
       moveMenu: {
@@ -2493,6 +2495,7 @@ export const ar: TranslationResources = {
         open: "نقل إلى مفتوح",
         inProgress: "نقل إلى قيد التنفيذ",
         done: "نقل إلى منجز",
+        cancelled: "نقل إلى ملغى",
       },
       type: {
         tasks: "المهام",

@@ -27,7 +27,7 @@ import {
 // detail; drag-and-drop remains open for a follow-up spike with real browser
 // tooling.
 
-const ALL_LANES: readonly TrackerLane[] = ["open", "in_progress", "done"];
+const ALL_LANES: readonly TrackerLane[] = ["open", "in_progress", "done", "cancelled"];
 
 export interface TrackerKanbanTransitionOption {
   to: TrackerLane;

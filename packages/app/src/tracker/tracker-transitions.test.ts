@@ -5,7 +5,7 @@ import {
   type TrackerLane,
 } from "./tracker-transitions";
 
-const LANES: TrackerLane[] = ["open", "in_progress", "done"];
+const LANES: TrackerLane[] = ["open", "in_progress", "done", "cancelled"];
 
 describe("getTrackerTransition", () => {
   it("maps open -> in_progress to update in_progress", () => {
@@ -30,27 +30,40 @@ describe("getTrackerTransition", () => {
     expect(getTrackerTransition("in_progress", "done")).toEqual({ kind: "close" });
   });
 
-  it("maps done -> open to reopen (covers closed and cancelled)", () => {
+  it("maps open -> cancelled to cancel", () => {
+    expect(getTrackerTransition("open", "cancelled")).toEqual({ kind: "cancel" });
+  });
+
+  it("maps in_progress -> cancelled to cancel", () => {
+    expect(getTrackerTransition("in_progress", "cancelled")).toEqual({ kind: "cancel" });
+  });
+
+  it("maps done -> open and cancelled -> open to reopen (covers closed and cancelled)", () => {
     expect(getTrackerTransition("done", "open")).toEqual({ kind: "reopen" });
+    expect(getTrackerTransition("cancelled", "open")).toEqual({ kind: "reopen" });
   });
 
   it("returns null for same-lane drops", () => {
     expect(getTrackerTransition("open", "open")).toBeNull();
     expect(getTrackerTransition("in_progress", "in_progress")).toBeNull();
     expect(getTrackerTransition("done", "done")).toBeNull();
+    expect(getTrackerTransition("cancelled", "cancelled")).toBeNull();
   });
 
-  it("returns null for unsupported cross-lane pairs (done only flows to open)", () => {
+  it("returns null for unsupported cross-lane pairs (done and cancelled only flow to open)", () => {
     expect(getTrackerTransition("done", "in_progress")).toBeNull();
+    expect(getTrackerTransition("cancelled", "in_progress")).toBeNull();
+    expect(getTrackerTransition("cancelled", "done")).toBeNull();
   });
 
   it("returns null for every from/to pair not in the matrix", () => {
     for (const from of LANES) {
       for (const to of LANES) {
         const supported =
-          (from === "open" && (to === "in_progress" || to === "done")) ||
-          (from === "in_progress" && (to === "open" || to === "done")) ||
-          (from === "done" && to === "open");
+          (from === "open" && (to === "in_progress" || to === "done" || to === "cancelled")) ||
+          (from === "in_progress" && (to === "open" || to === "done" || to === "cancelled")) ||
+          (from === "done" && to === "open") ||
+          (from === "cancelled" && to === "open");
         if (!supported) {
           expect(getTrackerTransition(from, to)).toBeNull();
         }
@@ -58,17 +71,16 @@ describe("getTrackerTransition", () => {
     }
   });
 
-  it("never offers cancel as a drop target", () => {
-    // cancel has no lane; exhaustively confirm no matrix pair yields a cancel kind.
-    for (const from of LANES) {
-      for (const to of LANES) {
-        const transition = getTrackerTransition(from, to);
-        expect(transition).not.toEqual({ kind: "cancel" });
-        if (transition) {
-          expect(["update", "close", "reopen"]).toContain(transition.kind);
-        }
-      }
-    }
+  it("reaches cancel from open and in_progress, but never from done", () => {
+    expect(getTrackerTransition("open", "cancelled")).toEqual({ kind: "cancel" });
+    expect(getTrackerTransition("in_progress", "cancelled")).toEqual({ kind: "cancel" });
+    expect(getTrackerTransition("done", "cancelled")).toBeNull();
+  });
+
+  it("cancelled's only outbound transition is reopen to open", () => {
+    expect(getTrackerTransition("cancelled", "open")).toEqual({ kind: "reopen" });
+    expect(getTrackerTransition("cancelled", "in_progress")).toBeNull();
+    expect(getTrackerTransition("cancelled", "done")).toBeNull();
   });
 });
 

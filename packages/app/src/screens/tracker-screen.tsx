@@ -105,6 +105,9 @@ function callTrackerTransition(
       return client.trackerClose({ projectId: aggregated.projectId, trackerId: aggregated.id });
     case "reopen":
       return client.trackerReopen({ projectId: aggregated.projectId, trackerId: aggregated.id });
+    case "cancel":
+      // `reason` is optional on trackerCancel and is not collected in this pass.
+      return client.trackerCancel({ projectId: aggregated.projectId, trackerId: aggregated.id });
   }
 }
 

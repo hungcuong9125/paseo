@@ -16,7 +16,7 @@ import type { TrackerLane, TrackerTransition } from "@/tracker/tracker-transitio
 // (per-transition labels) so a lane's i18n key is named in exactly one place.
 export function laneTranslationKey(
   lane: TrackerBoardLaneKey,
-): "ready" | "open" | "inProgress" | "done" {
+): "ready" | "open" | "inProgress" | "done" | "cancelled" {
   return lane === "in_progress" ? "inProgress" : lane;
 }
 
@@ -29,8 +29,10 @@ function transitionLaneFor(lane: TrackerBoardLaneKey): TrackerLane {
 
 // Doc: "Done lane: incremental reveal — render at most 50 cards with a 'Show N
 // more' footer." Open/In progress lanes are bounded by active work and render
-// in full; only Done accumulates without limit.
-const DONE_REVEAL_STEP = 50;
+// in full; Done and Cancelled are the two terminal lanes that accumulate
+// without limit, so both get the reveal cap.
+const REVEAL_STEP = 50;
+const REVEALED_LANES = new Set<TrackerBoardLaneKey>(["done", "cancelled"]);
 
 interface TrackerKanbanCardPressableProps {
   trackerId: string;
@@ -93,13 +95,14 @@ export function TrackerKanbanColumn({
   style,
 }: TrackerKanbanColumnProps): ReactElement {
   const { t } = useTranslation();
-  const [revealCount, setRevealCount] = useState(DONE_REVEAL_STEP);
+  const [revealCount, setRevealCount] = useState(REVEAL_STEP);
   const transitionLane = transitionLaneFor(lane);
+  const isRevealed = REVEALED_LANES.has(lane);
 
-  const visibleCards = lane === "done" ? cards.slice(0, revealCount) : cards;
-  const remaining = lane === "done" ? Math.max(0, cards.length - revealCount) : 0;
+  const visibleCards = isRevealed ? cards.slice(0, revealCount) : cards;
+  const remaining = isRevealed ? Math.max(0, cards.length - revealCount) : 0;
 
-  const handleShowMore = useCallback(() => setRevealCount((count) => count + DONE_REVEAL_STEP), []);
+  const handleShowMore = useCallback(() => setRevealCount((count) => count + REVEAL_STEP), []);
 
   return (
     <View style={[styles.column, style]} testID={`tracker-kanban-column-${lane}`}>
@@ -175,7 +178,7 @@ export function TrackerKanbanColumn({
             testID={`tracker-kanban-column-${lane}-show-more`}
           >
             <Text style={styles.showMoreText}>
-              {t("tracker.kanban.showMore", { count: Math.min(DONE_REVEAL_STEP, remaining) })}
+              {t("tracker.kanban.showMore", { count: Math.min(REVEAL_STEP, remaining) })}
             </Text>
           </Pressable>
         ) : null}

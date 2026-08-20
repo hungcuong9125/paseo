@@ -2513,16 +2513,18 @@ export const ptBR: TranslationResources = {
     },
     kanban: {
       lane: {
-        ready: "Pronto",
-        open: "Aberto",
+        ready: "Backlog",
+        open: "A fazer",
         inProgress: "Em andamento",
         done: "Concluído",
+        cancelled: "Cancelado",
       },
       empty: {
-        ready: "Nenhum item pronto",
-        open: "Nenhum item aberto",
+        ready: "Nenhum item no backlog",
+        open: "Nenhum item a fazer",
         inProgress: "Nenhum item em andamento",
         done: "Nenhum item concluído",
+        cancelled: "Nenhum item cancelado",
       },
       showMore: "Mostrar mais {{count}}",
       moveMenu: {
@@ -2533,6 +2535,7 @@ export const ptBR: TranslationResources = {
         open: "Mover para Aberto",
         inProgress: "Mover para Em andamento",
         done: "Mover para Concluído",
+        cancelled: "Mover para Cancelado",
       },
       type: {
         tasks: "Tarefas",

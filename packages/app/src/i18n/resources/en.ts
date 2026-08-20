@@ -2487,16 +2487,18 @@ export const en = {
     },
     kanban: {
       lane: {
-        ready: "Ready",
-        open: "Open",
+        ready: "Backlog",
+        open: "Todo",
         inProgress: "In progress",
         done: "Done",
+        cancelled: "Cancelled",
       },
       empty: {
-        ready: "No ready items",
-        open: "No open items",
+        ready: "No backlog items",
+        open: "No todo items",
         inProgress: "No items in progress",
         done: "No done items",
+        cancelled: "No cancelled items",
       },
       showMore: "Show {{count}} more",
       moveMenu: {
@@ -2507,6 +2509,7 @@ export const en = {
         open: "Move to Open",
         inProgress: "Move to In progress",
         done: "Move to Done",
+        cancelled: "Move to Cancelled",
       },
       type: {
         tasks: "Tasks",

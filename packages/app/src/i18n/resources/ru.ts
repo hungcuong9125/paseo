@@ -2518,16 +2518,18 @@ export const ru: TranslationResources = {
     },
     kanban: {
       lane: {
-        ready: "Готовы к работе",
-        open: "Открыто",
+        ready: "Бэклог",
+        open: "К выполнению",
         inProgress: "В работе",
         done: "Готово",
+        cancelled: "Отменено",
       },
       empty: {
-        ready: "Нет задач, готовых к работе",
-        open: "Нет открытых задач",
+        ready: "Нет задач в бэклоге",
+        open: "Нет задач к выполнению",
         inProgress: "Нет задач в работе",
         done: "Нет завершённых задач",
+        cancelled: "Нет отменённых задач",
       },
       showMore: "Показать ещё {{count}}",
       moveMenu: {
@@ -2538,6 +2540,7 @@ export const ru: TranslationResources = {
         open: "Переместить в «Открыто»",
         inProgress: "Переместить в «В работе»",
         done: "Переместить в «Готово»",
+        cancelled: "Переместить в «Отменено»",
       },
       type: {
         tasks: "Задачи",

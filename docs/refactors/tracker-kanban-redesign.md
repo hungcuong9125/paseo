@@ -2,7 +2,7 @@
 
 `packages/app/src/tracker/kanban-grouping.ts` (300 lines) and `packages/app/src/components/tracker/tracker-kanban-board.tsx` (920 lines) build a board that cannot be used. This document states why, what to build instead, and what stays unresolved.
 
-Status: **implemented and live, four lanes.** Two plan-review rounds returned accept-with-changes; every required change was applied before implementation. All five sequencing steps, the Type-filter follow-up, and a post-ship Ready lane (added at Human's explicit request after live-testing, overriding this plan's original "Ready is not a column" position) are built, reviewed, and merged — the board is wired into `tracker-screen.tsx`, and the dead hierarchy board (`kanban-grouping.ts`, the old `tracker-kanban-board.tsx`) is deleted. See "Implementation record" below. Deferred items (the blocked-by marker, per-project swimlanes, optimistic drag, a real-browser DnD spike) remain out of scope by design — see "Deferred" and "Open UNKNOWNs".
+Status: **implemented and live, five lanes** (Backlog, Todo, In progress, Done, Cancelled). Two plan-review rounds returned accept-with-changes; every required change was applied before implementation. All five sequencing steps, the Type-filter follow-up, the post-ship Ready lane (added at Human's explicit request after live-testing, overriding this plan's original "Ready is not a column" position), and the later Cancelled-lane split (paseo-PQNMc.1) are built, reviewed, and merged — the board is wired into `tracker-screen.tsx`, and the dead hierarchy board (`kanban-grouping.ts`, the old `tracker-kanban-board.tsx`) is deleted. See "Implementation record" below. Deferred items (the blocked-by marker, per-project swimlanes, optimistic drag, a real-browser DnD spike) remain out of scope by design — see "Deferred" and "Open UNKNOWNs".
 
 ## The diagnosis: two problems, not one
 
@@ -47,16 +47,23 @@ Do not take from it: it still wraps columns in a `horizontal` ScrollView at fixe
 
 ## Columns
 
-Four columns. Three map directly from `TrackerStatus` (`packages/protocol/src/tracker/types.ts:10`); Ready is a derived split of `open`, added after initial ship per Human's explicit request while live-testing (see "Ready lane" below):
+Five columns. Three map directly from `TrackerStatus` (`packages/protocol/src/tracker/types.ts:10`); Ready is a derived split of `open`, added after initial ship per Human's explicit request while live-testing (see "Ready lane" below), and Cancelled is a real fifth lane holding `cancelled`-status items (see "Cancelled lane" below).
+
+This doc uses the internal lane names (Ready, Open, Done, Cancelled — matching `TrackerBoardLaneKey` and code identifiers) throughout. The user-facing labels differ for two of them, by Human's later request: Ready displays as **Backlog**, Open displays as **Todo**. This is a display-string-only rename (`tracker.kanban.lane.*` i18n values) — no code identifier, testID, or this doc's own vocabulary changed to match, to avoid the internal/display split drifting into every reference throughout this document and the codebase.
 
 | Column      | Membership                                 |
 | ----------- | ------------------------------------------ |
 | Ready       | `open` **and** unblocked (in `readyIds`)   |
 | Open        | `open` **and** blocked (not in `readyIds`) |
 | In progress | `in_progress`                              |
-| Done        | `closed` + `cancelled`                     |
+| Done        | `closed`                                   |
+| Cancelled   | `cancelled`                                |
 
-`isDone()` already collapses `closed` and `cancelled` (`kanban-grouping.ts:60-62`). Keep that. A fourth Cancelled column is empty in most projects and costs more than it explains — but the card must mark cancelled distinctly, and the board must never present cancelled as "completed successfully". Both `closed` and `cancelled` now carry their own `<StatusBadge>` on the card (`tracker-kanban-card.tsx`), added after ship when it turned out `closed` had no marker at all — see "Cards".
+`isDone()` already collapses `closed` and `cancelled` (`kanban-grouping.ts:60-62`). Keep that. The Done lane holds only `closed` items now that `cancelled` has its own lane (see "Cancelled lane"). The board must never present cancelled as "completed successfully" — a cancelled item carries its own `<StatusBadge>` on the card (`tracker-kanban-card.tsx`), and now also sits in a dedicated Cancelled lane rather than being merged into Done. Both `closed` and `cancelled` carry their own badge, added after ship when it turned out `closed` had no marker at all — see "Cards".
+
+### Cancelled lane
+
+Originally this plan argued `cancelled` should merge into Done (the row above used to read `closed` + `cancelled`): a Cancelled column is empty in most projects and costs more than it explains. Human overrode that: `cancelled` is now its own fifth lane, split out of Done. The card still marks cancelled distinctly, but the lane itself is first-class — it has its own header, its own empty state, and its own transition matrix entries (`open`/`in_progress` → `cancelled` via the `cancel` transition; `cancelled` → `open` via `reopen`; no direct `cancelled` ⇄ `done` path, matching how `done` ⇄ `in_progress` is also null). Sort it by `updatedAt` descending like Done. Selecting the Done filter projects **both** Done and Cancelled (both terminal, both excluded from the priority filters), so the Done filter never hides cancelled items.
 
 ### Priority is not a column
 
@@ -70,7 +77,7 @@ Verified directly against a real `ait` binary before building: `ait ready` retur
 
 This reclassifies "Open" within the Kanban board specifically: it now means "open and blocked", not every `open` item. The List view is unaffected — its own `statFilter === "open"` still means `tracker.status === "open"`, full stop. The Kanban toolbar's Open filter chip projects **both** Ready and Open lanes together (they are the same underlying status, split only visually), so selecting "Open" never hides unblocked items. `p0`–`p4` filters also include Ready. `buildTrackerBoard` degrades to "everything open-status stays in Open, nothing is Ready" when `readyIds` is empty (loading, or the server predates the capability) — it never crashes and never shows a stuck-looking permanently-empty Ready column as the reason something is missing.
 
-The move-menu's transition matrix (`tracker-transitions.ts`) is unaffected: `TrackerLane` there stays `"open" | "in_progress" | "done"`, since Ready is never itself a status to transition into. The UI layer (`tracker-kanban-column.tsx`) maps a card's display lane to its effective transition lane (`ready` → `open`) before consulting the matrix.
+The move-menu's transition matrix (`tracker-transitions.ts`) is unaffected by Ready: `TrackerLane` there is `"open" | "in_progress" | "done" | "cancelled"`, since Ready is never itself a status to transition into (the UI layer maps `ready` → `open` before consulting the matrix, `tracker-kanban-column.tsx`). Cancelled **is** a real `TrackerLane` and carries its own matrix entries: `open`/`in_progress` → `cancelled` (the `cancel` transition), `cancelled` → `open` (the `reopen` transition also used by `done` → `open`), and no `cancelled` ⇄ `done` pair.
 
 ## Toolbar contract
 
@@ -83,17 +90,17 @@ This is the decision Problem 2 forces. `statFilter` means different things per v
 
 The filter domain is not just statuses. `TrackerStatFilter` is `open | in_progress | p0 | p1 | p2 | p3 | p4 | done | all`, and `matchesTrackerStatFilter` gives `p0`–`p4` the meaning "active (`open` or `in_progress`) **and** that priority" (`packages/app/src/tracker/tracker-stats.ts`). Every value needs defined Kanban behavior:
 
-| `statFilter`  | Lanes shown             | Cards within a lane       |
-| ------------- | ----------------------- | ------------------------- |
-| `all`         | Open, In progress, Done | all                       |
-| `open`        | Open                    | all                       |
-| `in_progress` | In progress             | all                       |
-| `done`        | Done                    | all                       |
-| `p0`–`p4`     | Open, In progress       | filtered to that priority |
+| `statFilter`  | Lanes shown                               | Cards within a lane       |
+| ------------- | ----------------------------------------- | ------------------------- |
+| `all`         | Ready, Open, In progress, Done, Cancelled | all                       |
+| `open`        | Ready, Open                               | all                       |
+| `in_progress` | In progress                               | all                       |
+| `done`        | Done, Cancelled                           | all                       |
+| `p0`–`p4`     | Ready, Open, In progress                  | filtered to that priority |
 
-The priority rows reuse `matchesTrackerStatFilter` unchanged, so the control keeps exactly one predicate across both views — the Done lane is absent under a priority filter because the List view already excludes done items from `p0`–`p4`. Disabling the priority chips in Kanban was rejected: a dead control is worse than a consistent one.
+The priority rows reuse `matchesTrackerStatFilter` unchanged, so the control keeps exactly one predicate across both views — the Done lane (and Cancelled) is absent under a priority filter because the List view already excludes done items from `p0`–`p4`. Disabling the priority chips in Kanban was rejected: a dead control is worse than a consistent one.
 
-`statFilter = "all"` → three lanes; `statFilter = "open"` → one Open lane. This single-lane projection is `buildIssueBoard(issues, filter)`'s case and is also the compact layout mechanism. One mechanism, three callers.
+`statFilter = "all"` → five lanes; `statFilter = "open"` → two lanes (Ready + Open). This single-lane projection is `buildIssueBoard(issues, filter)`'s case and is also the compact layout mechanism. One mechanism, three callers.
 
 **View switching keeps two independent filter states**, `listStatFilter` and `kanbanStatFilter`, rendered through the same toolbar control. List keeps today's `"open"` default (`tracker-screen.tsx:100`); Kanban defaults to `"all"`. Sharing one state would open the board on a single Open lane, which reads as a broken board. Two states, no promotion rule, no magic.
 

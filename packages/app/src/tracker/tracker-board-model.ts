@@ -7,7 +7,7 @@ import { matchesTrackerStatFilter, type TrackerStatFilter } from "@/tracker/trac
 // second meaning (lane projection) rather than inventing a parallel filter type.
 export type TrackerBoardFilter = TrackerStatFilter;
 
-export type TrackerBoardLaneKey = "ready" | "open" | "in_progress" | "done";
+export type TrackerBoardLaneKey = "ready" | "open" | "in_progress" | "done" | "cancelled";
 
 export interface TrackerBoardCard {
   tracker: TrackerSummary;
@@ -27,9 +27,16 @@ export interface TrackerBoard {
   open: TrackerBoardCard[];
   in_progress: TrackerBoardCard[];
   done: TrackerBoardCard[];
+  cancelled: TrackerBoardCard[];
 }
 
-const ALL_LANES: readonly TrackerBoardLaneKey[] = ["ready", "open", "in_progress", "done"];
+const ALL_LANES: readonly TrackerBoardLaneKey[] = [
+  "ready",
+  "open",
+  "in_progress",
+  "done",
+  "cancelled",
+];
 
 // Ready is derived, not a peer TrackerStatus: an item is Ready iff it is
 // `open` AND unblocked (its id is in `readyIds`, from `project.tracker.ready`).
@@ -45,8 +52,9 @@ function laneForTracker(
     case "in_progress":
       return "in_progress";
     case "closed":
-    case "cancelled":
       return "done";
+    case "cancelled":
+      return "cancelled";
   }
 }
 
@@ -61,7 +69,9 @@ function visibleLanesForFilter(filter: TrackerBoardFilter): readonly TrackerBoar
     case "in_progress":
       return ["in_progress"];
     case "done":
-      return ["done"];
+      // Closed and cancelled are both terminal and both excluded from the
+      // priority filters; selecting the Done filter must not hide cancelled items.
+      return ["done", "cancelled"];
     case "p0":
     case "p1":
     case "p2":
@@ -94,7 +104,7 @@ function compareByRecency(left: TrackerSummary, right: TrackerSummary): number {
 }
 
 /**
- * Partitions a flat tracker list into the four Kanban lanes and projects them
+ * Partitions a flat tracker list into the five Kanban lanes and projects them
  * through the toolbar's status filter. Partitioning is by `status` (plus
  * `readyIds` membership for the open/ready split) alone — `parentId` is never
  * read, so malformed or cyclic hierarchy data cannot affect lane placement.
@@ -116,6 +126,7 @@ export function buildTrackerBoard(
   const open: TrackerBoardCard[] = [];
   const inProgress: TrackerBoardCard[] = [];
   const done: TrackerBoardCard[] = [];
+  const cancelled: TrackerBoardCard[] = [];
 
   for (const tracker of trackers) {
     const lane = laneForTracker(tracker, readyIds);
@@ -140,6 +151,9 @@ export function buildTrackerBoard(
       case "done":
         done.push(card);
         break;
+      case "cancelled":
+        cancelled.push(card);
+        break;
     }
   }
 
@@ -147,6 +161,7 @@ export function buildTrackerBoard(
   open.sort((a, b) => compareTrackers(a.tracker, b.tracker));
   inProgress.sort((a, b) => compareTrackers(a.tracker, b.tracker));
   done.sort((a, b) => compareByRecency(a.tracker, b.tracker));
+  cancelled.sort((a, b) => compareByRecency(a.tracker, b.tracker));
 
-  return { visibleLanes, ready, open, in_progress: inProgress, done };
+  return { visibleLanes, ready, open, in_progress: inProgress, done, cancelled };
 }

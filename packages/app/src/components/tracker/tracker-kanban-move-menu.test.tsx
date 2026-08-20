@@ -23,6 +23,7 @@ vi.mock("react-i18next", () => ({
         "tracker.kanban.moveTo.open": "Move to Open",
         "tracker.kanban.moveTo.inProgress": "Move to In progress",
         "tracker.kanban.moveTo.done": "Move to Done",
+        "tracker.kanban.moveTo.cancelled": "Move to Cancelled",
       };
       const template = templates[key] ?? key;
       if (!options) return template;
@@ -104,22 +105,28 @@ vi.mock("@/components/ui/menu", () => ({
 }));
 
 describe("availableTrackerTransitions", () => {
-  it("offers exactly in_progress and done from open", () => {
+  it("offers exactly in_progress, done, and cancelled from open", () => {
     expect(availableTrackerTransitions("open").map((option) => option.to)).toEqual([
       "in_progress",
       "done",
+      "cancelled",
     ]);
   });
 
-  it("offers exactly open and done from in_progress", () => {
+  it("offers exactly open, done, and cancelled from in_progress", () => {
     expect(availableTrackerTransitions("in_progress").map((option) => option.to)).toEqual([
       "open",
       "done",
+      "cancelled",
     ]);
   });
 
-  it("offers exactly open from done (never in_progress)", () => {
+  it("offers exactly open from done (never in_progress or cancelled)", () => {
     expect(availableTrackerTransitions("done").map((option) => option.to)).toEqual(["open"]);
+  });
+
+  it("offers exactly open from cancelled (reopen only)", () => {
+    expect(availableTrackerTransitions("cancelled").map((option) => option.to)).toEqual(["open"]);
   });
 });
 
@@ -144,6 +151,9 @@ describe("TrackerKanbanCardMenu (web/kebab surface)", () => {
     expect(screen.getByTestId("tracker-kanban-card-paseo-abc.1-move-item-done").textContent).toBe(
       "Move to Done",
     );
+    expect(
+      screen.getByTestId("tracker-kanban-card-paseo-abc.1-move-item-cancelled").textContent,
+    ).toBe("Move to Cancelled");
     expect(screen.queryByTestId("tracker-kanban-card-paseo-abc.1-move-item-open")).toBeNull();
   });
 
@@ -164,6 +174,25 @@ describe("TrackerKanbanCardMenu (web/kebab surface)", () => {
 
     fireEvent.click(screen.getByTestId("move-item-open"));
     expect(onTransition).toHaveBeenCalledWith("paseo-abc.2", { kind: "reopen" });
+  });
+
+  it("calls onTransition with the cancel transition when the cancelled option is selected", () => {
+    const onTransition = vi.fn();
+    render(
+      <TrackerKanbanCardMenu
+        trackerId="paseo-abc.5"
+        trackerTitle="Drop it"
+        lane="open"
+        isPending={false}
+        onTransition={onTransition}
+        testID="move"
+      >
+        <span>card</span>
+      </TrackerKanbanCardMenu>,
+    );
+
+    fireEvent.click(screen.getByTestId("move-item-cancelled"));
+    expect(onTransition).toHaveBeenCalledWith("paseo-abc.5", { kind: "cancel" });
   });
 
   it("disables the trigger and every item while pending", () => {

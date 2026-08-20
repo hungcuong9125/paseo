@@ -2536,16 +2536,18 @@ export const fr: TranslationResources = {
     },
     kanban: {
       lane: {
-        ready: "Prêt",
-        open: "Ouvert",
+        ready: "Backlog",
+        open: "À faire",
         inProgress: "En cours",
         done: "Terminé",
+        cancelled: "Annulé",
       },
       empty: {
-        ready: "Aucun élément prêt",
-        open: "Aucun élément ouvert",
+        ready: "Aucun élément dans le backlog",
+        open: "Aucun élément à faire",
         inProgress: "Aucun élément en cours",
         done: "Aucun élément terminé",
+        cancelled: "Aucun élément annulé",
       },
       showMore: "Afficher {{count}} de plus",
       moveMenu: {
@@ -2556,6 +2558,7 @@ export const fr: TranslationResources = {
         open: "Déplacer vers Ouvert",
         inProgress: "Déplacer vers En cours",
         done: "Déplacer vers Terminé",
+        cancelled: "Déplacer vers Annulé",
       },
       type: {
         tasks: "Tâches",
