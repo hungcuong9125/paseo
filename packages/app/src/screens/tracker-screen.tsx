@@ -880,6 +880,7 @@ function TrackerScreenBody({
           style={styles.scroll}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
+          stickyHeaderIndices={[0]}
           testID="trackers-list"
         >
           {toolbar}
@@ -1276,6 +1277,9 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
     textAlign: "center",
   },
+  // Sticky header (List view's ScrollView passes stickyHeaderIndices={[0]}) —
+  // needs its own opaque background and bottom border so scrolled rows don't
+  // show through or blend into it once it's pinned to the top.
   toolbar: {
     flexDirection: "row",
     alignItems: "center",
@@ -1284,6 +1288,10 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[3],
     paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
     paddingTop: theme.spacing[4],
+    paddingBottom: theme.spacing[3],
+    backgroundColor: theme.colors.surface0,
+    borderBottomWidth: theme.borderWidth[1],
+    borderBottomColor: theme.colors.border,
   },
   toolbarMain: {
     flexDirection: "row",

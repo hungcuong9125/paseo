@@ -1004,7 +1004,7 @@ export const en = {
     },
     actions: {
       addProject: "Add project",
-      newWorkspace: "New workspace",
+      newWorkspace: "Workspace",
       hosts: "Hosts",
       home: "Home",
       settings: "Settings",

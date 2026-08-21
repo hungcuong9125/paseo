@@ -180,7 +180,7 @@ const styles = StyleSheet.create((theme) => ({
     // horizontal inset, so without this the board content sits flush against
     // the screen edge while everything above it is properly indented.
     paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
-    paddingBottom: theme.spacing[3],
+    paddingBottom: theme.spacing[4],
   },
   columnFlex: {
     flex: 1,
