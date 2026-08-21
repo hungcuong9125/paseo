@@ -48,9 +48,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
+import { SearchField } from "@/components/ui/search-field";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
 import { openExternalUrl } from "@/utils/open-external-url";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
 import { useProjects } from "@/hooks/use-projects";
 import { useToast } from "@/contexts/toast-context";
@@ -93,6 +95,31 @@ const TYPE_FILTER_DEFS: ReadonlyArray<{ value: TypeFilter; labelKey: string }> =
   { value: "initiative", labelKey: "tracker.kanban.type.initiatives" },
   { value: "all", labelKey: "tracker.kanban.type.all" },
 ];
+
+// Mirrors sessions-screen.tsx's own search field/debounce — List-only (see
+// the `viewMode === "list"` gate in TrackerSearchRow): Kanban's board already
+// finds an item by scanning its column, and title+id substring search over a
+// swimlane grouping is a different feature this doesn't attempt.
+const TRACKER_SEARCH_DEBOUNCE_MS = 200;
+const TRACKER_SEARCH_MIN_LENGTH = 3;
+
+function matchesTrackerSearch(tracker: AggregatedTracker, search: string): boolean {
+  const needle = search.toLowerCase();
+  return tracker.title.toLowerCase().includes(needle) || tracker.id.toLowerCase().includes(needle);
+}
+
+// Below TRACKER_SEARCH_MIN_LENGTH, every keystroke would re-filter the full
+// tracker set for a query too short to narrow anything useful — treat it as
+// "not searching" instead. Trailing spaces count toward that length (and stay
+// in the needle) rather than being trimmed away, so "v1 " (4 chars) narrows to
+// the "v1" prefix instead of also matching "v10", "v123", etc. — only an
+// all-whitespace query is treated as empty.
+function gateTrackerSearch(debounced: string): string {
+  if (debounced.trim().length === 0) {
+    return "";
+  }
+  return debounced.length >= TRACKER_SEARCH_MIN_LENGTH ? debounced : "";
+}
 
 // Extracted to keep the switch's branches out of TrackerScreenContent's own
 // cyclomatic complexity — the one-transition-matrix rule lives in
@@ -210,6 +237,8 @@ function TrackerScreenContent(): ReactElement {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedTracker, setSelectedTracker] = useState<AggregatedTracker | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [searchInput, setSearchInput] = useState("");
+  const search = gateTrackerSearch(useDebouncedValue(searchInput, TRACKER_SEARCH_DEBOUNCE_MS));
 
   useEffect(() => {
     if (selectedProjectId && !projectInputs.some((p) => p.projectId === selectedProjectId)) {
@@ -252,10 +281,14 @@ function TrackerScreenContent(): ReactElement {
       typeFilter === "all"
         ? projectFilteredTrackers
         : projectFilteredTrackers.filter((tracker) => tracker.type === typeFilter);
-    return listStatFilter === "all"
-      ? typeFiltered
-      : typeFiltered.filter((tracker) => matchesListStatFilter(tracker, listStatFilter));
-  }, [projectFilteredTrackers, typeFilter, listStatFilter]);
+    const statFiltered =
+      listStatFilter === "all"
+        ? typeFiltered
+        : typeFiltered.filter((tracker) => matchesListStatFilter(tracker, listStatFilter));
+    return search.length > 0
+      ? statFiltered.filter((tracker) => matchesTrackerSearch(tracker, search))
+      : statFiltered;
+  }, [projectFilteredTrackers, typeFilter, listStatFilter, search]);
   // Type filter is applied here, before the board — buildTrackerBoard's own
   // partitioning stays status-only (see tracker-board-model.ts docstring). The
   // same shared typeFilter drives the List view's visibleTrackers above.
@@ -413,6 +446,9 @@ function TrackerScreenContent(): ReactElement {
         viewMode={viewMode}
         typeFilter={typeFilter}
         onTypeFilterChange={handleTypeFilterChange}
+        searchInput={searchInput}
+        onSearchInputChange={setSearchInput}
+        activeSearch={search}
         onOpenTracker={handleOpenTracker}
         onKanbanTransition={handleKanbanTransition}
         onKanbanTransitionError={handleKanbanTransitionError}
@@ -438,6 +474,36 @@ function TrackerScreenContent(): ReactElement {
         trackerId={selectedTracker?.id ?? null}
         onClose={handleCloseDetail}
         initialSummary={selectedTracker}
+      />
+    </View>
+  );
+}
+
+// Rendered right above TrackerTable, below the (sticky) toolbar — it scrolls
+// away with the table content instead of staying pinned or floating above
+// the toolbar. Sizing matches sessions-screen.tsx's filterContainer (same
+// padding tokens) so the two screens' search rows read as one convention.
+function TrackerSearchRow({
+  viewMode,
+  value,
+  onChangeText,
+}: {
+  viewMode: ViewMode;
+  value: string;
+  onChangeText: (value: string) => void;
+}): ReactElement | null {
+  if (viewMode !== "list") {
+    return null;
+  }
+  return (
+    <View style={styles.searchRow}>
+      <SearchField
+        value={value}
+        onChangeText={onChangeText}
+        placeholder="Search title or ID"
+        clearAccessibilityLabel="Clear search"
+        testID="trackers-search-input"
+        clearTestID="trackers-search-clear"
       />
     </View>
   );
@@ -895,6 +961,9 @@ function TrackerScreenBody({
   viewMode,
   typeFilter,
   onTypeFilterChange,
+  searchInput,
+  onSearchInputChange,
+  activeSearch,
   onOpenTracker,
   onKanbanTransition,
   onKanbanTransitionError,
@@ -920,6 +989,9 @@ function TrackerScreenBody({
   viewMode: ViewMode;
   typeFilter: TypeFilter;
   onTypeFilterChange: (value: TypeFilter) => void;
+  searchInput: string;
+  activeSearch: string;
+  onSearchInputChange: (value: string) => void;
   onOpenTracker: (tracker: AggregatedTracker) => void;
   onKanbanTransition: (trackerId: string, transition: TrackerTransition) => Promise<void>;
   onKanbanTransitionError: (trackerId: string, message: string) => void;
@@ -987,11 +1059,17 @@ function TrackerScreenBody({
       );
     case "empty":
       return (
+        // Same contentContainerStyle/stickyHeaderIndices as the "content" list
+        // case below — the search input lives at the same child index in both,
+        // and a structural mismatch here (e.g. sticky-wrapping only one of the
+        // two) makes react-native-web remount the subtree instead of patching
+        // it, which drops keyboard focus from the field mid-search.
         <ScrollView
           ref={listScrollRef}
           style={styles.scroll}
-          contentContainerStyle={styles.scrollContentEmpty}
+          contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
+          stickyHeaderIndices={[0]}
         >
           <TrackersToolbar
             statsTrackers={statsTrackers}
@@ -1005,18 +1083,30 @@ function TrackerScreenBody({
             onTypeFilterChange={onTypeFilterChange}
             onCreate={onCreate}
           />
-          <View style={styles.centered} testID="trackers-empty">
-            <ListChecks size={styles.emptyIcon.width} color={styles.emptyIcon.color} />
-            <Text style={styles.emptyTitle}>Nothing tracked yet</Text>
-            <Button
-              variant="outline"
-              leftIcon={Plus}
-              onPress={onCreate}
-              testID="trackers-empty-new"
-            >
-              New item
-            </Button>
-          </View>
+          <TrackerSearchRow
+            viewMode={viewMode}
+            value={searchInput}
+            onChangeText={onSearchInputChange}
+          />
+          {activeSearch.length > 0 ? (
+            <View style={styles.centered} testID="trackers-empty">
+              <ListChecks size={styles.emptyIcon.width} color={styles.emptyIcon.color} />
+              <Text style={styles.emptyTitle}>No results for &quot;{activeSearch}&quot;</Text>
+            </View>
+          ) : (
+            <View style={styles.centered} testID="trackers-empty">
+              <ListChecks size={styles.emptyIcon.width} color={styles.emptyIcon.color} />
+              <Text style={styles.emptyTitle}>Nothing tracked yet</Text>
+              <Button
+                variant="outline"
+                leftIcon={Plus}
+                onPress={onCreate}
+                testID="trackers-empty-new"
+              >
+                New item
+              </Button>
+            </View>
+          )}
         </ScrollView>
       );
     case "content": {
@@ -1065,6 +1155,11 @@ function TrackerScreenBody({
           testID="trackers-list"
         >
           {toolbar}
+          <TrackerSearchRow
+            viewMode={viewMode}
+            value={searchInput}
+            onChangeText={onSearchInputChange}
+          />
           <TrackerTable
             trackers={trackers}
             showProjectLabel={showProjectLabel}
@@ -1458,6 +1553,17 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
     textAlign: "center",
   },
+  // Same padding tokens as sessions-screen.tsx's filterContainer — rendered
+  // inside the scrollable content, below the sticky toolbar and above
+  // TrackerTable, so it scrolls away with the list instead of staying pinned.
+  searchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
+    paddingTop: theme.spacing[4],
+    paddingBottom: theme.spacing[2],
+  },
   // Sticky header (List view's ScrollView passes stickyHeaderIndices={[0]}) —
   // needs its own opaque background and bottom border so scrolled rows don't
   // show through or blend into it once it's pinned to the top.
@@ -1654,9 +1760,6 @@ const styles = StyleSheet.create((theme) => ({
   scrollContent: {
     flexGrow: 1,
     paddingBottom: theme.spacing[6],
-  },
-  scrollContentEmpty: {
-    flexGrow: 1,
   },
   errorsButtonTrigger: {
     position: "relative",
