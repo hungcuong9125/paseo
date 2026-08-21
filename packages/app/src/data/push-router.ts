@@ -309,6 +309,7 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
     };
     activeCheckoutDiffSubscriptions.clear();
     activeTerminalSubscriptions.clear();
+    activeTrackerSubscriptions.clear();
     reconcileSubscriptions(fallbackActive);
   }
 

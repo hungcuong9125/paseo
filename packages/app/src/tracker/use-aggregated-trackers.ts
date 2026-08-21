@@ -82,30 +82,35 @@ export function useAggregatedTrackers({
     error: string | null;
     errorCode: TrackerErrorCode | null;
   }
-  const liveQueries = useReplicaQueries(
-    projects.map((project) => {
-      const subscriptionId = subscriptionIds.get(
-        `${project.serverId}:${project.projectId}:${all}`,
-      )!;
-      return {
-        queryKey: [...trackerQueryBaseKey, project.serverId, project.projectId, all] as const,
-        queryFn: liveEnabled ? skipToken : skipToken,
-        enabled: enabled && liveEnabled,
-        staleTime: Infinity,
-        gcTime: Infinity,
-        meta: {
-          serverData: trackerPushRoute({
+  // Memoized so `meta` keeps its identity across renders. React Query compares
+  // observer options shallowly, so a fresh meta object every render emits an
+  // `observerOptionsUpdated` cache event every render, and the push router answers
+  // each one by rescanning the whole query cache.
+  const liveQueryOptions = useMemo<Parameters<typeof useReplicaQueries>[0]>(
+    () =>
+      projects.map((project) => {
+        const subscriptionId = subscriptionIds.get(
+          `${project.serverId}:${project.projectId}:${all}`,
+        )!;
+        return {
+          queryKey: [...trackerQueryBaseKey, project.serverId, project.projectId, all] as const,
+          queryFn: skipToken,
+          enabled: enabled && liveEnabled,
+          staleTime: Infinity,
+          gcTime: Infinity,
+          meta: trackerPushRoute({
             enabled: enabled && liveEnabled,
             serverId: project.serverId,
             projectId: project.projectId,
             all,
             subscriptionId,
           }),
-        },
-        pushEvent: "project.tracker.updated",
-      };
-    }),
+          pushEvent: "project.tracker.updated",
+        };
+      }),
+    [projects, subscriptionIds, all, liveEnabled, enabled],
   );
+  const liveQueries = useReplicaQueries(liveQueryOptions);
 
   const aggregateQuery = useFetchQuery<FetchAggregatedTrackersState>({
     queryKey: [...trackerQueryBaseKey, projectIds.join("|"), all, connectionStatusKey],
