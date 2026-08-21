@@ -6,7 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AggregatedTracker } from "@/tracker/aggregated-trackers";
 
-const { theme } = vi.hoisted(() => ({
+const { theme, mutationMocks, confirmDialogMock } = vi.hoisted(() => ({
   theme: {
     colors: {
       surface0: "#000",
@@ -26,6 +26,14 @@ const { theme } = vi.hoisted(() => ({
     fontWeight: { normal: "400" as const, medium: "500" as const },
     borderRadius: { md: 6, lg: 8 },
   },
+  mutationMocks: {
+    updateTracker: vi.fn().mockResolvedValue({ status: "in_progress" }),
+    closeTracker: vi.fn().mockResolvedValue({ status: "closed" }),
+    reopenTracker: vi.fn().mockResolvedValue({ status: "open" }),
+    cancelTracker: vi.fn().mockResolvedValue({ status: "cancelled" }),
+    deleteTracker: vi.fn().mockResolvedValue(["t-1"]),
+  },
+  confirmDialogMock: vi.fn().mockResolvedValue(false),
 }));
 
 vi.mock("react-native-unistyles", () => ({
@@ -61,21 +69,54 @@ vi.mock("@/styles/settings", () => ({
 }));
 
 vi.mock("@/tracker/use-tracker-mutations", () => ({
-  useTrackerMutations: () => ({
-    updateTracker: vi.fn(),
-    closeTracker: vi.fn(),
-    reopenTracker: vi.fn(),
-    cancelTracker: vi.fn(),
-  }),
+  useTrackerMutations: () => mutationMocks,
 }));
 
-// Render the real row id so we can assert which trackers land in which section.
+vi.mock("@/utils/confirm-dialog", () => ({
+  confirmDialog: confirmDialogMock,
+}));
+
+// Render the real row id, plus stand-in Start/Delete buttons that forward the
+// row's own handlers — enough to exercise the mutation-patch callbacks and the
+// isComplete delete gate without pulling in the real kebab menu.
 vi.mock("@/components/tracker/tracker-row", () => ({
-  TrackerRow: ({ tracker: rowTracker }: { tracker: AggregatedTracker }) =>
-    React.createElement("div", { "data-testid": `row-${rowTracker.id}` }, rowTracker.title),
+  TrackerRow: (props: {
+    tracker: AggregatedTracker;
+    deleteDisabled?: boolean;
+    onStart: () => void;
+    onDelete: () => void;
+  }) =>
+    React.createElement(
+      "div",
+      {
+        "data-testid": `row-${props.tracker.id}`,
+        "data-delete-disabled": String(Boolean(props.deleteDisabled)),
+      },
+      props.tracker.title,
+      React.createElement(
+        "button",
+        {
+          type: "button",
+          "data-testid": `action-start-${props.tracker.id}`,
+          onClick: props.onStart,
+        },
+        "start",
+      ),
+      React.createElement(
+        "button",
+        {
+          type: "button",
+          "data-testid": `action-delete-${props.tracker.id}`,
+          onClick: props.onDelete,
+          disabled: props.deleteDisabled,
+        },
+        "delete",
+      ),
+    ),
 }));
 
 import { TrackerTable } from "./tracker-table";
+import { buildTrackerHierarchy } from "@/tracker/tracker-hierarchy";
 
 function tracker(overrides: Partial<AggregatedTracker> = {}): AggregatedTracker {
   return {
@@ -93,7 +134,14 @@ function tracker(overrides: Partial<AggregatedTracker> = {}): AggregatedTracker 
   } as AggregatedTracker;
 }
 
-function renderTable(trackers: AggregatedTracker[]): { container: HTMLElement; root: Root } {
+function renderTable(
+  trackers: AggregatedTracker[],
+  overrides: {
+    isComplete?: boolean;
+    onTrackerPatched?: (tracker: AggregatedTracker) => void;
+    onTrackersRemoved?: (ids: string[]) => void;
+  } = {},
+): { container: HTMLElement; root: Root } {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -103,10 +151,20 @@ function renderTable(trackers: AggregatedTracker[]): { container: HTMLElement; r
         trackers,
         showProjectLabel: false,
         onOpenTracker: vi.fn(),
+        hierarchy: buildTrackerHierarchy(trackers),
+        isComplete: true,
+        ...overrides,
       }),
     );
   });
   return { container, root };
+}
+
+async function flushPromises(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 }
 
 describe("TrackerTable status grouping", () => {
@@ -214,7 +272,10 @@ describe("TrackerTable status grouping", () => {
     expect(c.querySelector('[data-testid="tracker-table-section-cancelled"]')).toBeNull();
   });
 
-  it("reveals at most REVEAL_STEP rows per section with a Show more control", () => {
+  it("renders every row it's given for a section with no client-side slicing", () => {
+    // TrackerTable renders exactly what the shared project-data hook has
+    // loaded so far — growing this list further is that hook's background
+    // sweep, not a client-side reveal step inside the table.
     const many = Array.from({ length: 51 }, (_, i) =>
       tracker({ id: `open-${i}`, status: "open", title: `Open ${i}` }),
     );
@@ -222,21 +283,8 @@ describe("TrackerTable status grouping", () => {
     container = c;
 
     const openSection = c.querySelector('[data-testid="tracker-table-section-open"]');
-    // Header count is the true total for the status, not the revealed slice.
     expect(openSection?.textContent).toContain("51");
-    // Initially only REVEAL_STEP (50) rows render.
-    expect(openSection?.querySelectorAll('[data-testid^="row-"]')).toHaveLength(50);
-
-    const showMore = c.querySelector('[data-testid="tracker-table-section-open-show-more"]');
-    expect(showMore).not.toBeNull();
-    expect(showMore?.textContent).toContain("Show 1 more");
-
-    act(() => {
-      showMore?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-    });
-
-    const openSectionAfter = c.querySelector('[data-testid="tracker-table-section-open"]');
-    expect(openSectionAfter?.querySelectorAll('[data-testid^="row-"]')).toHaveLength(51);
+    expect(openSection?.querySelectorAll('[data-testid^="row-"]')).toHaveLength(51);
     expect(c.querySelector('[data-testid="tracker-table-section-open-show-more"]')).toBeNull();
   });
 
@@ -261,5 +309,93 @@ describe("TrackerTable status grouping", () => {
     expect(doneSection?.textContent).toContain("30");
     expect(openSection?.querySelectorAll('[data-testid^="row-"]')).toHaveLength(30);
     expect(doneSection?.querySelectorAll('[data-testid^="row-"]')).toHaveLength(30);
+  });
+});
+
+describe("TrackerTable mutation patching", () => {
+  let container: HTMLElement | null = null;
+  let root: Root | null = null;
+
+  beforeEach(() => {
+    vi.stubGlobal("React", React);
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.clearAllMocks();
+    mutationMocks.updateTracker.mockResolvedValue({ status: "in_progress" });
+    mutationMocks.deleteTracker.mockResolvedValue(["t-1"]);
+    confirmDialogMock.mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    if (root) {
+      act(() => {
+        root?.unmount();
+      });
+    }
+    root = null;
+    container?.remove();
+    container = null;
+    vi.unstubAllGlobals();
+  });
+
+  it("calls onTrackerPatched with the merged tracker after a row action succeeds", async () => {
+    const onTrackerPatched = vi.fn();
+    const { container: c } = renderTable([tracker({ id: "t-1", status: "open" })], {
+      onTrackerPatched,
+    });
+    container = c;
+
+    const startButton = c.querySelector<HTMLElement>('[data-testid="action-start-t-1"]');
+    if (!startButton) throw new Error("Expected the Start button to render");
+    await act(async () => {
+      startButton.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+      await flushPromises();
+    });
+
+    expect(mutationMocks.updateTracker).toHaveBeenCalledWith({
+      trackerId: "t-1",
+      status: "in_progress",
+    });
+    expect(onTrackerPatched).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "t-1", status: "in_progress" }),
+    );
+  });
+
+  it("calls onTrackersRemoved with the ids ait actually removed after a confirmed delete", async () => {
+    const onTrackersRemoved = vi.fn();
+    const { container: c } = renderTable([tracker({ id: "t-1", status: "open" })], {
+      onTrackersRemoved,
+    });
+    container = c;
+
+    const deleteButton = c.querySelector<HTMLElement>('[data-testid="action-delete-t-1"]');
+    if (!deleteButton) throw new Error("Expected the Delete button to render");
+    await act(async () => {
+      deleteButton.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+      await flushPromises();
+    });
+
+    expect(confirmDialogMock).toHaveBeenCalled();
+    expect(mutationMocks.deleteTracker).toHaveBeenCalledWith({ trackerId: "t-1", cascade: false });
+    expect(onTrackersRemoved).toHaveBeenCalledWith(["t-1"]);
+  });
+
+  it("marks the delete action disabled and skips confirmation while isComplete is false", async () => {
+    const { container: c } = renderTable([tracker({ id: "t-1", status: "open" })], {
+      isComplete: false,
+    });
+    container = c;
+
+    const row = c.querySelector<HTMLElement>('[data-testid="row-t-1"]');
+    expect(row?.getAttribute("data-delete-disabled")).toBe("true");
+
+    const deleteButton = c.querySelector<HTMLElement>('[data-testid="action-delete-t-1"]');
+    if (!deleteButton) throw new Error("Expected the Delete button to render");
+    await act(async () => {
+      deleteButton.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+      await flushPromises();
+    });
+
+    expect(confirmDialogMock).not.toHaveBeenCalled();
+    expect(mutationMocks.deleteTracker).not.toHaveBeenCalled();
   });
 });

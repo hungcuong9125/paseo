@@ -34,9 +34,10 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { TrackerSummary, TrackerType } from "@getpaseo/protocol/tracker/types";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { TrackerDetailSheet } from "@/components/tracker/tracker-detail-sheet";
+import { TrackerEditSheet } from "@/components/tracker/tracker-edit-sheet";
 import { TrackerFormSheet } from "@/components/tracker/tracker-form-sheet";
 import { TrackerKanbanBoard } from "@/components/tracker/tracker-kanban-board";
-import { TrackerTable } from "@/components/tracker/tracker-table";
+import { TrackerTable, useTrackerPageStep } from "@/components/tracker/tracker-table";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -48,9 +49,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
+import { SearchField } from "@/components/ui/search-field";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { isWeb } from "@/constants/platform";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
 import { openExternalUrl } from "@/utils/open-external-url";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
 import { useProjects } from "@/hooks/use-projects";
 import { useToast } from "@/contexts/toast-context";
@@ -64,7 +68,13 @@ import {
   type TrackerProjectInput,
 } from "@/tracker/aggregated-trackers";
 import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
-import { useAggregatedTrackers } from "@/tracker/use-aggregated-trackers";
+// This screen no longer subscribes to the live-push path (useAggregatedTrackers) —
+// it drives both List and Kanban from useTrackerProjectData's progressive
+// background sweep and reflects the user's own mutations via local patching.
+import type { AggregateLoadState } from "@/tracker/use-aggregated-trackers";
+import { useTrackerProjectData } from "@/tracker/use-tracker-project-data";
+import { useTrackerSearch } from "@/tracker/use-tracker-search";
+import { buildTrackerHierarchy, type TrackerHierarchy } from "@/tracker/tracker-hierarchy";
 import {
   getTrackerStatCounts,
   matchesListStatFilter,
@@ -93,6 +103,60 @@ const TYPE_FILTER_DEFS: ReadonlyArray<{ value: TypeFilter; labelKey: string }> =
   { value: "all", labelKey: "tracker.kanban.type.all" },
 ];
 
+// Mirrors sessions-screen.tsx's own search field/debounce — List-only (see
+// the `viewMode === "list"` gate in TrackerSearchRow): Kanban's board already
+// finds an item by scanning its column, and title+id substring search over a
+// swimlane grouping is a different feature this doesn't attempt.
+const TRACKER_SEARCH_DEBOUNCE_MS = 200;
+const TRACKER_SEARCH_MIN_LENGTH = 3;
+
+// Below TRACKER_SEARCH_MIN_LENGTH, every keystroke would re-filter the full
+// tracker set for a query too short to narrow anything useful — treat it as
+// "not searching" instead. Trailing spaces count toward that length (and stay
+// in the needle) rather than being trimmed away, so "v1 " (4 chars) narrows to
+// the "v1" prefix instead of also matching "v10", "v123", etc. — only an
+// all-whitespace query is treated as empty.
+// Extracted out of TrackerScreenContent to keep the branch out of its own
+// cyclomatic complexity — List and Kanban now read the same shared
+// project-data sweep, so there is exactly one loading source to resolve,
+// regardless of view mode.
+function resolveEffectiveLoadState(isLoading: boolean): AggregateLoadState<AggregatedTracker> {
+  return isLoading ? { status: "loading" } : { status: "loaded", data: EMPTY_TRACKERS };
+}
+
+// Extracted purely to keep these `??` fallbacks out of TrackerScreenContent's
+// own cyclomatic complexity count — no behavior change from inlining them.
+function trackerFormDefaults(selectedProject: TrackerProjectInput | null): {
+  serverId: string | null;
+  projectId: string | null;
+  projectName: string | null;
+} {
+  return {
+    serverId: selectedProject?.serverId ?? null,
+    projectId: selectedProject?.projectId ?? null,
+    projectName: selectedProject?.projectName ?? null,
+  };
+}
+
+function trackerDetailProps(selectedTracker: AggregatedTracker | null): {
+  serverId: string;
+  projectId: string;
+  trackerId: string | null;
+} {
+  return {
+    serverId: selectedTracker?.serverId ?? "",
+    projectId: selectedTracker?.projectId ?? "",
+    trackerId: selectedTracker?.id ?? null,
+  };
+}
+
+function gateTrackerSearch(debounced: string): string {
+  if (debounced.trim().length === 0) {
+    return "";
+  }
+  return debounced.length >= TRACKER_SEARCH_MIN_LENGTH ? debounced : "";
+}
+
 // Extracted to keep the switch's branches out of TrackerScreenContent's own
 // cyclomatic complexity — the one-transition-matrix rule lives in
 // tracker-transitions.ts, this just dispatches to the matching RPC.
@@ -100,7 +164,7 @@ function callTrackerTransition(
   client: DaemonClient,
   aggregated: AggregatedTracker,
   transition: TrackerTransition,
-): Promise<unknown> {
+): Promise<TrackerSummary> {
   switch (transition.kind) {
     case "update":
       return client.trackerUpdate({
@@ -169,6 +233,64 @@ function useTrackerReadyIds(options: {
   return query.data ?? EMPTY_READY_IDS;
 }
 
+// List view's data source switch: browse mode reads `browseTrackers` — the
+// same shared project-data array Kanban renders from, just filtered and
+// bucketed differently; search mode always queries the server
+// (project.tracker.search) and never filters what browse has loaded. Kanban
+// never depends on isListSearch at all — only this hook (and TrackerTable's
+// own rendering) branches on it.
+function useTrackerListView(options: {
+  hasAnyProject: boolean;
+  viewMode: ViewMode;
+  search: string;
+  typeFilter: TypeFilter;
+  selectedProjectId: string | null;
+  projects: TrackerProjectInput[];
+  listStatFilter: StatFilter;
+  browseTrackers: AggregatedTracker[];
+}): {
+  isListSearch: boolean;
+  searchState: ReturnType<typeof useTrackerSearch>;
+  listViewTrackers: AggregatedTracker[];
+} {
+  const isListSearch = options.viewMode === "list" && options.search.length > 0;
+  const pageStep = useTrackerPageStep();
+  const searchState = useTrackerSearch({
+    projects: options.projects,
+    selectedProjectId: options.selectedProjectId,
+    query: options.search,
+    enabled: options.hasAnyProject && options.viewMode === "list" && isListSearch,
+    pageSize: pageStep,
+  });
+  // The toolbar's stat filter stays client-side for both sources. The type
+  // filter only narrows the browse source — search has never applied it
+  // client-side (a server-side search result set is already small and
+  // specific; narrowing it further by type isn't part of this feature).
+  const listViewTrackers = useMemo(() => {
+    if (isListSearch) {
+      return options.listStatFilter === "all"
+        ? searchState.results
+        : searchState.results.filter((tracker) =>
+            matchesListStatFilter(tracker, options.listStatFilter),
+          );
+    }
+    const typeFiltered =
+      options.typeFilter === "all"
+        ? options.browseTrackers
+        : options.browseTrackers.filter((tracker) => tracker.type === options.typeFilter);
+    return options.listStatFilter === "all"
+      ? typeFiltered
+      : typeFiltered.filter((tracker) => matchesListStatFilter(tracker, options.listStatFilter));
+  }, [
+    isListSearch,
+    searchState.results,
+    options.browseTrackers,
+    options.typeFilter,
+    options.listStatFilter,
+  ]);
+  return { isListSearch, searchState, listViewTrackers };
+}
+
 export function TrackerScreen(): ReactElement {
   const isFocused = useIsFocused();
 
@@ -205,10 +327,15 @@ function TrackerScreenContent(): ReactElement {
   // Shared by BOTH views: which tracker granularities are included. Defaults to
   // "task" (preserves the board's original default; the List view inherits it).
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("task");
-  const [viewMode, setViewMode] = useState<ViewMode>("list");
+  const [viewMode, setViewMode] = useState<ViewMode>("kanban");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedTracker, setSelectedTracker] = useState<AggregatedTracker | null>(null);
+  // One shared edit target for BOTH views — the List row kebab and the Kanban
+  // card kebab both set this; TrackerEditSheet renders from it.
+  const [editingTracker, setEditingTracker] = useState<AggregatedTracker | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [searchInput, setSearchInput] = useState("");
+  const search = gateTrackerSearch(useDebouncedValue(searchInput, TRACKER_SEARCH_DEBOUNCE_MS));
 
   useEffect(() => {
     if (selectedProjectId && !projectInputs.some((p) => p.projectId === selectedProjectId)) {
@@ -216,73 +343,75 @@ function TrackerScreenContent(): ReactElement {
     }
   }, [projectInputs, selectedProjectId]);
 
-  // Always fetch every status: the filter row's counts (Done, etc.) need the
-  // full set regardless of which bucket is active, which is applied
-  // client-side below instead of round-tripping a second fetch.
-  const { loadState, projectErrors, refetch } = useAggregatedTrackers({
+  // The single shared data source for both List and Kanban — always running
+  // regardless of view mode or search, exactly like the old Kanban-only
+  // aggregate fetch used to. Switching view mode only changes how this array
+  // renders, never how it loads. Already scoped to `selectedProjectId`
+  // internally (or every project when none is selected), so callers use
+  // `projectData.trackers` directly, no separate project filter needed.
+  const pageStep = useTrackerPageStep();
+  const projectData = useTrackerProjectData({
     projects: projectInputs,
+    selectedProjectId,
     all: true,
     enabled: hasAnyProject,
+    pageSize: pageStep,
   });
 
-  const allTrackers = loadState.status === "loaded" ? loadState.data : EMPTY_TRACKERS;
-  const projectFilteredTrackers = useMemo(
-    () =>
-      selectedProjectId
-        ? allTrackers.filter((tracker) => tracker.projectId === selectedProjectId)
-        : allTrackers,
-    [allTrackers, selectedProjectId],
+  // Built from the full (unfiltered) project set project data returns — the
+  // List row's delete action needs to know the *real* child count (any type,
+  // any status), not just what the current type/status toolbar filter shows.
+  const trackerHierarchy = useMemo(
+    () => buildTrackerHierarchy(projectData.trackers),
+    [projectData.trackers],
   );
-  // List-only: Kanban receives the project-filtered but not status-filtered set
-  // (kanbanTrackers below) — see "Toolbar contract" in the redesign doc. The
-  // shared typeFilter composes with listStatFilter rather than replacing it:
-  // type filtering narrows the dataset first, then the stat filter applies —
-  // to every type (Tasks/Epics/Initiatives/All), not just Tasks, so switching
-  // to the Epics tab still respects Open/In Progress/Done/Priority.
-  const visibleTrackers = useMemo(() => {
-    const typeFiltered =
-      typeFilter === "all"
-        ? projectFilteredTrackers
-        : projectFilteredTrackers.filter((tracker) => tracker.type === typeFilter);
-    return listStatFilter === "all"
-      ? typeFiltered
-      : typeFiltered.filter((tracker) => matchesListStatFilter(tracker, listStatFilter));
-  }, [projectFilteredTrackers, typeFilter, listStatFilter]);
   // Type filter is applied here, before the board — buildTrackerBoard's own
-  // partitioning stays status-only (see tracker-board-model.ts docstring). The
-  // same shared typeFilter drives the List view's visibleTrackers above.
+  // partitioning stays status-only (see tracker-board-model.ts docstring).
   const kanbanTrackers = useMemo(
     () =>
       typeFilter === "all"
-        ? projectFilteredTrackers
-        : projectFilteredTrackers.filter((tracker) => tracker.type === typeFilter),
-    [projectFilteredTrackers, typeFilter],
+        ? projectData.trackers
+        : projectData.trackers.filter((tracker) => tracker.type === typeFilter),
+    [projectData.trackers, typeFilter],
   );
   const readyIds = useTrackerReadyIds({ viewMode, projects: projectInputs, selectedProjectId });
-  const orderedTrackers = useMemo(
-    () =>
-      [...visibleTrackers].sort(
-        (a, b) => a.projectId.localeCompare(b.projectId) || a.id.localeCompare(b.id),
-      ),
-    [visibleTrackers],
-  );
+
+  const { isListSearch, searchState, listViewTrackers } = useTrackerListView({
+    hasAnyProject,
+    viewMode,
+    search,
+    typeFilter,
+    selectedProjectId,
+    projects: projectInputs,
+    listStatFilter,
+    browseTrackers: projectData.trackers,
+  });
+
   // Kanban's statFilter projects lanes, it never filters the dataset, so its
   // emptiness is driven by the project-filtered set, not the List filter.
   const visibleTrackersCount = useMemo(
-    () => (viewMode === "kanban" ? kanbanTrackers.length : visibleTrackers.length),
-    [viewMode, kanbanTrackers, visibleTrackers],
+    () => (viewMode === "kanban" ? kanbanTrackers.length : listViewTrackers.length),
+    [viewMode, kanbanTrackers, listViewTrackers],
+  );
+  // List search follows the search hook's own loading state; everything else
+  // (browse List and Kanban) follows the shared project-data sweep.
+  const effectiveLoadState = useMemo(
+    () => resolveEffectiveLoadState(isListSearch ? searchState.isLoading : projectData.isLoading),
+    [isListSearch, searchState.isLoading, projectData.isLoading],
   );
   const bodyState = resolveTrackerScreenBodyState({
     hasAnyProject,
-    loadState,
+    loadState: effectiveLoadState,
     selectedProjectId: selectedProjectId ?? "all",
-    projectErrors,
+    projectErrors: projectData.projectErrors,
     visibleTrackersCount,
   });
 
   const selectedProject = selectedProjectId
     ? (projectInputs.find((p) => p.projectId === selectedProjectId) ?? null)
     : null;
+  const formDefaults = trackerFormDefaults(selectedProject);
+  const detailProps = trackerDetailProps(selectedTracker);
 
   const initMutations = useTrackerMutations({
     serverId: selectedProject?.serverId ?? "",
@@ -305,9 +434,13 @@ function TrackerScreenContent(): ReactElement {
     void openProjectPicker();
   }, [openProjectPicker]);
   const handleInitialise = useCallback(() => {
-    void initMutations.initTracker();
-  }, [initMutations]);
-  const handleRetry = useCallback(() => refetch(), [refetch]);
+    // `ait init` doesn't return a tracker to patch in — a fresh sweep is the
+    // only way to move this project out of its `uninitialised` error state.
+    void initMutations.initTracker().then(() => projectData.refetch());
+  }, [initMutations, projectData]);
+  const handleRetry = useCallback(() => {
+    projectData.refetch();
+  }, [projectData]);
   const handleSelectProject = useCallback((projectId: string | null) => {
     setSelectedProjectId(projectId);
   }, []);
@@ -337,6 +470,9 @@ function TrackerScreenContent(): ReactElement {
     () => new Map(kanbanTrackers.map((tracker) => [tracker.id, tracker])),
     [kanbanTrackers],
   );
+  // The transition's own response IS the authoritative snapshot the board used
+  // to rely on a caller-side refresh to pick up — patched in directly instead
+  // of re-fetching or waiting on a live-push re-render.
   const handleKanbanTransition = useCallback(
     async (trackerId: string, transition: TrackerTransition): Promise<void> => {
       try {
@@ -348,12 +484,15 @@ function TrackerScreenContent(): ReactElement {
         if (!client) {
           throw new Error(t("common.errors.daemonClientUnavailable"));
         }
-        await callTrackerTransition(client, aggregated, transition);
+        const summary = await callTrackerTransition(client, aggregated, transition);
+        projectData.patchTracker({ ...aggregated, ...summary });
       } finally {
+        // Still relevant for the (react-query-backed) readyIds fetch, which
+        // this hook doesn't own.
         void queryClient.invalidateQueries({ queryKey: trackerQueryBaseKey });
       }
     },
-    [kanbanTrackerById, queryClient, t],
+    [kanbanTrackerById, queryClient, t, projectData],
   );
   const handleKanbanTransitionError = useCallback(
     (_trackerId: string, message: string) => toast.error(message),
@@ -368,11 +507,54 @@ function TrackerScreenContent(): ReactElement {
     },
     [kanbanTrackerById],
   );
+  const handleOpenEdit = useCallback(
+    (tracker: AggregatedTracker) => setEditingTracker(tracker),
+    [],
+  );
+  const handleCloseEdit = useCallback(() => setEditingTracker(null), []);
+  const handleKanbanEdit = useCallback(
+    (trackerId: string) => {
+      const aggregated = kanbanTrackerById.get(trackerId);
+      if (aggregated) {
+        setEditingTracker(aggregated);
+      }
+    },
+    [kanbanTrackerById],
+  );
+  const handleTrackerCreated = useCallback(
+    (tracker: TrackerSummary, project: TrackerProjectInput) => {
+      projectData.patchTracker({ ...tracker, ...project });
+    },
+    [projectData],
+  );
+  const handleDetailMutated = useCallback(
+    (summary: TrackerSummary) => {
+      if (!selectedTracker) {
+        return;
+      }
+      projectData.patchTracker({ ...selectedTracker, ...summary });
+    },
+    [selectedTracker, projectData],
+  );
+  // Same patch mechanism as the row/detail mutation paths — merges the fresh
+  // summary into the aggregated instance already in the shared data hook.
+  const handleEditUpdated = useCallback(
+    (summary: TrackerSummary) => {
+      if (!editingTracker) {
+        return;
+      }
+      projectData.patchTracker({ ...editingTracker, ...summary });
+      setEditingTracker(null);
+    },
+    [editingTracker, projectData],
+  );
 
   const headerRightContent = useMemo(
     () => (
       <>
-        {projectErrors.length > 0 ? <TrackerErrorsButton errors={projectErrors} /> : null}
+        {projectData.projectErrors.length > 0 ? (
+          <TrackerErrorsButton errors={projectData.projectErrors} />
+        ) : null}
         <SegmentedControl
           options={viewModeOptions}
           value={viewMode}
@@ -383,7 +565,7 @@ function TrackerScreenContent(): ReactElement {
         />
       </>
     ),
-    [projectErrors, viewMode],
+    [projectData.projectErrors, viewMode],
   );
 
   return (
@@ -391,10 +573,19 @@ function TrackerScreenContent(): ReactElement {
       <MenuHeader title="Tracker" rightContent={headerRightContent} />
       <TrackerScreenBody
         bodyState={bodyState}
-        trackers={orderedTrackers}
+        trackers={listViewTrackers}
+        trackerHierarchy={trackerHierarchy}
         statsTrackers={kanbanTrackers}
         kanbanTrackers={kanbanTrackers}
         kanbanReadyIds={readyIds}
+        isComplete={projectData.isComplete}
+        onTrackerPatched={projectData.patchTracker}
+        onEditTracker={handleOpenEdit}
+        onTrackersRemoved={projectData.removeTrackers}
+        listVariant={isListSearch ? "flat" : "sections"}
+        onLoadMoreAll={searchState.loadMore}
+        hasMoreAll={searchState.hasMore}
+        isLoadingMoreAll={searchState.isLoadingMore}
         showProjectLabel={selectedProjectId === null}
         projects={projectInputs}
         selectedProjectId={selectedProjectId}
@@ -404,9 +595,13 @@ function TrackerScreenContent(): ReactElement {
         viewMode={viewMode}
         typeFilter={typeFilter}
         onTypeFilterChange={handleTypeFilterChange}
+        searchInput={searchInput}
+        onSearchInputChange={setSearchInput}
+        activeSearch={search}
         onOpenTracker={handleOpenTracker}
         onKanbanTransition={handleKanbanTransition}
         onKanbanTransitionError={handleKanbanTransitionError}
+        onKanbanEdit={handleKanbanEdit}
         onKanbanCardPress={handleKanbanCardPress}
         onCreate={handleOpenCreate}
         onOpenProject={handleOpenProject}
@@ -418,16 +613,55 @@ function TrackerScreenContent(): ReactElement {
         projects={projectInputs}
         visible={createOpen}
         onClose={handleCloseCreate}
-        defaultServerId={selectedProject?.serverId ?? null}
-        defaultProjectId={selectedProject?.projectId ?? null}
-        defaultProjectDisplay={selectedProject?.projectName ?? null}
+        onCreated={handleTrackerCreated}
+        defaultServerId={formDefaults.serverId}
+        defaultProjectId={formDefaults.projectId}
+        defaultProjectDisplay={formDefaults.projectName}
       />
       <TrackerDetailSheet
-        serverId={selectedTracker?.serverId ?? ""}
-        projectId={selectedTracker?.projectId ?? ""}
+        serverId={detailProps.serverId}
+        projectId={detailProps.projectId}
         visible={selectedTracker !== null}
-        trackerId={selectedTracker?.id ?? null}
+        trackerId={detailProps.trackerId}
         onClose={handleCloseDetail}
+        initialSummary={selectedTracker}
+        onMutated={handleDetailMutated}
+      />
+      <TrackerEditSheet
+        tracker={editingTracker}
+        visible={editingTracker !== null}
+        onClose={handleCloseEdit}
+        onUpdated={handleEditUpdated}
+      />
+    </View>
+  );
+}
+
+// Rendered right above TrackerTable, below the (sticky) toolbar — it scrolls
+// away with the table content instead of staying pinned or floating above
+// the toolbar. Sizing matches sessions-screen.tsx's filterContainer (same
+// padding tokens) so the two screens' search rows read as one convention.
+function TrackerSearchRow({
+  viewMode,
+  value,
+  onChangeText,
+}: {
+  viewMode: ViewMode;
+  value: string;
+  onChangeText: (value: string) => void;
+}): ReactElement | null {
+  if (viewMode !== "list") {
+    return null;
+  }
+  return (
+    <View style={styles.searchRow}>
+      <SearchField
+        value={value}
+        onChangeText={onChangeText}
+        placeholder="Search title or ID"
+        clearAccessibilityLabel="Clear search"
+        testID="trackers-search-input"
+        clearTestID="trackers-search-clear"
       />
     </View>
   );
@@ -834,26 +1068,94 @@ function renderErrorsTrigger(state: DropdownMenuTriggerState, count: number): Re
 }
 
 function TrackerErrorsButton({ errors }: { errors: TrackerProjectError[] }): ReactElement {
+  const [open, setOpen] = useState(false);
+  const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const triggerBoxRef = useRef<View>(null);
+  const wasInsideRef = useRef(false);
+
+  const clearTimers = useCallback(() => {
+    if (openTimer.current) clearTimeout(openTimer.current);
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    openTimer.current = null;
+    closeTimer.current = null;
+  }, []);
+
+  useEffect(() => clearTimers, [clearTimers]);
+
+  const cancelHoverClose = useCallback(() => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    closeTimer.current = null;
+  }, []);
+
+  const scheduleHoverClose = useCallback(() => {
+    if (openTimer.current) clearTimeout(openTimer.current);
+    openTimer.current = null;
+    cancelHoverClose();
+    closeTimer.current = setTimeout(() => {
+      closeTimer.current = null;
+      setOpen(false);
+    }, 260);
+  }, [cancelHoverClose]);
+
+  // The trigger's own color changes when the menu opens (the bell "activates"),
+  // which on some renders swaps which DOM node sits under the cursor — plain
+  // onPointerEnter/onPointerLeave on the trigger then fire a spurious
+  // leave+enter pair with the pointer never having moved, flapping the menu
+  // open/closed in a loop. Tracking real pointer coordinates against the
+  // trigger's own rect side-steps that: it only cares where the cursor is,
+  // never which element the browser currently thinks is topmost.
+  useEffect(() => {
+    if (!isWeb) return;
+    function handlePointerMove(event: PointerEvent): void {
+      const node = triggerBoxRef.current as unknown as Element | null;
+      const rect = node?.getBoundingClientRect?.();
+      if (!rect) return;
+      const inside =
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom;
+      if (inside === wasInsideRef.current) return;
+      wasInsideRef.current = inside;
+      if (inside) {
+        clearTimers();
+        setOpen(true);
+      } else {
+        scheduleHoverClose();
+      }
+    }
+    document.addEventListener("pointermove", handlePointerMove);
+    return () => document.removeEventListener("pointermove", handlePointerMove);
+  }, [clearTimers, scheduleHoverClose]);
+
   const renderTrigger = useCallback(
     (state: DropdownMenuTriggerState) => renderErrorsTrigger(state, errors.length),
     [errors.length],
   );
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        style={styles.errorsButtonTrigger}
-        testID="trackers-project-errors-trigger"
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <View ref={triggerBoxRef}>
+        <DropdownMenuTrigger
+          style={styles.errorsButtonTrigger}
+          testID="trackers-project-errors-trigger"
+        >
+          {renderTrigger}
+        </DropdownMenuTrigger>
+      </View>
+      <DropdownMenuContent
+        align="end"
+        width={360}
+        onPointerEnter={cancelHoverClose}
+        onPointerLeave={scheduleHoverClose}
       >
-        {renderTrigger}
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" width={360}>
         <View style={styles.errorsMenuList} testID="trackers-project-errors">
           <View style={styles.errorsMenuTitleRow}>
             <Text style={styles.errorsMenuTitle}>{"Track your projects with "}</Text>
             <TrackerAitRepoLink />
           </View>
           <Text style={styles.errorsMenuDescription}>
-            These projects don&apos;t have one set up yet — run{" "}
+            These projects don&apos;t have one set up yet. Run{" "}
             <Text style={styles.errorsRowEmphasis}>ait init</Text> in each to enable it.
           </Text>
           <View style={styles.errorsMenuDescriptionDivider} />
@@ -872,9 +1174,18 @@ function TrackerErrorsButton({ errors }: { errors: TrackerProjectError[] }): Rea
 function TrackerScreenBody({
   bodyState,
   trackers,
+  trackerHierarchy,
   statsTrackers,
   kanbanTrackers,
   kanbanReadyIds,
+  isComplete,
+  onTrackerPatched,
+  onEditTracker,
+  onTrackersRemoved,
+  listVariant,
+  onLoadMoreAll,
+  hasMoreAll,
+  isLoadingMoreAll,
   showProjectLabel,
   projects,
   selectedProjectId,
@@ -884,9 +1195,13 @@ function TrackerScreenBody({
   viewMode,
   typeFilter,
   onTypeFilterChange,
+  searchInput,
+  onSearchInputChange,
+  activeSearch,
   onOpenTracker,
   onKanbanTransition,
   onKanbanTransitionError,
+  onKanbanEdit,
   onKanbanCardPress,
   onCreate,
   onOpenProject,
@@ -896,9 +1211,21 @@ function TrackerScreenBody({
 }: {
   bodyState: TrackerScreenBodyState;
   trackers: AggregatedTracker[];
+  trackerHierarchy: TrackerHierarchy;
   statsTrackers: AggregatedTracker[];
   kanbanTrackers: AggregatedTracker[];
   kanbanReadyIds: ReadonlySet<string>;
+  /** False while the shared project-data sweep still has sections in flight —
+   * threaded to both TrackerKanbanBoard (lane counts, card badges) and
+   * TrackerTable (gates the delete-confirmation path). */
+  isComplete: boolean;
+  onTrackerPatched: (tracker: AggregatedTracker) => void;
+  onEditTracker: (tracker: AggregatedTracker) => void;
+  onTrackersRemoved: (ids: string[]) => void;
+  listVariant: "sections" | "flat";
+  onLoadMoreAll: () => void;
+  hasMoreAll: boolean;
+  isLoadingMoreAll: boolean;
   showProjectLabel: boolean;
   projects: TrackerProjectInput[];
   selectedProjectId: string | null;
@@ -908,9 +1235,13 @@ function TrackerScreenBody({
   viewMode: ViewMode;
   typeFilter: TypeFilter;
   onTypeFilterChange: (value: TypeFilter) => void;
+  searchInput: string;
+  activeSearch: string;
+  onSearchInputChange: (value: string) => void;
   onOpenTracker: (tracker: AggregatedTracker) => void;
   onKanbanTransition: (trackerId: string, transition: TrackerTransition) => Promise<void>;
   onKanbanTransitionError: (trackerId: string, message: string) => void;
+  onKanbanEdit: (trackerId: string) => void;
   onKanbanCardPress: (trackerId: string) => void;
   onCreate: () => void;
   onOpenProject: () => void;
@@ -975,11 +1306,17 @@ function TrackerScreenBody({
       );
     case "empty":
       return (
+        // Same contentContainerStyle/stickyHeaderIndices as the "content" list
+        // case below — the search input lives at the same child index in both,
+        // and a structural mismatch here (e.g. sticky-wrapping only one of the
+        // two) makes react-native-web remount the subtree instead of patching
+        // it, which drops keyboard focus from the field mid-search.
         <ScrollView
           ref={listScrollRef}
           style={styles.scroll}
-          contentContainerStyle={styles.scrollContentEmpty}
+          contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
+          stickyHeaderIndices={[0]}
         >
           <TrackersToolbar
             statsTrackers={statsTrackers}
@@ -993,18 +1330,30 @@ function TrackerScreenBody({
             onTypeFilterChange={onTypeFilterChange}
             onCreate={onCreate}
           />
-          <View style={styles.centered} testID="trackers-empty">
-            <ListChecks size={styles.emptyIcon.width} color={styles.emptyIcon.color} />
-            <Text style={styles.emptyTitle}>Nothing tracked yet</Text>
-            <Button
-              variant="outline"
-              leftIcon={Plus}
-              onPress={onCreate}
-              testID="trackers-empty-new"
-            >
-              New item
-            </Button>
-          </View>
+          <TrackerSearchRow
+            viewMode={viewMode}
+            value={searchInput}
+            onChangeText={onSearchInputChange}
+          />
+          {activeSearch.length > 0 ? (
+            <View style={styles.centered} testID="trackers-empty">
+              <ListChecks size={styles.emptyIcon.width} color={styles.emptyIcon.color} />
+              <Text style={styles.emptyTitle}>No results for &quot;{activeSearch}&quot;</Text>
+            </View>
+          ) : (
+            <View style={styles.centered} testID="trackers-empty">
+              <ListChecks size={styles.emptyIcon.width} color={styles.emptyIcon.color} />
+              <Text style={styles.emptyTitle}>Nothing tracked yet</Text>
+              <Button
+                variant="outline"
+                leftIcon={Plus}
+                onPress={onCreate}
+                testID="trackers-empty-new"
+              >
+                New item
+              </Button>
+            </View>
+          )}
         </ScrollView>
       );
     case "content": {
@@ -1034,8 +1383,10 @@ function TrackerScreenBody({
               trackers={kanbanTrackers}
               filter={statFilter}
               readyIds={kanbanReadyIds}
+              isComplete={isComplete}
               onTransition={onKanbanTransition}
               onTransitionError={onKanbanTransitionError}
+              onEdit={onKanbanEdit}
               getProjectLabel={getKanbanProjectLabel}
               onCardPress={onKanbanCardPress}
             />
@@ -1053,10 +1404,24 @@ function TrackerScreenBody({
           testID="trackers-list"
         >
           {toolbar}
+          <TrackerSearchRow
+            viewMode={viewMode}
+            value={searchInput}
+            onChangeText={onSearchInputChange}
+          />
           <TrackerTable
             trackers={trackers}
             showProjectLabel={showProjectLabel}
             onOpenTracker={onOpenTracker}
+            hierarchy={trackerHierarchy}
+            isComplete={isComplete}
+            onTrackerPatched={onTrackerPatched}
+            onEditTracker={onEditTracker}
+            onTrackersRemoved={onTrackersRemoved}
+            variant={listVariant}
+            onLoadMoreAll={onLoadMoreAll}
+            hasMoreAll={hasMoreAll}
+            isLoadingMoreAll={isLoadingMoreAll}
           />
         </ScrollView>
       );
@@ -1445,6 +1810,17 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
     textAlign: "center",
   },
+  // Same padding tokens as sessions-screen.tsx's filterContainer — rendered
+  // inside the scrollable content, below the sticky toolbar and above
+  // TrackerTable, so it scrolls away with the list instead of staying pinned.
+  searchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
+    paddingTop: theme.spacing[4],
+    paddingBottom: theme.spacing[2],
+  },
   // Sticky header (List view's ScrollView passes stickyHeaderIndices={[0]}) —
   // needs its own opaque background and bottom border so scrolled rows don't
   // show through or blend into it once it's pinned to the top.
@@ -1641,9 +2017,6 @@ const styles = StyleSheet.create((theme) => ({
   scrollContent: {
     flexGrow: 1,
     paddingBottom: theme.spacing[6],
-  },
-  scrollContentEmpty: {
-    flexGrow: 1,
   },
   errorsButtonTrigger: {
     position: "relative",

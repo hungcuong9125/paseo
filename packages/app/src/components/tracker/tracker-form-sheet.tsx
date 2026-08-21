@@ -32,7 +32,10 @@ export interface TrackerFormSheetProps {
   projects: TrackerProjectInput[];
   visible: boolean;
   onClose: () => void;
-  onCreated?: (tracker: TrackerSummary) => void;
+  /** Fires with the created tracker and the project it was actually created
+   * under — the project field the form settled on, which may differ from
+   * `defaultProjectId` when the picker is unlocked. */
+  onCreated?: (tracker: TrackerSummary, project: TrackerProjectInput) => void;
   defaultServerId?: string | null;
   defaultProjectId?: string | null;
   defaultProjectDisplay?: string | null;
@@ -185,12 +188,18 @@ function OpenTrackerFormSheet({
         parentId: state.parentId ?? undefined,
         description: state.description.trim() || undefined,
       });
-      onCreated?.(tracker);
+      const project = projects.find(
+        (candidate) =>
+          candidate.serverId === state.serverId && candidate.projectId === state.projectId,
+      );
+      if (project) {
+        onCreated?.(tracker, project);
+      }
       onClose();
     } catch (error) {
       model.setSubmitError(toErrorMessage(error));
     }
-  }, [canSubmit, createTracker, model, onClose, onCreated, state]);
+  }, [canSubmit, createTracker, model, onClose, onCreated, projects, state]);
 
   const handleSubmitPress = useCallback(() => {
     void handleSubmit();

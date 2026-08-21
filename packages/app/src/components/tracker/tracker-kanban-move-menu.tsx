@@ -9,7 +9,7 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { MenuItem } from "@/components/ui/menu";
+import { MenuItem, MenuSeparator } from "@/components/ui/menu";
 import { laneTranslationKey } from "@/components/tracker/tracker-kanban-column";
 import { isNative } from "@/constants/platform";
 import type { Theme } from "@/styles/theme";
@@ -83,12 +83,42 @@ const TrackerKanbanMoveItem = memo(function TrackerKanbanMoveItem({
   );
 });
 
+interface TrackerKanbanEditItemProps {
+  trackerId: string;
+  /** Omit to hide the Edit entry entirely (callers/tests that don't wire editing). */
+  onEdit?: (trackerId: string) => void;
+  testID?: string;
+}
+
+// The static Edit entry rendered above the "Move to..." list on both surfaces.
+// Same per-(trackerId, handler) memoization rationale as TrackerKanbanMoveItem.
+const TrackerKanbanEditItems = memo(function TrackerKanbanEditItems({
+  trackerId,
+  onEdit,
+  testID,
+}: TrackerKanbanEditItemProps): ReactElement | null {
+  const handleSelect = useCallback(() => onEdit?.(trackerId), [onEdit, trackerId]);
+  if (!onEdit) {
+    return null;
+  }
+  return (
+    <>
+      <MenuItem onSelect={handleSelect} testID={testID}>
+        Edit
+      </MenuItem>
+      <MenuSeparator />
+    </>
+  );
+});
+
 export interface TrackerKanbanCardMenuProps {
   trackerId: string;
   trackerTitle: string;
   lane: TrackerLane;
   isPending: boolean;
   onTransition: (trackerId: string, transition: TrackerTransition) => void;
+  /** Opens the caller's edit sheet for this card — no mutation happens until that sheet submits. */
+  onEdit?: (trackerId: string) => void;
   /**
    * Tapping the card body (not long-press, not the kebab). Native passes this straight
    * to `ContextMenuTrigger`'s own `onPress` — RN's core `Pressable` natively combines
@@ -119,6 +149,7 @@ export function TrackerKanbanCardMenu({
   lane,
   isPending,
   onTransition,
+  onEdit,
   onCardPress,
   testID,
 }: PropsWithChildren<TrackerKanbanCardMenuProps>): ReactElement {
@@ -143,6 +174,11 @@ export function TrackerKanbanCardMenu({
             {children}
           </ContextMenuTrigger>
           <ContextMenuContent sheetTitle={sheetTitle} width={220}>
+            <TrackerKanbanEditItems
+              trackerId={trackerId}
+              onEdit={onEdit}
+              testID={testID ? `${testID}-context-item-edit` : undefined}
+            />
             {options.map(({ to, transition }) => (
               <TrackerKanbanMoveItem
                 key={to}
@@ -172,6 +208,11 @@ export function TrackerKanbanCardMenu({
             {renderKebabIcon}
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" sheetTitle={sheetTitle} width={220}>
+            <TrackerKanbanEditItems
+              trackerId={trackerId}
+              onEdit={onEdit}
+              testID={testID ? `${testID}-item-edit` : undefined}
+            />
             {options.map(({ to, transition }) => (
               <TrackerKanbanMoveItem
                 key={to}

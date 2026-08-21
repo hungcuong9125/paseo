@@ -18,6 +18,15 @@ export interface TrackerDetailSheetProps {
   visible: boolean;
   trackerId: string | null;
   onClose: () => void;
+  /** The summary already on hand from the row/card that opened this sheet —
+   * lets the sheet render title/status/priority immediately instead of a
+   * spinner, while the full record (children/blockedBy/notes/description)
+   * loads in behind it. Omit when there's nothing to seed with. */
+  initialSummary?: TrackerSummary | null;
+  /** Fires with the mutation's own response after Start/Close/Reopen/Cancel
+   * succeeds — the caller patches its shared data hook in place so the view
+   * behind this sheet reflects the change without a re-fetch. */
+  onMutated?: (tracker: TrackerSummary) => void;
 }
 
 type DetailState =
@@ -26,12 +35,36 @@ type DetailState =
   | { status: "error"; error: string }
   | { status: "loaded"; tracker: TrackerDetail };
 
+// The fields `ait show` adds beyond a summary row are unknown until the real
+// fetch resolves — description/children/blockedBy/notes stay empty in the
+// placeholder and fill in once `load()`'s background fetch completes.
+function placeholderDetailFromSummary(summary: TrackerSummary): TrackerDetail {
+  return {
+    id: summary.id,
+    title: summary.title,
+    type: summary.type,
+    status: summary.status,
+    priority: summary.priority,
+    parentId: summary.parentId,
+    description: null,
+    claimedBy: summary.claimedBy ?? null,
+    createdAt: summary.createdAt ?? "",
+    updatedAt: summary.updatedAt ?? "",
+    closedAt: summary.closedAt ?? null,
+    children: [],
+    blockedBy: [],
+    notes: [],
+  };
+}
+
 export function TrackerDetailSheet({
   serverId,
   projectId,
   visible,
   trackerId,
   onClose,
+  initialSummary,
+  onMutated,
 }: TrackerDetailSheetProps): ReactElement | null {
   if (!visible || !trackerId) {
     return null;
@@ -43,6 +76,8 @@ export function TrackerDetailSheet({
       projectId={projectId}
       trackerId={trackerId}
       onClose={onClose}
+      initialSummary={initialSummary ?? null}
+      onMutated={onMutated}
     />
   );
 }
@@ -52,14 +87,22 @@ function OpenTrackerDetailSheet({
   projectId,
   trackerId,
   onClose,
+  initialSummary,
+  onMutated,
 }: {
   serverId: string;
   projectId: string;
   trackerId: string;
   onClose: () => void;
+  initialSummary: TrackerSummary | null;
+  onMutated?: (tracker: TrackerSummary) => void;
 }): ReactElement {
   const client = useHostRuntimeClient(serverId);
-  const [state, setState] = useState<DetailState>({ status: "idle" });
+  const [state, setState] = useState<DetailState>(() =>
+    initialSummary
+      ? { status: "loaded", tracker: placeholderDetailFromSummary(initialSummary) }
+      : { status: "idle" },
+  );
   const [noteBody, setNoteBody] = useState("");
   // The root tracker is history[0]; opening a child pushes its id, Back pops.
   // The sheet always shows history[history.length - 1].
@@ -72,7 +115,11 @@ function OpenTrackerDetailSheet({
       setState({ status: "error", error: "Host disconnected" });
       return;
     }
-    setState({ status: "loading" });
+    // Only drop to the spinner state when there's nothing on screen yet —
+    // once something is loaded (the seeded placeholder, a previous fetch, or
+    // a sibling from history), a refresh happens behind it instead of
+    // flashing a blank spinner over content the user can already see.
+    setState((current) => (current.status === "loaded" ? current : { status: "loading" }));
     try {
       const tracker = await client.trackerShow({ projectId, trackerId: activeTrackerId });
       setState({ status: "loaded", tracker });
@@ -86,24 +133,31 @@ function OpenTrackerDetailSheet({
   }, [load]);
 
   const handleStart = useCallback(async (): Promise<void> => {
-    await mutations.updateTracker({ trackerId: activeTrackerId, status: "in_progress" });
+    const summary = await mutations.updateTracker({
+      trackerId: activeTrackerId,
+      status: "in_progress",
+    });
+    onMutated?.(summary);
     await load();
-  }, [activeTrackerId, load, mutations]);
+  }, [activeTrackerId, load, mutations, onMutated]);
 
   const handleClose = useCallback(async (): Promise<void> => {
-    await mutations.closeTracker({ trackerId: activeTrackerId });
+    const summary = await mutations.closeTracker({ trackerId: activeTrackerId });
+    onMutated?.(summary);
     await load();
-  }, [activeTrackerId, load, mutations]);
+  }, [activeTrackerId, load, mutations, onMutated]);
 
   const handleReopen = useCallback(async (): Promise<void> => {
-    await mutations.reopenTracker(activeTrackerId);
+    const summary = await mutations.reopenTracker(activeTrackerId);
+    onMutated?.(summary);
     await load();
-  }, [activeTrackerId, load, mutations]);
+  }, [activeTrackerId, load, mutations, onMutated]);
 
   const handleCancel = useCallback(async (): Promise<void> => {
-    await mutations.cancelTracker({ trackerId: activeTrackerId });
+    const summary = await mutations.cancelTracker({ trackerId: activeTrackerId });
+    onMutated?.(summary);
     await load();
-  }, [activeTrackerId, load, mutations]);
+  }, [activeTrackerId, load, mutations, onMutated]);
 
   const handleAddNote = useCallback(async (): Promise<void> => {
     const body = noteBody.trim();
@@ -147,6 +201,7 @@ function OpenTrackerDetailSheet({
       onDismiss={onClose}
       footer={footer}
       footerContainerStyle={styles.footerContainer}
+      desktopMaxWidth={640}
       testID="tracker-detail-sheet"
     >
       {state.status === "loading" || state.status === "idle" ? (
@@ -508,9 +563,10 @@ const styles = StyleSheet.create((theme) => ({
   },
   section: {
     gap: theme.spacing[2],
+    marginTop: theme.spacing[2],
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
-    paddingTop: theme.spacing[3],
+    paddingTop: theme.spacing[4],
   },
   sectionTitle: {
     color: theme.colors.foregroundMuted,

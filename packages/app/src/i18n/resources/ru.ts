@@ -2560,6 +2560,7 @@ export const ru: TranslationResources = {
         cancelled: "Отменено",
       },
       showMore: "Показать ещё {{count}}",
+      loadMore: "Загрузить ещё",
     },
   },
 };

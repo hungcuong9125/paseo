@@ -1,4 +1,12 @@
-import { CheckCircle2, MoreVertical, PlayCircle, RotateCcw, XCircle } from "lucide-react-native";
+import {
+  CheckCircle2,
+  MoreVertical,
+  Pencil,
+  PlayCircle,
+  RotateCcw,
+  Trash2,
+  XCircle,
+} from "lucide-react-native";
 import { useCallback, useState, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
@@ -22,6 +30,8 @@ const ThemedPlayCircle = withUnistyles(PlayCircle);
 const ThemedCheckCircle2 = withUnistyles(CheckCircle2);
 const ThemedRotateCcw = withUnistyles(RotateCcw);
 const ThemedXCircle = withUnistyles(XCircle);
+const ThemedTrash2 = withUnistyles(Trash2);
+const ThemedPencil = withUnistyles(Pencil);
 const ThemedKebab = withUnistyles(MoreVertical);
 
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
@@ -35,14 +45,17 @@ export interface TrackerRowPending {
   close?: boolean;
   reopen?: boolean;
   cancel?: boolean;
+  delete?: boolean;
 }
 
 export interface TrackerRowActions {
   onPress: () => void;
+  onEdit: () => void;
   onStart: () => void;
   onClose: () => void;
   onReopen: () => void;
   onCancel: () => void;
+  onDelete: () => void;
 }
 
 interface TrackerRowProps extends TrackerRowActions {
@@ -50,6 +63,14 @@ interface TrackerRowProps extends TrackerRowActions {
   /** Which project this row belongs to — rendered in the meta line only when
    * the caller is showing more than one project at once (aggregated view). */
   projectLabel?: string | null;
+  /** Whether this tracker has any descendants (direct or nested) — decides
+   * the delete item's label ("Remove" vs "Delete tree") and whether the
+   * mutation needs `cascade`. Always false for tasks (leaves in ait). */
+  hasChildren?: boolean;
+  /** True while the caller's child-count data may still be an undercount —
+   * disables the delete menu item rather than risk offering a non-cascaded
+   * delete for something that actually has un-swept children. */
+  deleteDisabled?: boolean;
   pending?: TrackerRowPending;
   isFirst: boolean;
 }
@@ -90,13 +111,17 @@ function statusTextColorStyle(status: TrackerSummary["status"]) {
 export function TrackerRow({
   tracker,
   projectLabel = null,
+  hasChildren = false,
+  deleteDisabled = false,
   pending,
   isFirst,
   onPress,
+  onEdit,
   onStart,
   onClose,
   onReopen,
   onCancel,
+  onDelete,
 }: TrackerRowProps): ReactElement {
   const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
@@ -173,11 +198,15 @@ export function TrackerRow({
           </Text>
           <TrackerKebabMenu
             tracker={tracker}
+            hasChildren={hasChildren}
+            deleteDisabled={deleteDisabled}
             pending={pending}
+            onEdit={onEdit}
             onStart={onStart}
             onClose={onClose}
             onReopen={onReopen}
             onCancel={onCancel}
+            onDelete={onDelete}
           />
         </View>
       </Pressable>
@@ -188,7 +217,9 @@ export function TrackerRow({
 const startLeading = <ThemedPlayCircle size={MENU_ICON_SIZE} uniProps={mutedColorMapping} />;
 const closeLeading = <ThemedCheckCircle2 size={MENU_ICON_SIZE} uniProps={mutedColorMapping} />;
 const reopenLeading = <ThemedRotateCcw size={MENU_ICON_SIZE} uniProps={mutedColorMapping} />;
+const editLeading = <ThemedPencil size={MENU_ICON_SIZE} uniProps={mutedColorMapping} />;
 const cancelLeading = <ThemedXCircle size={MENU_ICON_SIZE} uniProps={destructiveColorMapping} />;
+const deleteLeading = <ThemedTrash2 size={MENU_ICON_SIZE} uniProps={destructiveColorMapping} />;
 
 function renderKebabTriggerIcon({ hovered }: { hovered?: boolean }): ReactElement {
   return (
@@ -201,16 +232,34 @@ function renderKebabTriggerIcon({ hovered }: { hovered?: boolean }): ReactElemen
 
 function TrackerKebabMenu({
   tracker,
+  hasChildren = false,
+  deleteDisabled = false,
   pending,
+  onEdit,
   onStart,
   onClose,
   onReopen,
   onCancel,
+  onDelete,
 }: Pick<
   TrackerRowProps,
-  "tracker" | "pending" | "onStart" | "onClose" | "onReopen" | "onCancel"
+  | "tracker"
+  | "hasChildren"
+  | "deleteDisabled"
+  | "pending"
+  | "onEdit"
+  | "onStart"
+  | "onClose"
+  | "onReopen"
+  | "onCancel"
+  | "onDelete"
 >): ReactElement {
   const isOpenOrInProgress = tracker.status === "open" || tracker.status === "in_progress";
+  // Tasks are always leaves in ait, so hasChildren is only ever true for an
+  // epic/initiative — "Delete tree" is the short, explicit word for "this
+  // also removes every child", matching the plain "Remove" a childless item
+  // (task or empty epic/initiative) gets.
+  const deleteLabel = hasChildren ? "Delete tree" : "Remove";
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -223,6 +272,13 @@ function TrackerKebabMenu({
         {renderKebabTriggerIcon}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" width={200}>
+        <DropdownMenuItem
+          leading={editLeading}
+          onSelect={onEdit}
+          testID={`tracker-menu-edit-${tracker.id}`}
+        >
+          Edit
+        </DropdownMenuItem>
         {tracker.status === "open" ? (
           <DropdownMenuItem
             leading={startLeading}
@@ -256,21 +312,30 @@ function TrackerKebabMenu({
             Reopen
           </DropdownMenuItem>
         ) : null}
+        <DropdownMenuSeparator />
         {isOpenOrInProgress ? (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              leading={cancelLeading}
-              destructive
-              status={pending?.cancel ? "pending" : "idle"}
-              pendingLabel="Cancelling..."
-              onSelect={onCancel}
-              testID={`tracker-menu-cancel-${tracker.id}`}
-            >
-              Cancel
-            </DropdownMenuItem>
-          </>
+          <DropdownMenuItem
+            leading={cancelLeading}
+            destructive
+            status={pending?.cancel ? "pending" : "idle"}
+            pendingLabel="Cancelling..."
+            onSelect={onCancel}
+            testID={`tracker-menu-cancel-${tracker.id}`}
+          >
+            Cancel
+          </DropdownMenuItem>
         ) : null}
+        <DropdownMenuItem
+          leading={deleteLeading}
+          destructive
+          disabled={deleteDisabled}
+          status={pending?.delete ? "pending" : "idle"}
+          pendingLabel="Deleting..."
+          onSelect={onDelete}
+          testID={`tracker-menu-delete-${tracker.id}`}
+        >
+          {deleteLabel}
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );

@@ -2578,6 +2578,7 @@ export const fr: TranslationResources = {
         cancelled: "Annulé",
       },
       showMore: "Afficher {{count}} de plus",
+      loadMore: "Charger plus",
     },
   },
 };

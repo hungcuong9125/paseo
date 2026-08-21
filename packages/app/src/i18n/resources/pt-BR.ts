@@ -2555,6 +2555,7 @@ export const ptBR: TranslationResources = {
         cancelled: "Cancelado",
       },
       showMore: "Mostrar mais {{count}}",
+      loadMore: "Carregar mais",
     },
   },
 };

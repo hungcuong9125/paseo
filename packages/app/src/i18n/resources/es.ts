@@ -2571,6 +2571,7 @@ export const es: TranslationResources = {
         cancelled: "Cancelado",
       },
       showMore: "Mostrar {{count}} más",
+      loadMore: "Cargar más",
     },
   },
 };

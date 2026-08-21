@@ -67,4 +67,5 @@ export interface UpdateTrackerInput {
   title?: string;
   status?: "open" | "in_progress";
   priority?: TrackerPriority;
+  description?: string;
 }

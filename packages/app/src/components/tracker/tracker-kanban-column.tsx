@@ -8,6 +8,7 @@ import { TrackerKanbanCard } from "@/components/tracker/tracker-kanban-card";
 import { TrackerKanbanCardMenu } from "@/components/tracker/tracker-kanban-move-menu";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { isNative } from "@/constants/platform";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import type { TrackerBoardCard, TrackerBoardLaneKey } from "@/tracker/tracker-board-model";
 import type { TrackerHierarchy } from "@/tracker/tracker-hierarchy";
 import type { TrackerLane, TrackerTransition } from "@/tracker/tracker-transitions";
@@ -30,8 +31,10 @@ function transitionLaneFor(lane: TrackerBoardLaneKey): TrackerLane {
 // Doc: "Done lane: incremental reveal — render at most 50 cards with a 'Show N
 // more' footer." Open/In progress lanes are bounded by active work and render
 // in full; Done and Cancelled are the two terminal lanes that accumulate
-// without limit, so both get the reveal cap.
-const REVEAL_STEP = 50;
+// without limit, so both get the reveal cap. Compact/mobile gets a smaller
+// step — 50 cards at once is a lot of scrolling on a phone-width column.
+const REVEAL_STEP_DESKTOP = 50;
+const REVEAL_STEP_COMPACT = 20;
 const REVEALED_LANES = new Set<TrackerBoardLaneKey>(["done", "cancelled"]);
 
 interface TrackerKanbanCardPressableProps {
@@ -76,9 +79,15 @@ export interface TrackerKanbanColumnProps {
   lane: TrackerBoardLaneKey;
   cards: readonly TrackerBoardCard[];
   hierarchy: TrackerHierarchy;
+  /** False while the shared project-data sweep still has sections in flight —
+   * this lane's count and every card's child-progress badge can only be
+   * undercounts until then. */
+  isComplete: boolean;
   getProjectLabel?: (tracker: TrackerSummary) => string | null;
   isPending: (trackerId: string) => boolean;
   onTransition: (trackerId: string, transition: TrackerTransition) => void;
+  /** Opens the caller's edit sheet for a card — omit to hide the kebab menu's Edit entry. */
+  onEdit?: (trackerId: string) => void;
   /** Tapping a card body (not the move menu) — omit to render cards non-pressable. */
   onCardPress?: (trackerId: string) => void;
   style?: StyleProp<ViewStyle>;
@@ -88,21 +97,28 @@ export function TrackerKanbanColumn({
   lane,
   cards,
   hierarchy,
+  isComplete,
   getProjectLabel,
   isPending,
   onTransition,
+  onEdit,
   onCardPress,
   style,
 }: TrackerKanbanColumnProps): ReactElement {
   const { t } = useTranslation();
-  const [revealCount, setRevealCount] = useState(REVEAL_STEP);
+  const isCompact = useIsCompactFormFactor();
+  const revealStep = isCompact ? REVEAL_STEP_COMPACT : REVEAL_STEP_DESKTOP;
+  const [revealCount, setRevealCount] = useState(revealStep);
   const transitionLane = transitionLaneFor(lane);
   const isRevealed = REVEALED_LANES.has(lane);
 
   const visibleCards = isRevealed ? cards.slice(0, revealCount) : cards;
   const remaining = isRevealed ? Math.max(0, cards.length - revealCount) : 0;
 
-  const handleShowMore = useCallback(() => setRevealCount((count) => count + REVEAL_STEP), []);
+  const handleShowMore = useCallback(
+    () => setRevealCount((count) => count + revealStep),
+    [revealStep],
+  );
 
   return (
     <View style={[styles.column, style]} testID={`tracker-kanban-column-${lane}`}>
@@ -110,7 +126,7 @@ export function TrackerKanbanColumn({
         <Text style={styles.headerLabel}>
           {t(`tracker.kanban.lane.${laneTranslationKey(lane)}`)}
         </Text>
-        <StatusBadge label={String(cards.length)} variant="muted" />
+        <StatusBadge label={`${cards.length}${isComplete ? "" : "+"}`} variant="muted" />
       </View>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
         {cards.length === 0 ? (
@@ -132,6 +148,7 @@ export function TrackerKanbanColumn({
                 projectLabel={getProjectLabel?.(tracker) ?? null}
                 childCount={stats.childCount}
                 doneCount={stats.doneCount}
+                isComplete={isComplete}
                 createdAt={tracker.createdAt ?? null}
                 testID={cardTestID}
               />
@@ -147,6 +164,7 @@ export function TrackerKanbanColumn({
                 lane={transitionLane}
                 isPending={pending}
                 onTransition={onTransition}
+                onEdit={onEdit}
                 onCardPress={isNative ? onCardPress : undefined}
                 testID={`${cardTestID}-move`}
               >
@@ -176,7 +194,7 @@ export function TrackerKanbanColumn({
             testID={`tracker-kanban-column-${lane}-show-more`}
           >
             <Text style={styles.showMoreText}>
-              {t("tracker.kanban.showMore", { count: Math.min(REVEAL_STEP, remaining) })}
+              {t("tracker.kanban.showMore", { count: Math.min(revealStep, remaining) })}
             </Text>
           </Pressable>
         ) : null}

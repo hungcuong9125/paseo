@@ -2292,6 +2292,8 @@ export class Session {
     switch (msg.type) {
       case "project.tracker.list.request":
         return this.trackerSession.handleProjectTrackerListRequest(msg);
+      case "project.tracker.search.request":
+        return this.trackerSession.handleProjectTrackerSearchRequest(msg);
       case "project.tracker.subscribe.request":
         return this.trackerSession.handleProjectTrackerSubscribeRequest(msg);
       case "project.tracker.unsubscribe.request":
@@ -2308,6 +2310,8 @@ export class Session {
         return this.trackerSession.handleProjectTrackerReopenRequest(msg);
       case "project.tracker.cancel.request":
         return this.trackerSession.handleProjectTrackerCancelRequest(msg);
+      case "project.tracker.delete.request":
+        return this.trackerSession.handleProjectTrackerDeleteRequest(msg);
       case "project.tracker.note_add.request":
         return this.trackerSession.handleProjectTrackerNoteAddRequest(msg);
       case "project.tracker.init.request":

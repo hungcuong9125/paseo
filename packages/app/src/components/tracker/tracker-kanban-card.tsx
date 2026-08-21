@@ -16,6 +16,11 @@ export interface TrackerKanbanCardProps {
   projectLabel?: string | null;
   childCount?: number;
   doneCount?: number;
+  /** False while the shared project-data sweep still has sections in flight —
+   * `childCount`/`doneCount` can only be undercounts until then, so the badge
+   * dims rather than presenting a number that will silently jump once the
+   * sweep finishes. */
+  isComplete?: boolean;
   createdAt?: string | null;
   testID?: string;
 }
@@ -46,6 +51,7 @@ export function TrackerKanbanCard({
   projectLabel = null,
   childCount,
   doneCount,
+  isComplete = true,
   createdAt = null,
   testID,
 }: TrackerKanbanCardProps): ReactElement {
@@ -60,9 +66,11 @@ export function TrackerKanbanCard({
           {id}
           {" · "}
           <Text style={priorityColorStyle(priority)}>{priority}</Text>
-          {hasChildren
-            ? ` · ${t("tracker.card.childProgress", { done: doneCount ?? 0, count: childCount })}`
-            : null}
+          {hasChildren ? (
+            <Text style={!isComplete && styles.childProgressCounting}>
+              {` · ${t("tracker.card.childProgress", { done: doneCount ?? 0, count: childCount })}${isComplete ? "" : "+"}`}
+            </Text>
+          ) : null}
         </Text>
       </View>
       <Text style={styles.title} numberOfLines={2}>
@@ -106,6 +114,12 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.xs,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foregroundMuted,
+  },
+  // Dimmed while the shared project-data sweep hasn't finished — the trailing
+  // "+" and reduced opacity both signal "this number may still grow" without
+  // redesigning the card.
+  childProgressCounting: {
+    color: theme.colors.foregroundExtraMuted,
   },
   title: {
     fontSize: theme.fontSize.sm,

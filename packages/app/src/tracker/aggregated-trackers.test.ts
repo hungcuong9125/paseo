@@ -51,6 +51,9 @@ function makeRuntime(input: {
           }
           return result ?? { trackers: [], hiddenCount: 0 };
         },
+        trackerSearch: async () => {
+          throw new Error("trackerSearch is not expected in fetchAggregatedTrackers tests");
+        },
       };
     },
   };
@@ -132,6 +135,9 @@ describe("fetchAggregatedTrackers load state", () => {
             trackers: [makeTracker({ id: `${projectId}-open-task` })],
             hiddenCount: 0,
           };
+        },
+        trackerSearch: async () => {
+          throw new Error("trackerSearch is not expected in fetchAggregatedTrackers tests");
         },
       }),
     };

@@ -181,6 +181,48 @@ describe("TrackerSession", () => {
     expect(response?.payload.error).toBeNull();
   });
 
+  it("delete calls deleteTracker with cascade and emits the deleted ids", async () => {
+    let receivedCascade: boolean | undefined;
+    const { session, emitted } = makeSession({
+      deleteTracker: async ({ cascade }: { cascade?: boolean }) => {
+        receivedCascade = cascade;
+        return [SAMPLE_TRACKER.id, "proj-1.1"];
+      },
+    });
+
+    await session.handleProjectTrackerDeleteRequest({
+      type: "project.tracker.delete.request",
+      requestId: "r5b",
+      projectId: PROJECT_ID,
+      trackerId: SAMPLE_TRACKER.id,
+      cascade: true,
+    });
+
+    expect(receivedCascade).toBe(true);
+    const response = findByType(emitted, "project.tracker.delete.response");
+    expect(response?.payload.deletedIds).toEqual([SAMPLE_TRACKER.id, "proj-1.1"]);
+    expect(response?.payload.error).toBeNull();
+  });
+
+  it("delete emits deletedIds: null alongside the error when deleteTracker rejects", async () => {
+    const { session, emitted } = makeSession({
+      deleteTracker: async () => {
+        throw new AitCliError("validation", "issue has descendants; pass --cascade");
+      },
+    });
+
+    await session.handleProjectTrackerDeleteRequest({
+      type: "project.tracker.delete.request",
+      requestId: "r5c",
+      projectId: PROJECT_ID,
+      trackerId: SAMPLE_TRACKER.id,
+    });
+
+    const response = findByType(emitted, "project.tracker.delete.response");
+    expect(response?.payload.deletedIds).toBeNull();
+    expect(response?.payload.errorCode).toBe("validation");
+  });
+
   it("note_add emits the created note", async () => {
     const note = { id: "n1", body: "root cause found", createdAt: "2026-01-01T00:00:00Z" };
     const { session, emitted } = makeSession({

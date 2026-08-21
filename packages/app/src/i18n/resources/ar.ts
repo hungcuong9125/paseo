@@ -2515,6 +2515,7 @@ export const ar: TranslationResources = {
         cancelled: "ملغى",
       },
       showMore: "عرض {{count}} المزيد",
+      loadMore: "تحميل المزيد",
     },
   },
 };

@@ -32,6 +32,11 @@ export interface TrackerKanbanBoardProps {
    * everything-open-status-stays-Open rather than crashing.
    */
   readyIds?: ReadonlySet<string>;
+  /** False while the shared project-data sweep still has sections in flight —
+   * lane counts and card child-progress badges can only be undercounts until
+   * then; defaults true so callers that don't pass it (e.g. tests) see the
+   * normal, non-dimmed treatment. */
+  isComplete?: boolean;
   /**
    * Mutation entry point. The board never mutates `trackers` locally (no optimistic
    * move) — it marks the card pending, awaits this, then clears pending on either
@@ -41,6 +46,8 @@ export interface TrackerKanbanBoardProps {
   onTransition: (trackerId: string, transition: TrackerTransition) => Promise<void>;
   /** Called with a translated message when `onTransition` rejects, for the caller's toast. */
   onTransitionError?: (trackerId: string, message: string) => void;
+  /** Opens the caller's edit sheet for a card — omit to hide the kebab menu's Edit entry. */
+  onEdit?: (trackerId: string) => void;
   /** Resolved per-card only in multi-project (aggregated) contexts; omit for single-project boards. */
   getProjectLabel?: (tracker: TrackerSummary) => string | null;
   /** Tapping a card body (not the move menu) — omit to render cards non-pressable. */
@@ -61,8 +68,10 @@ export function TrackerKanbanBoard({
   trackers,
   filter,
   readyIds = EMPTY_READY_IDS,
+  isComplete = true,
   onTransition,
   onTransitionError,
+  onEdit,
   getProjectLabel,
   onCardPress,
   testID = "tracker-kanban-board",
@@ -141,9 +150,11 @@ export function TrackerKanbanBoard({
             lane={lane}
             cards={board[lane]}
             hierarchy={hierarchy}
+            isComplete={isComplete}
             getProjectLabel={getProjectLabel}
             isPending={isPending}
             onTransition={handleTransition}
+            onEdit={onEdit}
             onCardPress={onCardPress}
             style={isCompact ? styles.columnFull : styles.columnFlex}
           />

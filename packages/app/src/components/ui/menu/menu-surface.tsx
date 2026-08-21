@@ -105,6 +105,8 @@ export interface MenuSurfaceProps {
   horizontalPadding?: number;
   scrollable?: boolean;
   testID?: string;
+  onPointerEnter?: () => void;
+  onPointerLeave?: () => void;
 }
 
 /**
@@ -188,6 +190,8 @@ function MenuPopoverSurface({
   horizontalPadding = 16,
   scrollable = false,
   testID,
+  onPointerEnter,
+  onPointerLeave,
 }: MenuSurfaceProps): ReactElement | null {
   const menu = useMenuContext("MenuSurface");
   const { value: surfaceValue, getAnchor } = useSubAnchors();
@@ -226,6 +230,8 @@ function MenuPopoverSurface({
             horizontalPadding={horizontalPadding}
             scrollable={scrollable}
             testID={testID}
+            onPointerEnter={onPointerEnter}
+            onPointerLeave={onPointerLeave}
           >
             <MenuPage depth={0}>{children}</MenuPage>
           </AnchoredSurface>
