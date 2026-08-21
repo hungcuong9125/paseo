@@ -64,6 +64,10 @@ interface TrackerRowProps extends TrackerRowActions {
    * the delete item's label ("Remove" vs "Delete tree") and whether the
    * mutation needs `cascade`. Always false for tasks (leaves in ait). */
   hasChildren?: boolean;
+  /** True while the caller's child-count data may still be an undercount —
+   * disables the delete menu item rather than risk offering a non-cascaded
+   * delete for something that actually has un-swept children. */
+  deleteDisabled?: boolean;
   pending?: TrackerRowPending;
   isFirst: boolean;
 }
@@ -105,6 +109,7 @@ export function TrackerRow({
   tracker,
   projectLabel = null,
   hasChildren = false,
+  deleteDisabled = false,
   pending,
   isFirst,
   onPress,
@@ -190,6 +195,7 @@ export function TrackerRow({
           <TrackerKebabMenu
             tracker={tracker}
             hasChildren={hasChildren}
+            deleteDisabled={deleteDisabled}
             pending={pending}
             onStart={onStart}
             onClose={onClose}
@@ -221,6 +227,7 @@ function renderKebabTriggerIcon({ hovered }: { hovered?: boolean }): ReactElemen
 function TrackerKebabMenu({
   tracker,
   hasChildren = false,
+  deleteDisabled = false,
   pending,
   onStart,
   onClose,
@@ -231,6 +238,7 @@ function TrackerKebabMenu({
   TrackerRowProps,
   | "tracker"
   | "hasChildren"
+  | "deleteDisabled"
   | "pending"
   | "onStart"
   | "onClose"
@@ -305,6 +313,7 @@ function TrackerKebabMenu({
         <DropdownMenuItem
           leading={deleteLeading}
           destructive
+          disabled={deleteDisabled}
           status={pending?.delete ? "pending" : "idle"}
           pendingLabel="Deleting..."
           onSelect={onDelete}

@@ -43,6 +43,7 @@ import {
 } from "./schedule/rpc-schemas.js";
 import {
   ProjectTrackerListRequestSchema,
+  ProjectTrackerSearchRequestSchema,
   ProjectTrackerSubscribeRequestSchema,
   ProjectTrackerUnsubscribeRequestSchema,
   ProjectTrackerShowRequestSchema,
@@ -56,6 +57,7 @@ import {
   ProjectTrackerInitRequestSchema,
   ProjectTrackerReadyRequestSchema,
   ProjectTrackerListResponseSchema,
+  ProjectTrackerSearchResponseSchema,
   ProjectTrackerSubscribeResponseSchema,
   ProjectTrackerUpdatedSchema,
   ProjectTrackerShowResponseSchema,
@@ -2893,6 +2895,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ScheduleRunOnceRequestSchema,
   ScheduleUpdateRequestSchema,
   ProjectTrackerListRequestSchema,
+  ProjectTrackerSearchRequestSchema,
   ProjectTrackerSubscribeRequestSchema,
   ProjectTrackerUnsubscribeRequestSchema,
   ProjectTrackerShowRequestSchema,
@@ -5871,6 +5874,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ScheduleRunOnceResponseSchema,
   ScheduleUpdateResponseSchema,
   ProjectTrackerListResponseSchema,
+  ProjectTrackerSearchResponseSchema,
   ProjectTrackerSubscribeResponseSchema,
   ProjectTrackerUpdatedSchema,
   ProjectTrackerShowResponseSchema,

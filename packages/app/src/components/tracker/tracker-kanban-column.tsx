@@ -79,6 +79,10 @@ export interface TrackerKanbanColumnProps {
   lane: TrackerBoardLaneKey;
   cards: readonly TrackerBoardCard[];
   hierarchy: TrackerHierarchy;
+  /** False while the shared project-data sweep still has sections in flight —
+   * this lane's count and every card's child-progress badge can only be
+   * undercounts until then. */
+  isComplete: boolean;
   getProjectLabel?: (tracker: TrackerSummary) => string | null;
   isPending: (trackerId: string) => boolean;
   onTransition: (trackerId: string, transition: TrackerTransition) => void;
@@ -91,6 +95,7 @@ export function TrackerKanbanColumn({
   lane,
   cards,
   hierarchy,
+  isComplete,
   getProjectLabel,
   isPending,
   onTransition,
@@ -118,7 +123,7 @@ export function TrackerKanbanColumn({
         <Text style={styles.headerLabel}>
           {t(`tracker.kanban.lane.${laneTranslationKey(lane)}`)}
         </Text>
-        <StatusBadge label={String(cards.length)} variant="muted" />
+        <StatusBadge label={`${cards.length}${isComplete ? "" : "+"}`} variant="muted" />
       </View>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
         {cards.length === 0 ? (
@@ -140,6 +145,7 @@ export function TrackerKanbanColumn({
                 projectLabel={getProjectLabel?.(tracker) ?? null}
                 childCount={stats.childCount}
                 doneCount={stats.doneCount}
+                isComplete={isComplete}
                 createdAt={tracker.createdAt ?? null}
                 testID={cardTestID}
               />

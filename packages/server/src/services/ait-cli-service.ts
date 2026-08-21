@@ -15,6 +15,7 @@ import type {
   TrackerDetail,
   TrackerNote,
   TrackerPriority,
+  TrackerStatus,
   TrackerSummary,
   TrackerType,
   UpdateTrackerInput,
@@ -37,11 +38,38 @@ export class AitCliError extends Error {
 export interface ListTrackersOptions {
   cwd: string;
   all?: boolean;
+  status?: TrackerStatus;
+  type?: TrackerType;
+  limit?: number;
+  // Only ever sent together with `limit` — the CLI rejects a bare `--offset`
+  // with a usage error.
+  offset?: number;
+}
+
+export interface TrackerPageInfoResult {
+  hasMore: boolean;
+  nextCursor: string | null;
 }
 
 export interface ListTrackersResult {
   trackers: TrackerSummary[];
   hiddenCount: number;
+  /** Absent — not false — when pagination wasn't served (old CLI binary fell
+   * back, or the request was unpaginated): callers must read that as "this is
+   * the complete result", which is different from "no more pages". */
+  pageInfo?: TrackerPageInfoResult;
+}
+
+export interface SearchTrackersOptions {
+  cwd: string;
+  query: string;
+  limit: number;
+  offset?: number;
+}
+
+export interface SearchTrackersResult {
+  trackers: TrackerSummary[];
+  pageInfo: TrackerPageInfoResult;
 }
 
 export interface ShowTrackerOptions {
@@ -100,6 +128,7 @@ export interface ListReadyIdsOptions {
 
 export interface AitService {
   listTrackers(options: ListTrackersOptions): Promise<ListTrackersResult>;
+  searchTrackers(options: SearchTrackersOptions): Promise<SearchTrackersResult>;
   showTracker(options: ShowTrackerOptions): Promise<TrackerDetail>;
   createTracker(options: CreateTrackerOptions): Promise<TrackerSummary>;
   updateTracker(options: UpdateTrackerOptions): Promise<TrackerSummary>;
@@ -148,6 +177,19 @@ const AitIssueLongSchema = z.object({
 const AitListResponseSchema = z.object({
   hidden_count: z.number().int().nonnegative().optional(),
   issues: z.array(AitIssueLongSchema),
+  // Pagination fields from the `ait` CLI's `--limit/--offset` support. Optional:
+  // an older binary predating pagination just leaves them out.
+  total_count: z.number().int().nonnegative().optional(),
+  has_more: z.boolean().optional(),
+});
+
+// `ait search` emits the same long issue shape as `list --long` (no --long flag
+// exists for search — the detail columns are unconditional), plus its own
+// pagination envelope.
+const AitSearchResponseSchema = z.object({
+  issues: z.array(AitIssueLongSchema),
+  total_count: z.number().int().nonnegative().optional(),
+  has_more: z.boolean().optional(),
 });
 
 const AitNoteSchema = z.object({
@@ -329,13 +371,115 @@ export function createAitService(): AitService {
     return toTrackerSummary(raw.issue);
   }
 
-  async function listTrackers({ cwd, all }: ListTrackersOptions): Promise<ListTrackersResult> {
-    const args = all ? ["list", "--long", "--all"] : ["list", "--long"];
-    const raw = await run(args, cwd, AitListResponseSchema);
+  // Tri-state until proven: an `ait` binary older than its `--limit/--offset`
+  // support fails paginated invocations with a usage-class error, so the first
+  // such failure flips this to false for the rest of the daemon process — later
+  // calls skip the doomed pagination attempt entirely instead of re-failing.
+  let paginationSupported: boolean | undefined;
+
+  function paginationArgs(limit: number | undefined, offset: number | undefined): string[] {
+    if (limit === undefined) {
+      return [];
+    }
+    return [
+      "--limit",
+      String(limit),
+      ...(offset !== undefined ? ["--offset", String(offset)] : []),
+    ];
+  }
+
+  // Go's `flag` package rejects an unknown flag with a usage message and a
+  // non-JSON stderr, which classifyAitError surfaces as either the "usage"
+  // envelope code or a raw usage string under "unknown". Only those failures
+  // may trigger the old-binary fallback — a genuine failure (uninitialised
+  // database, cli_missing) must never be misread as "binary lacks pagination",
+  // or we would permanently disable pagination off one unrelated error.
+  function isPaginationUsageError(error: unknown): boolean {
+    if (!(error instanceof AitCliError)) {
+      return false;
+    }
+    if (error.code === "usage") {
+      return true;
+    }
+    return /flag provided but not defined|unknown flag|undefined flag/i.test(error.message);
+  }
+
+  function toPageInfo(
+    raw: { total_count?: number; has_more?: boolean },
+    limit: number,
+    offset: number,
+    returnedCount: number,
+  ): TrackerPageInfoResult {
+    const hasMore =
+      raw.has_more ??
+      (raw.total_count !== undefined
+        ? offset + returnedCount < raw.total_count
+        : returnedCount === limit);
+    return { hasMore, nextCursor: hasMore ? String(offset + returnedCount) : null };
+  }
+
+  async function listTrackers({
+    cwd,
+    all,
+    status,
+    type,
+    limit,
+    offset,
+  }: ListTrackersOptions): Promise<ListTrackersResult> {
+    const baseArgs = [
+      "list",
+      "--long",
+      ...(all ? ["--all"] : []),
+      ...(status ? ["--status", status] : []),
+      ...(type ? ["--type", type] : []),
+    ];
+    // Once a prior call has proven the binary doesn't understand pagination,
+    // every later call must skip straight to the unpaginated args — sending
+    // `--limit`/`--offset` again would just re-fail with the same usage error
+    // instead of degrading gracefully (there is nothing left to fall back to).
+    const attemptPagination = limit !== undefined && paginationSupported !== false;
+    const raw = await run(
+      attemptPagination ? [...baseArgs, ...paginationArgs(limit, offset)] : baseArgs,
+      cwd,
+      AitListResponseSchema,
+    ).catch(async (error: unknown) => {
+      if (!attemptPagination || !isPaginationUsageError(error)) {
+        throw error;
+      }
+      paginationSupported = false;
+      // Old binary: retry once unpaginated. The result carries no pageInfo at
+      // all — "complete result" must stay distinguishable from "no more pages".
+      const fallback = await run(baseArgs, cwd, AitListResponseSchema);
+      return { ...fallback, __fallback: true as const };
+    });
+    if ("__fallback" in raw && raw.__fallback) {
+      return { trackers: raw.issues.map(toTrackerSummary), hiddenCount: raw.hidden_count ?? 0 };
+    }
+    const trackers = raw.issues.map(toTrackerSummary);
     return {
-      trackers: raw.issues.map(toTrackerSummary),
+      trackers,
       hiddenCount: raw.hidden_count ?? 0,
+      pageInfo: attemptPagination
+        ? toPageInfo(raw, limit, offset ?? 0, trackers.length)
+        : undefined,
     };
+  }
+
+  async function searchTrackers({
+    cwd,
+    query,
+    limit,
+    offset = 0,
+  }: SearchTrackersOptions): Promise<SearchTrackersResult> {
+    // No old-binary fallback here: search itself arrived alongside pagination,
+    // so a binary that rejects --limit predates search too — surface the error.
+    const raw = await run(
+      ["search", query, ...paginationArgs(limit, offset)],
+      cwd,
+      AitSearchResponseSchema,
+    );
+    const trackers = raw.issues.map(toTrackerSummary);
+    return { trackers, pageInfo: toPageInfo(raw, limit, offset, trackers.length) };
   }
 
   async function showTracker({ cwd, trackerId }: ShowTrackerOptions): Promise<TrackerDetail> {
@@ -442,6 +586,7 @@ export function createAitService(): AitService {
 
   return {
     listTrackers,
+    searchTrackers,
     showTracker,
     createTracker,
     updateTracker,

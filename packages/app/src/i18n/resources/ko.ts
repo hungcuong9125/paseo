@@ -2532,6 +2532,7 @@ export const ko: TranslationResources = {
         cancelled: "취소됨",
       },
       showMore: "{{count}}개 더 보기",
+      loadMore: "더 불러오기",
     },
   },
 };

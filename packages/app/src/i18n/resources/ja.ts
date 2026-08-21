@@ -2540,6 +2540,7 @@ export const ja: TranslationResources = {
         cancelled: "キャンセル",
       },
       showMore: "他 {{count}} 件を表示",
+      loadMore: "さらに読み込む",
     },
   },
 } as const;

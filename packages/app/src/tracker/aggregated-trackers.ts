@@ -1,7 +1,7 @@
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { TrackerRpcError } from "@getpaseo/client/internal/daemon-client";
 import type { TrackerErrorCode } from "@getpaseo/protocol/tracker/rpc-schemas";
-import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
+import type { TrackerStatus, TrackerSummary, TrackerType } from "@getpaseo/protocol/tracker/types";
 import { toErrorMessage } from "@/utils/error-messages";
 
 export const trackerQueryBaseKey = ["trackers"] as const;
@@ -40,7 +40,7 @@ export interface TrackersRuntimeSnapshot {
 }
 
 export interface TrackersRuntime {
-  getClient(serverId: string): Pick<DaemonClient, "trackerList"> | null;
+  getClient(serverId: string): Pick<DaemonClient, "trackerList" | "trackerSearch"> | null;
   getSnapshot(serverId: string): TrackersRuntimeSnapshot | null | undefined;
 }
 
@@ -194,4 +194,105 @@ export async function fetchTrackerReadyIds(
   );
 
   return readyIds;
+}
+
+/** Cursor pagination envelope from a paginated tracker response. `null` means
+ * the server served the complete result without pagination (old CLI binary on
+ * the daemon host, or an old daemon) — callers must treat that as "everything
+ * is here, no more pages", which is different from `hasMore: false`. */
+export interface TrackerPageInfo {
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
+export interface FetchTrackerPageInput {
+  project: TrackerProjectInput;
+  runtime: TrackersRuntime;
+  status?: TrackerStatus;
+  type?: TrackerType;
+  all: boolean;
+  limit: number;
+  cursor?: string;
+}
+
+export interface TrackerPageResult {
+  trackers: AggregatedTracker[];
+  pageInfo: TrackerPageInfo | null;
+}
+
+function tagTracker(tracker: TrackerSummary, project: TrackerProjectInput): AggregatedTracker {
+  return { ...tracker, ...project };
+}
+
+/**
+ * One paginated browse page for ONE project — the List view's replacement for
+ * the live full-snapshot subscription. Offline/no-client projects contribute an
+ * empty page (same skip as fetchAggregatedTrackers); RPC failures throw so the
+ * caller's fan-out can convert them into a per-project error.
+ */
+export async function fetchTrackerPage(input: FetchTrackerPageInput): Promise<TrackerPageResult> {
+  const snapshot = input.runtime.getSnapshot(input.project.serverId);
+  const client = input.runtime.getClient(input.project.serverId);
+  if (!client || snapshot?.connectionStatus !== "online") {
+    return { trackers: [], pageInfo: null };
+  }
+  const result = await client.trackerList({
+    projectId: input.project.projectId,
+    all: input.all,
+    ...(input.status !== undefined ? { status: input.status } : {}),
+    ...(input.type !== undefined ? { trackerType: input.type } : {}),
+    page: { limit: input.limit, ...(input.cursor !== undefined ? { cursor: input.cursor } : {}) },
+  });
+  return {
+    trackers: result.trackers.map((tracker) => tagTracker(tracker, input.project)),
+    pageInfo: result.pageInfo ?? null,
+  };
+}
+
+export interface SearchTrackerPageInput {
+  project: TrackerProjectInput;
+  runtime: TrackersRuntime;
+  query: string;
+  limit: number;
+  cursor?: string;
+}
+
+/**
+ * One search page for ONE project. Always a real server-side query (`ait
+ * search`) — never a filter over whatever the browse view has loaded, so items
+ * beyond the currently loaded pages stay findable.
+ */
+export async function searchTrackerPage(
+  input: SearchTrackerPageInput,
+): Promise<{ trackers: AggregatedTracker[]; pageInfo: TrackerPageInfo }> {
+  const snapshot = input.runtime.getSnapshot(input.project.serverId);
+  const client = input.runtime.getClient(input.project.serverId);
+  if (!client || snapshot?.connectionStatus !== "online") {
+    return { trackers: [], pageInfo: { hasMore: false, nextCursor: null } };
+  }
+  const result = await client.trackerSearch({
+    projectId: input.project.projectId,
+    query: input.query,
+    page: { limit: input.limit, ...(input.cursor !== undefined ? { cursor: input.cursor } : {}) },
+  });
+  return {
+    trackers: result.trackers.map((tracker) => tagTracker(tracker, input.project)),
+    pageInfo: result.pageInfo,
+  };
+}
+
+/** Same per-project error mapping fetchAggregatedTrackers uses for its fan-out,
+ * extracted for the one-shot pagination hooks' identical tolerance pattern. */
+export function toTrackerProjectError(
+  project: TrackerProjectInput,
+  error: unknown,
+): TrackerProjectError {
+  return {
+    serverId: project.serverId,
+    serverName: project.serverName,
+    projectId: project.projectId,
+    projectName: project.projectName,
+    message: toErrorMessage(error),
+    code: error instanceof TrackerRpcError ? error.code : "unknown",
+  };
 }

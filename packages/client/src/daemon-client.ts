@@ -20,6 +20,7 @@ import type {
   TrackerDetail,
   TrackerNote,
   TrackerPriority,
+  TrackerStatus,
   TrackerSummary,
   TrackerType,
 } from "@getpaseo/protocol/tracker/types";
@@ -5226,8 +5227,15 @@ export class DaemonClient {
   async trackerList(options: {
     projectId: string;
     all?: boolean;
+    status?: TrackerStatus;
+    trackerType?: TrackerType;
+    page?: { limit: number; cursor?: string };
     requestId?: string;
-  }): Promise<{ trackers: TrackerSummary[]; hiddenCount: number }> {
+  }): Promise<{
+    trackers: TrackerSummary[];
+    hiddenCount: number;
+    pageInfo?: { nextCursor: string | null; hasMore: boolean };
+  }> {
     const payload =
       await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.list.response">({
         requestId: options.requestId,
@@ -5235,12 +5243,56 @@ export class DaemonClient {
           type: "project.tracker.list.request",
           projectId: options.projectId,
           ...(options.all !== undefined ? { all: options.all } : {}),
+          ...(options.status !== undefined ? { status: options.status } : {}),
+          ...(options.trackerType !== undefined ? { trackerType: options.trackerType } : {}),
+          ...(options.page !== undefined
+            ? {
+                page: {
+                  limit: options.page.limit,
+                  ...(options.page.cursor !== undefined ? { cursor: options.page.cursor } : {}),
+                },
+              }
+            : {}),
         },
       });
     if (payload.error) {
       throw new TrackerRpcError(payload.errorCode ?? "unknown", payload.error);
     }
-    return { trackers: payload.trackers, hiddenCount: payload.hiddenCount };
+    return {
+      trackers: payload.trackers,
+      hiddenCount: payload.hiddenCount,
+      // Absent when the daemon served the complete unpaginated result (old CLI
+      // binary fallback or a request without `page`) — not "no more pages".
+      ...(payload.pageInfo !== undefined ? { pageInfo: payload.pageInfo } : {}),
+    };
+  }
+
+  async trackerSearch(options: {
+    projectId: string;
+    query: string;
+    page: { limit: number; cursor?: string };
+    requestId?: string;
+  }): Promise<{
+    trackers: TrackerSummary[];
+    pageInfo: { nextCursor: string | null; hasMore: boolean };
+  }> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.search.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.tracker.search.request",
+          projectId: options.projectId,
+          query: options.query,
+          page: {
+            limit: options.page.limit,
+            ...(options.page.cursor !== undefined ? { cursor: options.page.cursor } : {}),
+          },
+        },
+      });
+    if (payload.error) {
+      throw new TrackerRpcError(payload.errorCode ?? "unknown", payload.error);
+    }
+    return { trackers: payload.trackers, pageInfo: payload.pageInfo };
   }
 
   async trackerReady(options: {

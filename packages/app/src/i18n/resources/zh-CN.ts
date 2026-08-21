@@ -2486,6 +2486,7 @@ export const zhCN: TranslationResources = {
         cancelled: "已取消",
       },
       showMore: "显示另外 {{count}} 项",
+      loadMore: "加载更多",
     },
   },
 };

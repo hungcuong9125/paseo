@@ -65,6 +65,14 @@ export class TrackerSession {
   async handleProjectTrackerListRequest(
     request: Extract<SessionInboundMessage, { type: "project.tracker.list.request" }>,
   ): Promise<void> {
+    // Paginated or filtered requests bypass TrackerSyncManager entirely: the
+    // manager only ever serves full-project snapshots (no windowing), so a
+    // page-bounded read has to hit aitService directly. Kanban's requests never
+    // carry these fields and keep taking the unchanged legacy path below.
+    if (request.page || request.status || request.trackerType) {
+      await this.handlePaginatedListRequest(request);
+      return;
+    }
     try {
       const cwd = await this.resolveCwd(request.projectId);
       const snapshot = this.trackerSyncManager
@@ -95,6 +103,89 @@ export class TrackerSession {
           projectId: request.projectId,
           trackers: [],
           hiddenCount: 0,
+          ...this.toErrorTuple(error),
+        },
+      });
+    }
+  }
+
+  private async handlePaginatedListRequest(
+    request: Extract<SessionInboundMessage, { type: "project.tracker.list.request" }>,
+  ): Promise<void> {
+    try {
+      const cwd = await this.resolveCwd(request.projectId);
+      let offset: number | undefined;
+      if (request.page) {
+        offset = request.page.cursor ? Number(request.page.cursor) : 0;
+      }
+      const result = await this.aitService.listTrackers({
+        cwd,
+        all: request.all,
+        status: request.status,
+        type: request.trackerType,
+        limit: request.page?.limit,
+        offset,
+      });
+      this.host.emit({
+        type: "project.tracker.list.response",
+        payload: {
+          requestId: request.requestId,
+          projectId: request.projectId,
+          trackers: result.trackers,
+          hiddenCount: result.hiddenCount,
+          // Omitted entirely when the service fell back to an unpaginated old
+          // CLI binary — absence means "complete result", not "no more pages".
+          ...(result.pageInfo ? { pageInfo: result.pageInfo } : {}),
+          error: null,
+          errorCode: null,
+        },
+      });
+    } catch (error) {
+      this.logFailure(request.type, error);
+      this.host.emit({
+        type: "project.tracker.list.response",
+        payload: {
+          requestId: request.requestId,
+          projectId: request.projectId,
+          trackers: [],
+          hiddenCount: 0,
+          ...this.toErrorTuple(error),
+        },
+      });
+    }
+  }
+
+  async handleProjectTrackerSearchRequest(
+    request: Extract<SessionInboundMessage, { type: "project.tracker.search.request" }>,
+  ): Promise<void> {
+    try {
+      const cwd = await this.resolveCwd(request.projectId);
+      const { trackers, pageInfo } = await this.aitService.searchTrackers({
+        cwd,
+        query: request.query,
+        limit: request.page.limit,
+        offset: request.page.cursor ? Number(request.page.cursor) : 0,
+      });
+      this.host.emit({
+        type: "project.tracker.search.response",
+        payload: {
+          requestId: request.requestId,
+          projectId: request.projectId,
+          trackers,
+          pageInfo,
+          error: null,
+          errorCode: null,
+        },
+      });
+    } catch (error) {
+      this.logFailure(request.type, error);
+      this.host.emit({
+        type: "project.tracker.search.response",
+        payload: {
+          requestId: request.requestId,
+          projectId: request.projectId,
+          trackers: [],
+          pageInfo: { nextCursor: null, hasMore: false },
           ...this.toErrorTuple(error),
         },
       });

@@ -4,64 +4,104 @@
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AggregatedTracker } from "@/tracker/aggregated-trackers";
-import type { UseAggregatedTrackersResult } from "@/tracker/use-aggregated-trackers";
+import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
+import type { AggregatedTracker, TrackerProjectInput } from "@/tracker/aggregated-trackers";
+import type { UseTrackerProjectDataResult } from "@/tracker/use-tracker-project-data";
 import type { ProjectHostEntry, ProjectSummary } from "@/utils/projects";
 import type { UseProjectsResult } from "@/hooks/use-projects";
 
-const { theme, projectsState, aggregatedState, lastKanbanBoardProps, lastListTableProps } =
-  vi.hoisted(() => ({
-    theme: {
-      colorScheme: "light" as const,
-      colors: {
-        surface0: "#000",
-        surface1: "#111",
-        surface2: "#222",
-        surface3: "#333",
-        foreground: "#fff",
-        foregroundMuted: "#aaa",
-        border: "#444",
-        accent: "#20744a",
-        palette: {
-          blue: { 600: "#2563eb" },
-          amber: { 700: "#b45309" },
-          red: { 300: "#fca5a5", 600: "#dc2626" },
-          green: { 500: "#22c55e", 600: "#16a34a" },
-          orange: { 600: "#ea580c" },
-          yellow: { 600: "#ca8a04" },
-          sky: { 600: "#0284c7" },
-          slate: { 400: "#94a3b8" },
-        },
+const {
+  theme,
+  projectsState,
+  projectDataState,
+  lastKanbanBoardProps,
+  lastListTableProps,
+  lastFormSheetProps,
+  lastDetailSheetProps,
+  sessionClient,
+} = vi.hoisted(() => ({
+  theme: {
+    colorScheme: "light" as const,
+    colors: {
+      surface0: "#000",
+      surface1: "#111",
+      surface2: "#222",
+      surface3: "#333",
+      foreground: "#fff",
+      foregroundMuted: "#aaa",
+      border: "#444",
+      accent: "#20744a",
+      palette: {
+        blue: { 600: "#2563eb" },
+        amber: { 700: "#b45309" },
+        red: { 300: "#fca5a5", 600: "#dc2626" },
+        green: { 500: "#22c55e", 600: "#16a34a" },
+        orange: { 600: "#ea580c" },
+        yellow: { 600: "#ca8a04" },
+        sky: { 600: "#0284c7" },
+        slate: { 400: "#94a3b8" },
       },
-      spacing: { 0: 0, 1: 4, "1.5": 6, 2: 8, 3: 12, 4: 16, 6: 24 },
-      fontSize: { xs: 11, sm: 13, base: 15 },
-      fontWeight: { normal: "400" as const, medium: "500" as const },
-      fontFamily: { ui: "System", mono: "Menlo" },
-      borderRadius: { sm: 4, md: 6, lg: 8, full: 999 },
-      borderWidth: { 1: 1 },
-      opacity: { 50: 0.5 },
-      iconSize: { sm: 14, md: 20, lg: 32 },
     },
-    projectsState: {
-      current: {
-        projects: [],
-        hostErrors: [],
-        isLoading: false,
-        isFetching: false,
-        refetch: vi.fn(),
-      } as UseProjectsResult,
-    },
-    aggregatedState: {
-      current: {
-        loadState: { status: "loaded", data: [] },
-        projectErrors: [],
-        refetch: vi.fn(),
-        isRefetching: false,
-      } as UseAggregatedTrackersResult,
-    },
-    lastKanbanBoardProps: { current: null as { trackers: readonly unknown[] } | null },
-    lastListTableProps: { current: null as { trackers: readonly unknown[] } | null },
-  }));
+    spacing: { 0: 0, 1: 4, "1.5": 6, 2: 8, 3: 12, 4: 16, 6: 24 },
+    fontSize: { xs: 11, sm: 13, base: 15 },
+    fontWeight: { normal: "400" as const, medium: "500" as const },
+    fontFamily: { ui: "System", mono: "Menlo" },
+    borderRadius: { sm: 4, md: 6, lg: 8, full: 999 },
+    borderWidth: { 1: 1 },
+    opacity: { 50: 0.5 },
+    iconSize: { sm: 14, md: 20, lg: 32 },
+  },
+  projectsState: {
+    current: {
+      projects: [],
+      hostErrors: [],
+      isLoading: false,
+      isFetching: false,
+      refetch: vi.fn(),
+    } as UseProjectsResult,
+  },
+  projectDataState: {
+    current: {
+      trackers: [],
+      isComplete: true,
+      isLoading: false,
+      projectErrors: [],
+      patchTracker: vi.fn(),
+      removeTrackers: vi.fn(),
+      refetch: vi.fn(),
+    } as UseTrackerProjectDataResult,
+  },
+  lastKanbanBoardProps: {
+    current: null as {
+      trackers: readonly unknown[];
+      isComplete?: boolean;
+      onTransition: (trackerId: string, transition: unknown) => Promise<void>;
+    } | null,
+  },
+  lastListTableProps: {
+    current: null as {
+      trackers: readonly unknown[];
+      isComplete?: boolean;
+      onTrackerPatched?: (tracker: AggregatedTracker) => void;
+      onTrackersRemoved?: (ids: string[]) => void;
+      onOpenTracker?: (tracker: AggregatedTracker) => void;
+    } | null,
+  },
+  lastFormSheetProps: {
+    current: null as {
+      onCreated?: (tracker: TrackerSummary, project: TrackerProjectInput) => void;
+    } | null,
+  },
+  lastDetailSheetProps: {
+    current: null as { onMutated?: (tracker: TrackerSummary) => void } | null,
+  },
+  sessionClient: {
+    trackerUpdate: vi.fn(),
+    trackerClose: vi.fn(),
+    trackerReopen: vi.fn(),
+    trackerCancel: vi.fn(),
+  },
+}));
 
 vi.mock("react-native-unistyles", () => ({
   StyleSheet: {
@@ -116,13 +156,23 @@ vi.mock("@/hooks/use-projects", () => ({
   useProjects: () => projectsState.current,
 }));
 
-vi.mock("@/tracker/use-aggregated-trackers", () => ({
-  useAggregatedTrackers: () => aggregatedState.current,
+vi.mock("@/tracker/use-tracker-project-data", () => ({
+  useTrackerProjectData: () => projectDataState.current,
+}));
+
+vi.mock("@/tracker/use-tracker-search", () => ({
+  useTrackerSearch: () => ({
+    results: [],
+    hasMore: false,
+    isLoading: false,
+    isLoadingMore: false,
+    loadMore: vi.fn(),
+  }),
 }));
 
 vi.mock("@/tracker/use-tracker-mutations", () => ({
   useTrackerMutations: () => ({
-    initTracker: vi.fn(),
+    initTracker: vi.fn().mockResolvedValue({ initialised: true }),
     isInitialising: false,
   }),
 }));
@@ -136,7 +186,7 @@ vi.mock("@/contexts/toast-context", () => ({
 }));
 
 vi.mock("@/stores/session-store", () => ({
-  useSessionStore: { getState: () => ({ sessions: {} }) },
+  useSessionStore: { getState: () => ({ sessions: { "host-a": { client: sessionClient } } }) },
 }));
 
 vi.mock("@/utils/copy-to-clipboard", () => ({
@@ -149,22 +199,41 @@ vi.mock("@/components/headers/menu-header", () => ({
 }));
 
 vi.mock("@/components/tracker/tracker-detail-sheet", () => ({
-  TrackerDetailSheet: () => null,
-}));
-
-vi.mock("@/components/tracker/tracker-form-sheet", () => ({
-  TrackerFormSheet: () => null,
-}));
-
-vi.mock("@/components/tracker/tracker-table", () => ({
-  TrackerTable: (props: { trackers: readonly unknown[] }) => {
-    lastListTableProps.current = props;
-    return React.createElement("div", { "data-testid": "mock-tracker-table" });
+  TrackerDetailSheet: (props: { onMutated?: (tracker: TrackerSummary) => void }) => {
+    lastDetailSheetProps.current = props;
+    return null;
   },
 }));
 
+vi.mock("@/components/tracker/tracker-form-sheet", () => ({
+  TrackerFormSheet: (props: {
+    onCreated?: (tracker: TrackerSummary, project: TrackerProjectInput) => void;
+  }) => {
+    lastFormSheetProps.current = props;
+    return null;
+  },
+}));
+
+vi.mock("@/components/tracker/tracker-table", () => ({
+  TrackerTable: (props: {
+    trackers: readonly unknown[];
+    isComplete?: boolean;
+    onTrackerPatched?: (tracker: AggregatedTracker) => void;
+    onTrackersRemoved?: (ids: string[]) => void;
+    onOpenTracker?: (tracker: AggregatedTracker) => void;
+  }) => {
+    lastListTableProps.current = props;
+    return React.createElement("div", { "data-testid": "mock-tracker-table" });
+  },
+  useTrackerPageStep: () => 50,
+}));
+
 vi.mock("@/components/tracker/tracker-kanban-board", () => ({
-  TrackerKanbanBoard: (props: { trackers: readonly unknown[] }) => {
+  TrackerKanbanBoard: (props: {
+    trackers: readonly unknown[];
+    isComplete?: boolean;
+    onTransition: (trackerId: string, transition: unknown) => Promise<void>;
+  }) => {
     lastKanbanBoardProps.current = props;
     return React.createElement(
       "div",
@@ -335,12 +404,15 @@ function setProjectsState(overrides: Partial<UseProjectsResult>) {
   };
 }
 
-function setAggregatedState(overrides: Partial<UseAggregatedTrackersResult>) {
-  aggregatedState.current = {
-    loadState: { status: "loaded", data: [] },
+function setProjectDataState(overrides: Partial<UseTrackerProjectDataResult>) {
+  projectDataState.current = {
+    trackers: [],
+    isComplete: true,
+    isLoading: false,
     projectErrors: [],
+    patchTracker: vi.fn(),
+    removeTrackers: vi.fn(),
     refetch: vi.fn(),
-    isRefetching: false,
     ...overrides,
   };
 }
@@ -349,10 +421,13 @@ describe("TrackerScreen kanban type filter", () => {
   let container: HTMLElement | null = null;
   let root: Root | null = null;
 
+  // Pre-sorted (projectId then id), matching the invariant the real
+  // useTrackerProjectData hook guarantees for its `trackers` output — the
+  // mock stands in for the hook, not for its internal sort.
   const mixedTrackers: AggregatedTracker[] = [
-    tracker({ id: "task-1", type: "task", title: "Task one" }),
     tracker({ id: "epic-1", type: "epic", title: "Epic one" }),
     tracker({ id: "initiative-1", type: "initiative", title: "Initiative one" }),
+    tracker({ id: "task-1", type: "task", title: "Task one" }),
   ];
 
   beforeEach(() => {
@@ -362,7 +437,7 @@ describe("TrackerScreen kanban type filter", () => {
     document.body.appendChild(container);
     root = createRoot(container);
     setProjectsState({});
-    setAggregatedState({ loadState: { status: "loaded", data: mixedTrackers } });
+    setProjectDataState({ trackers: mixedTrackers });
     lastKanbanBoardProps.current = null;
   });
 
@@ -475,5 +550,123 @@ describe("TrackerScreen kanban type filter", () => {
 
     // Same project, so orderedTrackers sorts by id: epic-1 < initiative-1 < task-1.
     expect(listTrackerIds()).toEqual(["epic-1", "initiative-1", "task-1"]);
+  });
+});
+
+describe("TrackerScreen mutation patching", () => {
+  let container: HTMLElement | null = null;
+  let root: Root | null = null;
+
+  const taskA: AggregatedTracker = tracker({ id: "task-1", type: "task", status: "open" });
+
+  beforeEach(() => {
+    vi.stubGlobal("React", React);
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    setProjectsState({});
+    setProjectDataState({ trackers: [taskA] });
+    lastKanbanBoardProps.current = null;
+    lastListTableProps.current = null;
+    lastFormSheetProps.current = null;
+    lastDetailSheetProps.current = null;
+    sessionClient.trackerClose.mockResolvedValue({ ...taskA, status: "closed" });
+  });
+
+  afterEach(() => {
+    if (root) {
+      act(() => {
+        root?.unmount();
+      });
+    }
+    root = null;
+    container?.remove();
+    container = null;
+    vi.unstubAllGlobals();
+  });
+
+  function render() {
+    act(() => {
+      root?.render(React.createElement(TrackerScreen));
+    });
+  }
+
+  function switchToKanban() {
+    const kanbanToggle = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-view-kanban"]',
+    );
+    if (!kanbanToggle) throw new Error("Expected the Kanban view toggle to render");
+    act(() => {
+      kanbanToggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+  }
+
+  it("threads isComplete from the shared hook down to both the table and the board", () => {
+    setProjectDataState({ trackers: [taskA], isComplete: false });
+    render();
+    expect(lastListTableProps.current?.isComplete).toBe(false);
+    switchToKanban();
+    expect(lastKanbanBoardProps.current?.isComplete).toBe(false);
+  });
+
+  it("patches the shared hook with the transition's own response after a Kanban transition succeeds", async () => {
+    render();
+    switchToKanban();
+
+    const onTransition = lastKanbanBoardProps.current?.onTransition;
+    if (!onTransition) throw new Error("Expected TrackerKanbanBoard to receive onTransition");
+    await act(async () => {
+      await onTransition("task-1", { kind: "close" });
+    });
+
+    expect(sessionClient.trackerClose).toHaveBeenCalledWith({
+      projectId: "project-a",
+      trackerId: "task-1",
+    });
+    expect(projectDataState.current.patchTracker).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "task-1", status: "closed" }),
+    );
+  });
+
+  it("patches the shared hook when the create form reports a new tracker", () => {
+    render();
+
+    const onCreated = lastFormSheetProps.current?.onCreated;
+    if (!onCreated) throw new Error("Expected TrackerFormSheet to receive onCreated");
+    const created = tracker({ id: "task-2", type: "task", status: "open" });
+    const createdProject: TrackerProjectInput = {
+      serverId: "host-a",
+      serverName: "alpha",
+      projectId: "project-a",
+      projectName: "Project",
+    };
+    act(() => {
+      onCreated(created, createdProject);
+    });
+
+    expect(projectDataState.current.patchTracker).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "task-2", projectId: "project-a" }),
+    );
+  });
+
+  it("patches the shared hook when the detail sheet reports a mutation", () => {
+    render();
+
+    const onOpenTracker = lastListTableProps.current?.onOpenTracker;
+    if (!onOpenTracker) throw new Error("Expected TrackerTable to receive onOpenTracker");
+    act(() => {
+      onOpenTracker(taskA);
+    });
+
+    const onMutated = lastDetailSheetProps.current?.onMutated;
+    if (!onMutated) throw new Error("Expected TrackerDetailSheet to receive onMutated");
+    act(() => {
+      onMutated({ ...taskA, status: "in_progress" });
+    });
+
+    expect(projectDataState.current.patchTracker).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "task-1", status: "in_progress" }),
+    );
   });
 });

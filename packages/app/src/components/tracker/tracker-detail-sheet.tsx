@@ -23,6 +23,10 @@ export interface TrackerDetailSheetProps {
    * spinner, while the full record (children/blockedBy/notes/description)
    * loads in behind it. Omit when there's nothing to seed with. */
   initialSummary?: TrackerSummary | null;
+  /** Fires with the mutation's own response after Start/Close/Reopen/Cancel
+   * succeeds — the caller patches its shared data hook in place so the view
+   * behind this sheet reflects the change without a re-fetch. */
+  onMutated?: (tracker: TrackerSummary) => void;
 }
 
 type DetailState =
@@ -60,6 +64,7 @@ export function TrackerDetailSheet({
   trackerId,
   onClose,
   initialSummary,
+  onMutated,
 }: TrackerDetailSheetProps): ReactElement | null {
   if (!visible || !trackerId) {
     return null;
@@ -72,6 +77,7 @@ export function TrackerDetailSheet({
       trackerId={trackerId}
       onClose={onClose}
       initialSummary={initialSummary ?? null}
+      onMutated={onMutated}
     />
   );
 }
@@ -82,12 +88,14 @@ function OpenTrackerDetailSheet({
   trackerId,
   onClose,
   initialSummary,
+  onMutated,
 }: {
   serverId: string;
   projectId: string;
   trackerId: string;
   onClose: () => void;
   initialSummary: TrackerSummary | null;
+  onMutated?: (tracker: TrackerSummary) => void;
 }): ReactElement {
   const client = useHostRuntimeClient(serverId);
   const [state, setState] = useState<DetailState>(() =>
@@ -125,24 +133,31 @@ function OpenTrackerDetailSheet({
   }, [load]);
 
   const handleStart = useCallback(async (): Promise<void> => {
-    await mutations.updateTracker({ trackerId: activeTrackerId, status: "in_progress" });
+    const summary = await mutations.updateTracker({
+      trackerId: activeTrackerId,
+      status: "in_progress",
+    });
+    onMutated?.(summary);
     await load();
-  }, [activeTrackerId, load, mutations]);
+  }, [activeTrackerId, load, mutations, onMutated]);
 
   const handleClose = useCallback(async (): Promise<void> => {
-    await mutations.closeTracker({ trackerId: activeTrackerId });
+    const summary = await mutations.closeTracker({ trackerId: activeTrackerId });
+    onMutated?.(summary);
     await load();
-  }, [activeTrackerId, load, mutations]);
+  }, [activeTrackerId, load, mutations, onMutated]);
 
   const handleReopen = useCallback(async (): Promise<void> => {
-    await mutations.reopenTracker(activeTrackerId);
+    const summary = await mutations.reopenTracker(activeTrackerId);
+    onMutated?.(summary);
     await load();
-  }, [activeTrackerId, load, mutations]);
+  }, [activeTrackerId, load, mutations, onMutated]);
 
   const handleCancel = useCallback(async (): Promise<void> => {
-    await mutations.cancelTracker({ trackerId: activeTrackerId });
+    const summary = await mutations.cancelTracker({ trackerId: activeTrackerId });
+    onMutated?.(summary);
     await load();
-  }, [activeTrackerId, load, mutations]);
+  }, [activeTrackerId, load, mutations, onMutated]);
 
   const handleAddNote = useCallback(async (): Promise<void> => {
     const body = noteBody.trim();

@@ -3,6 +3,7 @@ import {
   TrackerDetailSchema,
   TrackerNoteSchema,
   TrackerPrioritySchema,
+  TrackerStatusSchema,
   TrackerSummarySchema,
   TrackerTypeSchema,
 } from "./types.js";
@@ -28,11 +29,31 @@ export type TrackerErrorCode = z.infer<typeof TrackerErrorCodeSchema>;
 // open workspace. The server resolves projectId -> rootPath via the project
 // registry; the client never sends a raw filesystem path.
 
+// Cursor pagination for the one-shot (non-live) tracker requests. The cursor is
+// opaque to clients — internally it is currently a numeric offset serialised as
+// a string, but nothing on the wire may assume that, so a real keyset cursor can
+// replace it later without a protocol change.
+export const TrackerPageRequestSchema = z.object({
+  limit: z.number().int().positive().max(200),
+  cursor: z.string().min(1).optional(),
+});
+
+export const TrackerPageInfoSchema = z.object({
+  nextCursor: z.string().nullable(),
+  hasMore: z.boolean(),
+});
+export type TrackerPageInfo = z.infer<typeof TrackerPageInfoSchema>;
+
 export const ProjectTrackerListRequestSchema = z.object({
   type: z.literal("project.tracker.list.request"),
   requestId: z.string(),
   projectId: z.string(),
   all: z.boolean().optional(),
+  // Not `type`: that name is the message discriminator above. Follows
+  // ProjectTrackerCreateRequestSchema's `trackerType` instead.
+  status: TrackerStatusSchema.optional(),
+  trackerType: TrackerTypeSchema.optional(),
+  page: TrackerPageRequestSchema.optional(),
 });
 
 export const ProjectTrackerShowRequestSchema = z.object({
@@ -127,6 +148,33 @@ export const ProjectTrackerListResponseSchema = z.object({
     projectId: z.string(),
     trackers: z.array(TrackerSummarySchema),
     hiddenCount: z.number().int().nonnegative(),
+    // Present only when the request carried `page`. Its absence means the
+    // server served the complete, unpaginated result — not "no more pages".
+    pageInfo: TrackerPageInfoSchema.optional(),
+    error: z.string().nullable(),
+    errorCode: TrackerErrorCodeSchema.nullable(),
+  }),
+});
+
+// One-shot free-text search (`ait search`), always bounded by `page` — an
+// unbounded search is exactly the fetch-everything problem pagination exists
+// to fix. Never routed through the live sync manager; search has no
+// subscription concept.
+export const ProjectTrackerSearchRequestSchema = z.object({
+  type: z.literal("project.tracker.search.request"),
+  requestId: z.string(),
+  projectId: z.string(),
+  query: z.string().min(1),
+  page: TrackerPageRequestSchema,
+});
+
+export const ProjectTrackerSearchResponseSchema = z.object({
+  type: z.literal("project.tracker.search.response"),
+  payload: z.object({
+    requestId: z.string(),
+    projectId: z.string(),
+    trackers: z.array(TrackerSummarySchema),
+    pageInfo: TrackerPageInfoSchema,
     error: z.string().nullable(),
     errorCode: TrackerErrorCodeSchema.nullable(),
   }),

@@ -2529,6 +2529,7 @@ export const en = {
         cancelled: "Cancelled",
       },
       showMore: "Show {{count}} more",
+      loadMore: "Load more",
     },
   },
 } as const;

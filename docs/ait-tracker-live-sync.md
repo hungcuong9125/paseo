@@ -2,9 +2,11 @@
 
 ## Goal
 
-Keep the Tracker screen current when an agent or another process changes a project's AIT database outside Paseo.
+Keep tracker data current when an agent or another process changes a project's AIT database outside Paseo.
 
 AIT remains the source of truth. Paseo does not open `.ait/ait.db` directly and does not maintain a second durable issue database. The daemon watches the AIT directory only to know when it must run the authoritative `ait` CLI again.
+
+The Tracker screen (`packages/app/src/screens/tracker-screen.tsx`) does not subscribe to this path. It loads through `useTrackerProjectData`'s progressive per-status background sweep and reflects the user's own mutations by patching that hook's local state directly from each mutation's response — no live snapshot, no cache invalidation round-trip. External `ait` changes (another client, or `ait` run from a terminal) only show up on the screen's own manual refresh. `useAggregatedTrackers` and the manager described below still exist as a general-purpose live-fetch path other RPCs or future callers can use.
 
 ## Current path
 
