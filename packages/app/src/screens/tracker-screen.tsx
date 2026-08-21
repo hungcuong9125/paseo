@@ -19,7 +19,16 @@ import {
 import { useIsFocused } from "@react-navigation/native";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, LayoutGrid, ListChecks, ListFilter, Plus } from "lucide-react-native";
+import {
+  Bell,
+  Check,
+  ChevronDown,
+  Copy,
+  LayoutGrid,
+  ListChecks,
+  ListFilter,
+  Plus,
+} from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { TrackerSummary, TrackerType } from "@getpaseo/protocol/tracker/types";
@@ -34,11 +43,14 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  type DropdownMenuTriggerState,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { copyToClipboard } from "@/utils/copy-to-clipboard";
+import { openExternalUrl } from "@/utils/open-external-url";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
 import { useProjects } from "@/hooks/use-projects";
 import { useToast } from "@/contexts/toast-context";
@@ -108,7 +120,20 @@ function callTrackerTransition(
 
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const ThemedListFilter = withUnistyles(ListFilter);
+const ThemedBell = withUnistyles(Bell);
+const ThemedCopy = withUnistyles(Copy);
+const ThemedCheck = withUnistyles(Check);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+// Red on hover in light mode reads as an alert; on dark it would nearly
+// vanish against a near-black surface, so dark hover goes to plain
+// foreground (white) instead — brighter than the muted grey at rest, same
+// idea as the light-mode hover, without picking a colour that disappears.
+function bellIconColor(theme: Theme, isHovered: boolean): string {
+  if (!isHovered) {
+    return theme.colors.foregroundMuted;
+  }
+  return theme.colorScheme === "dark" ? theme.colors.foreground : theme.colors.palette.red[600];
+}
 const inverseColorMapping = (theme: Theme) => ({ color: theme.colors.surface0 });
 const EMPTY_TRACKERS: AggregatedTracker[] = [];
 const EMPTY_READY_IDS: ReadonlySet<string> = new Set();
@@ -344,23 +369,26 @@ function TrackerScreenContent(): ReactElement {
     [kanbanTrackerById],
   );
 
-  const viewModeToggle = useMemo(
+  const headerRightContent = useMemo(
     () => (
-      <SegmentedControl
-        options={viewModeOptions}
-        value={viewMode}
-        onValueChange={setViewMode}
-        size="sm"
-        hideLabels
-        testID="trackers-view-mode"
-      />
+      <>
+        {projectErrors.length > 0 ? <TrackerErrorsButton errors={projectErrors} /> : null}
+        <SegmentedControl
+          options={viewModeOptions}
+          value={viewMode}
+          onValueChange={setViewMode}
+          size="sm"
+          hideLabels
+          testID="trackers-view-mode"
+        />
+      </>
     ),
-    [viewMode],
+    [projectErrors, viewMode],
   );
 
   return (
     <View style={styles.container}>
-      <MenuHeader title="Tracker" rightContent={viewModeToggle} />
+      <MenuHeader title="Tracker" rightContent={headerRightContent} />
       <TrackerScreenBody
         bodyState={bodyState}
         trackers={orderedTrackers}
@@ -376,7 +404,6 @@ function TrackerScreenContent(): ReactElement {
         viewMode={viewMode}
         typeFilter={typeFilter}
         onTypeFilterChange={handleTypeFilterChange}
-        projectErrors={projectErrors}
         onOpenTracker={handleOpenTracker}
         onKanbanTransition={handleKanbanTransition}
         onKanbanTransitionError={handleKanbanTransitionError}
@@ -680,17 +707,165 @@ function TrackerFilterMenu({
   );
 }
 
-function ProjectErrorsBanner({ errors }: { errors: TrackerProjectError[] }): ReactElement {
+// Errors move into a header popover instead of an inline content banner —
+// most projects don't run `ait`, so a permanent "no ait database" strip in
+// the content area would be the common case, not the exception. The trigger
+// only renders when there is something to show (see headerRightContent).
+// ait-cli-service's raw message is "no ait database at <dir>/.ait/ait.db —
+// run 'ait init' first" — the full absolute path is noise the user doesn't
+// need to read, but it is the only place the project's directory shows up,
+// so it's still worth extracting for the copyable `cd` command below.
+const AIT_DB_PATH_PATTERN = /no ait database at (.+)\/\.ait\/ait\.db/;
+const AIT_REPO_URL = "https://github.com/hungcuong9125/agent-issue-tracker";
+
+function handleOpenAitRepo(): void {
+  void openExternalUrl(AIT_REPO_URL);
+}
+
+// A row (not a nested Text) — Text only reliably accepts Text/Image children
+// cross-platform, and hover props (onHoverIn/onHoverOut) only exist on
+// Pressable, not Text. Default colour matches the surrounding sentence (not
+// accent-tinted at rest); only hover picks up the accent colour + underline,
+// so it reads as a highlighted word rather than a conspicuous button.
+function TrackerAitRepoLink(): ReactElement {
+  const [isHovered, setIsHovered] = useState(false);
+  const handleHoverIn = useCallback(() => setIsHovered(true), []);
+  const handleHoverOut = useCallback(() => setIsHovered(false), []);
   return (
-    <View style={styles.errorsBannerWrap}>
-      <View style={styles.errorsBanner} testID="trackers-project-errors">
-        {errors.map((error) => (
-          <Text key={`${error.serverId}:${error.projectId}`} style={styles.errorsBannerText}>
-            {`${error.projectName}: ${error.message}`}
+    <Pressable
+      onPress={handleOpenAitRepo}
+      onHoverIn={handleHoverIn}
+      onHoverOut={handleHoverOut}
+      accessibilityRole="link"
+      testID="trackers-project-errors-ait-link"
+    >
+      <Text style={[styles.errorsMenuLink, isHovered && styles.errorsMenuLinkHovered]}>
+        Agent Issue Tracker
+      </Text>
+    </Pressable>
+  );
+}
+
+function extractProjectDir(message: string): string | null {
+  return AIT_DB_PATH_PATTERN.exec(message)?.[1] ?? null;
+}
+
+function TrackerErrorRow({ error }: { error: TrackerProjectError }): ReactElement {
+  const projectDir = extractProjectDir(error.message);
+  const command = projectDir ? `cd "${projectDir}" && ait init` : "ait init";
+  const [copied, setCopied] = useState(false);
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current);
+      }
+    },
+    [],
+  );
+
+  const handleCopy = useCallback(() => {
+    void copyToClipboard(command);
+    setCopied(true);
+    if (copyTimeoutRef.current) {
+      clearTimeout(copyTimeoutRef.current);
+    }
+    copyTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
+  }, [command]);
+
+  return (
+    <View style={styles.errorsRow}>
+      <View style={styles.errorsRowBullet} />
+      <View style={styles.errorsRowBody}>
+        <Text style={styles.errorsRowText}>
+          {"No ait database in project "}
+          <Text style={styles.errorsRowEmphasis}>{error.projectName}</Text>
+        </Text>
+        <Pressable
+          style={styles.errorsCopyRow}
+          onPress={handleCopy}
+          accessibilityRole="button"
+          testID={`trackers-project-errors-copy-${error.serverId}:${error.projectId}`}
+        >
+          <Text style={styles.errorsCopyCommand} numberOfLines={1}>
+            {command}
           </Text>
-        ))}
+          {copied ? (
+            <ThemedCheck size={12} uniProps={mutedColorMapping} />
+          ) : (
+            <ThemedCopy size={12} uniProps={mutedColorMapping} />
+          )}
+        </Pressable>
       </View>
     </View>
+  );
+}
+
+function TrackerErrorsBellIcon({
+  active,
+  count,
+}: {
+  active: boolean;
+  count: number;
+}): ReactElement {
+  const bellColorMapping = useCallback(
+    (theme: Theme) => ({ color: bellIconColor(theme, active) }),
+    [active],
+  );
+  return (
+    <>
+      <ThemedBell size={20} uniProps={bellColorMapping} />
+      <View style={styles.errorsBadge}>
+        <Text style={styles.errorsBadgeText}>{count}</Text>
+      </View>
+    </>
+  );
+}
+
+function renderErrorsTrigger(state: DropdownMenuTriggerState, count: number): ReactElement {
+  // `open` (the popover stayed open after a click) counts as active too, not
+  // just live hover/press — the user asked for the icon to stay in its
+  // "activated" colour for as long as the menu is open, not just flash
+  // during the press itself.
+  return (
+    <TrackerErrorsBellIcon active={state.hovered || state.pressed || state.open} count={count} />
+  );
+}
+
+function TrackerErrorsButton({ errors }: { errors: TrackerProjectError[] }): ReactElement {
+  const renderTrigger = useCallback(
+    (state: DropdownMenuTriggerState) => renderErrorsTrigger(state, errors.length),
+    [errors.length],
+  );
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        style={styles.errorsButtonTrigger}
+        testID="trackers-project-errors-trigger"
+      >
+        {renderTrigger}
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" width={360}>
+        <View style={styles.errorsMenuList} testID="trackers-project-errors">
+          <View style={styles.errorsMenuTitleRow}>
+            <Text style={styles.errorsMenuTitle}>{"Track your projects with "}</Text>
+            <TrackerAitRepoLink />
+          </View>
+          <Text style={styles.errorsMenuDescription}>
+            These projects don&apos;t have one set up yet — run{" "}
+            <Text style={styles.errorsRowEmphasis}>ait init</Text> in each to enable it.
+          </Text>
+          <View style={styles.errorsMenuDescriptionDivider} />
+          {errors.map((error, index) => (
+            <Fragment key={`${error.serverId}:${error.projectId}`}>
+              {index > 0 ? <View style={styles.errorsMenuDivider} /> : null}
+              <TrackerErrorRow error={error} />
+            </Fragment>
+          ))}
+        </View>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -709,7 +884,6 @@ function TrackerScreenBody({
   viewMode,
   typeFilter,
   onTypeFilterChange,
-  projectErrors,
   onOpenTracker,
   onKanbanTransition,
   onKanbanTransitionError,
@@ -734,7 +908,6 @@ function TrackerScreenBody({
   viewMode: ViewMode;
   typeFilter: TypeFilter;
   onTypeFilterChange: (value: TypeFilter) => void;
-  projectErrors: TrackerProjectError[];
   onOpenTracker: (tracker: AggregatedTracker) => void;
   onKanbanTransition: (trackerId: string, transition: TrackerTransition) => Promise<void>;
   onKanbanTransitionError: (trackerId: string, message: string) => void;
@@ -820,7 +993,6 @@ function TrackerScreenBody({
             onTypeFilterChange={onTypeFilterChange}
             onCreate={onCreate}
           />
-          {projectErrors.length > 0 ? <ProjectErrorsBanner errors={projectErrors} /> : null}
           <View style={styles.centered} testID="trackers-empty">
             <ListChecks size={styles.emptyIcon.width} color={styles.emptyIcon.color} />
             <Text style={styles.emptyTitle}>Nothing tracked yet</Text>
@@ -850,8 +1022,6 @@ function TrackerScreenBody({
           onCreate={onCreate}
         />
       );
-      const errorsBanner =
-        projectErrors.length > 0 ? <ProjectErrorsBanner errors={projectErrors} /> : null;
 
       if (viewMode === "kanban") {
         // Not nested in the outer vertical ScrollView: each TrackerKanbanColumn owns
@@ -860,7 +1030,6 @@ function TrackerScreenBody({
         return (
           <View style={styles.kanbanContainer} testID="trackers-kanban">
             {toolbar}
-            {errorsBanner}
             <TrackerKanbanBoard
               trackers={kanbanTrackers}
               filter={statFilter}
@@ -884,7 +1053,6 @@ function TrackerScreenBody({
           testID="trackers-list"
         >
           {toolbar}
-          {errorsBanner}
           <TrackerTable
             trackers={trackers}
             showProjectLabel={showProjectLabel}
@@ -1477,19 +1645,136 @@ const styles = StyleSheet.create((theme) => ({
   scrollContentEmpty: {
     flexGrow: 1,
   },
-  errorsBannerWrap: {
-    paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
-    paddingBottom: theme.spacing[2],
+  errorsButtonTrigger: {
+    position: "relative",
+    padding: theme.spacing[1.5],
+    marginRight: theme.spacing[2],
+    borderRadius: theme.borderRadius.full,
   },
-  errorsBanner: {
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.lg,
+  // Small count badge pinned to the trigger's top-right corner — a fixed
+  // size/offset overlay rather than a flex sibling, so it reads as a
+  // notification dot instead of pushing the icon around.
+  errorsBadge: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    minWidth: 14,
+    height: 14,
+    paddingHorizontal: 3,
+    borderRadius: theme.borderRadius.full,
+    backgroundColor: theme.colors.palette.red[600],
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  // Always white, not theme.colors.surface0 — the badge's red fill is a
+  // static palette colour in both themes, so the count needs a fixed
+  // contrast colour rather than one that flips with the surface token.
+  errorsBadgeText: {
+    color: "#ffffff",
+    fontSize: 9,
+    fontWeight: theme.fontWeight.medium,
+    lineHeight: 12,
+  },
+  // Checklist rows — no per-row card/border, just a hairline divider between
+  // entries (the popover surface itself is already the outer boundary).
+  errorsMenuList: {
     padding: theme.spacing[3],
-    gap: theme.spacing[1],
   },
-  errorsBannerText: {
-    color: theme.colors.palette.red[300],
+  errorsMenuDivider: {
+    height: 1,
+    backgroundColor: theme.colors.border,
+    opacity: theme.opacity[50],
+    marginVertical: theme.spacing[2],
+  },
+  // Heavier than errorsMenuDivider (full opacity, more margin) — marks the
+  // boundary between the description and the actual list of errors, so the
+  // two don't read as one continuous block.
+  errorsMenuDescriptionDivider: {
+    height: 1,
+    backgroundColor: theme.colors.border,
+    marginVertical: theme.spacing[3],
+  },
+  errorsMenuTitleRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "baseline",
+  },
+  errorsMenuTitle: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.medium,
+    lineHeight: 20,
+  },
+  // Default matches errorsMenuTitle exactly (no accent tint at rest) — only
+  // the hover state below picks up colour + underline.
+  errorsMenuLink: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.medium,
+    lineHeight: 20,
+  },
+  errorsMenuLinkHovered: {
+    color: theme.colors.accent,
+  },
+  errorsMenuDescription: {
+    color: theme.colors.foreground,
     fontSize: theme.fontSize.xs,
+    lineHeight: 18,
+    marginTop: theme.spacing[1],
+  },
+  errorsRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: theme.spacing[2],
+  },
+  // A filled dot instead of a "•" glyph so it sits reliably centered on the
+  // text's first line regardless of font metrics — nudged down by half a
+  // line to land mid-line rather than at the cap height.
+  errorsRowBullet: {
+    width: 6,
+    height: 6,
+    borderRadius: theme.borderRadius.full,
+    backgroundColor: theme.colors.foregroundMuted,
+    marginTop: 6,
+  },
+  errorsRowBody: {
+    flex: 1,
+    gap: theme.spacing[1.5],
+  },
+  errorsRowText: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.xs,
+    lineHeight: 18,
+  },
+  // Red in light mode; in dark mode red-on-dark reads as an alarm rather
+  // than a highlight, so it switches to green instead — not a "something is
+  // broken" hue. green[600] (used for "Closed" against a lighter row
+  // background) reads muddy against this popover's much darker surface, so
+  // this uses green[500], a step lighter, for the same contrast the row
+  // color gets elsewhere.
+  errorsRowEmphasis: {
+    color:
+      theme.colorScheme === "dark"
+        ? theme.colors.palette.green[500]
+        : theme.colors.palette.red[600],
+    fontWeight: theme.fontWeight.medium,
+  },
+  errorsCopyRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.spacing[2],
+    paddingVertical: theme.spacing[1.5],
+    paddingHorizontal: theme.spacing[2],
+    borderRadius: theme.borderRadius.md,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.surface3,
+    backgroundColor: theme.colors.surface2,
+  },
+  errorsCopyCommand: {
+    flex: 1,
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
+    fontFamily: theme.fontFamily.mono,
   },
 }));

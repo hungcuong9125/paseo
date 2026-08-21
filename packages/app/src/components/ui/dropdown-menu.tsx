@@ -10,6 +10,7 @@ import {
   useMenuContext,
   type MenuSurfaceProps,
   type MenuTriggerProps,
+  type MenuTriggerState,
 } from "@/components/ui/menu";
 
 /**
@@ -27,6 +28,7 @@ export { MenuLabel as DropdownMenuLabel };
 export { MenuSeparator as DropdownMenuSeparator };
 export { MenuHint as DropdownMenuHint };
 export type { MenuTriggerProps as DropdownMenuTriggerProps };
+export type { MenuTriggerState as DropdownMenuTriggerState };
 export type { ActionStatus, MenuItemProps as DropdownMenuItemProps } from "@/components/ui/menu";
 export type { MenuPageDefinition } from "@/components/ui/menu";
 export { MenuSubTrigger as DropdownMenuSubTrigger } from "@/components/ui/menu";
