@@ -520,6 +520,7 @@ export function createAitService(): AitService {
       ...(input.title ? ["--title", input.title] : []),
       ...(input.status ? ["--status", input.status] : []),
       ...priorityArg(input.priority),
+      ...(input.description !== undefined ? ["--description", input.description] : []),
     ];
     await run(args, cwd, AitIssueRefSchema);
     return getTrackerSummary(cwd, trackerId);

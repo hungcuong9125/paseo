@@ -201,6 +201,7 @@ function OpenTrackerDetailSheet({
       onDismiss={onClose}
       footer={footer}
       footerContainerStyle={styles.footerContainer}
+      desktopMaxWidth={640}
       testID="tracker-detail-sheet"
     >
       {state.status === "loading" || state.status === "idle" ? (
@@ -562,9 +563,10 @@ const styles = StyleSheet.create((theme) => ({
   },
   section: {
     gap: theme.spacing[2],
+    marginTop: theme.spacing[2],
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
-    paddingTop: theme.spacing[3],
+    paddingTop: theme.spacing[4],
   },
   sectionTitle: {
     color: theme.colors.foregroundMuted,

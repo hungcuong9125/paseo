@@ -82,6 +82,7 @@ export const ProjectTrackerUpdateRequestSchema = z.object({
   title: z.string().trim().min(1).optional(),
   status: z.enum(["open", "in_progress"]).optional(),
   priority: TrackerPrioritySchema.optional(),
+  description: z.string().trim().optional(),
 });
 
 export const ProjectTrackerCloseRequestSchema = z.object({

@@ -1,6 +1,7 @@
 import {
   CheckCircle2,
   MoreVertical,
+  Pencil,
   PlayCircle,
   RotateCcw,
   Trash2,
@@ -30,6 +31,7 @@ const ThemedCheckCircle2 = withUnistyles(CheckCircle2);
 const ThemedRotateCcw = withUnistyles(RotateCcw);
 const ThemedXCircle = withUnistyles(XCircle);
 const ThemedTrash2 = withUnistyles(Trash2);
+const ThemedPencil = withUnistyles(Pencil);
 const ThemedKebab = withUnistyles(MoreVertical);
 
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
@@ -48,6 +50,7 @@ export interface TrackerRowPending {
 
 export interface TrackerRowActions {
   onPress: () => void;
+  onEdit: () => void;
   onStart: () => void;
   onClose: () => void;
   onReopen: () => void;
@@ -113,6 +116,7 @@ export function TrackerRow({
   pending,
   isFirst,
   onPress,
+  onEdit,
   onStart,
   onClose,
   onReopen,
@@ -197,6 +201,7 @@ export function TrackerRow({
             hasChildren={hasChildren}
             deleteDisabled={deleteDisabled}
             pending={pending}
+            onEdit={onEdit}
             onStart={onStart}
             onClose={onClose}
             onReopen={onReopen}
@@ -212,6 +217,7 @@ export function TrackerRow({
 const startLeading = <ThemedPlayCircle size={MENU_ICON_SIZE} uniProps={mutedColorMapping} />;
 const closeLeading = <ThemedCheckCircle2 size={MENU_ICON_SIZE} uniProps={mutedColorMapping} />;
 const reopenLeading = <ThemedRotateCcw size={MENU_ICON_SIZE} uniProps={mutedColorMapping} />;
+const editLeading = <ThemedPencil size={MENU_ICON_SIZE} uniProps={mutedColorMapping} />;
 const cancelLeading = <ThemedXCircle size={MENU_ICON_SIZE} uniProps={destructiveColorMapping} />;
 const deleteLeading = <ThemedTrash2 size={MENU_ICON_SIZE} uniProps={destructiveColorMapping} />;
 
@@ -229,6 +235,7 @@ function TrackerKebabMenu({
   hasChildren = false,
   deleteDisabled = false,
   pending,
+  onEdit,
   onStart,
   onClose,
   onReopen,
@@ -240,6 +247,7 @@ function TrackerKebabMenu({
   | "hasChildren"
   | "deleteDisabled"
   | "pending"
+  | "onEdit"
   | "onStart"
   | "onClose"
   | "onReopen"
@@ -264,6 +272,13 @@ function TrackerKebabMenu({
         {renderKebabTriggerIcon}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" width={200}>
+        <DropdownMenuItem
+          leading={editLeading}
+          onSelect={onEdit}
+          testID={`tracker-menu-edit-${tracker.id}`}
+        >
+          Edit
+        </DropdownMenuItem>
         {tracker.status === "open" ? (
           <DropdownMenuItem
             leading={startLeading}

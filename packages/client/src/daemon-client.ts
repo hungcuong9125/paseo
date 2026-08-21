@@ -5409,6 +5409,7 @@ export class DaemonClient {
     title?: string;
     status?: "open" | "in_progress";
     priority?: TrackerPriority;
+    description?: string;
     requestId?: string;
   }): Promise<TrackerSummary> {
     const payload =
@@ -5421,6 +5422,7 @@ export class DaemonClient {
           ...(options.title !== undefined ? { title: options.title } : {}),
           ...(options.status !== undefined ? { status: options.status } : {}),
           ...(options.priority !== undefined ? { priority: options.priority } : {}),
+          ...(options.description !== undefined ? { description: options.description } : {}),
         },
       });
     if (payload.error || !payload.tracker) {

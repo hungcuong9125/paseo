@@ -86,6 +86,8 @@ export interface TrackerKanbanColumnProps {
   getProjectLabel?: (tracker: TrackerSummary) => string | null;
   isPending: (trackerId: string) => boolean;
   onTransition: (trackerId: string, transition: TrackerTransition) => void;
+  /** Opens the caller's edit sheet for a card — omit to hide the kebab menu's Edit entry. */
+  onEdit?: (trackerId: string) => void;
   /** Tapping a card body (not the move menu) — omit to render cards non-pressable. */
   onCardPress?: (trackerId: string) => void;
   style?: StyleProp<ViewStyle>;
@@ -99,6 +101,7 @@ export function TrackerKanbanColumn({
   getProjectLabel,
   isPending,
   onTransition,
+  onEdit,
   onCardPress,
   style,
 }: TrackerKanbanColumnProps): ReactElement {
@@ -161,6 +164,7 @@ export function TrackerKanbanColumn({
                 lane={transitionLane}
                 isPending={pending}
                 onTransition={onTransition}
+                onEdit={onEdit}
                 onCardPress={isNative ? onCardPress : undefined}
                 testID={`${cardTestID}-move`}
               >

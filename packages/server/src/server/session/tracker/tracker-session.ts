@@ -351,7 +351,12 @@ export class TrackerSession {
       const tracker = await this.aitService.updateTracker({
         cwd,
         trackerId: request.trackerId,
-        input: { title: request.title, status: request.status, priority: request.priority },
+        input: {
+          title: request.title,
+          status: request.status,
+          priority: request.priority,
+          description: request.description,
+        },
       });
       await this.refreshAfterMutation(cwd);
       this.host.emit({

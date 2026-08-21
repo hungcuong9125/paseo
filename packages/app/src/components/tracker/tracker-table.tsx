@@ -29,6 +29,9 @@ interface TrackerTableProps {
    * (start/close/reopen/cancel) succeeds — the caller patches its shared
    * data hook in place instead of this table re-fetching anything. */
   onTrackerPatched?: (tracker: AggregatedTracker) => void;
+  /** Called when the row kebab menu's Edit entry picks a tracker — opens the
+   * caller's edit sheet. No mutation happens until that sheet submits. */
+  onEditTracker?: (tracker: AggregatedTracker) => void;
   /** Called with the ids `ait` actually removed after a row delete succeeds. */
   onTrackersRemoved?: (ids: string[]) => void;
   /** Search mode renders one flat list with a single whole-result-set load
@@ -85,6 +88,7 @@ export function TrackerTable({
   hierarchy,
   isComplete,
   onTrackerPatched,
+  onEditTracker,
   onTrackersRemoved,
   variant = "sections",
   onLoadMoreAll,
@@ -132,6 +136,7 @@ export function TrackerTable({
               hasChildren={hierarchy.descendantStats(tracker.id).childCount > 0}
               isComplete={isComplete}
               onTrackerPatched={onTrackerPatched}
+              onEdit={onEditTracker}
               onTrackersRemoved={onTrackersRemoved}
             />
           ))}
@@ -189,6 +194,7 @@ export function TrackerTable({
                   hasChildren={hierarchy.descendantStats(tracker.id).childCount > 0}
                   isComplete={isComplete}
                   onTrackerPatched={onTrackerPatched}
+                  onEdit={onEditTracker}
                   onTrackersRemoved={onTrackersRemoved}
                 />
               ))}
@@ -210,6 +216,7 @@ function TrackerTableRow({
   hasChildren,
   isComplete,
   onTrackerPatched,
+  onEdit,
   onTrackersRemoved,
 }: {
   tracker: AggregatedTracker;
@@ -219,6 +226,7 @@ function TrackerTableRow({
   hasChildren: boolean;
   isComplete: boolean;
   onTrackerPatched?: (tracker: AggregatedTracker) => void;
+  onEdit?: (tracker: AggregatedTracker) => void;
   onTrackersRemoved?: (ids: string[]) => void;
 }): ReactElement {
   const mutations = useTrackerMutations({
@@ -246,6 +254,12 @@ function TrackerTableRow({
   );
 
   const handlePress = useCallback(() => onOpenTracker(tracker), [onOpenTracker, tracker]);
+
+  // No mutation here — Edit only opens the caller's sheet; the update fires
+  // from that sheet's own submit.
+  const handleEdit = useCallback(() => {
+    onEdit?.(tracker);
+  }, [onEdit, tracker]);
 
   const handleStart = useCallback(() => {
     void runAction("start", async () => {
@@ -319,6 +333,7 @@ function TrackerTableRow({
       pending={pending}
       deleteDisabled={!isComplete}
       onPress={handlePress}
+      onEdit={handleEdit}
       onStart={handleStart}
       onClose={handleClose}
       onReopen={handleReopen}

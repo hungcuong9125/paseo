@@ -24,6 +24,7 @@ export interface UpdateTrackerMutationInput {
   title?: string;
   status?: "open" | "in_progress";
   priority?: TrackerPriority;
+  description?: string;
 }
 
 export interface UseTrackerMutationsResult {

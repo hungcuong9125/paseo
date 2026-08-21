@@ -34,6 +34,7 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { TrackerSummary, TrackerType } from "@getpaseo/protocol/tracker/types";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { TrackerDetailSheet } from "@/components/tracker/tracker-detail-sheet";
+import { TrackerEditSheet } from "@/components/tracker/tracker-edit-sheet";
 import { TrackerFormSheet } from "@/components/tracker/tracker-form-sheet";
 import { TrackerKanbanBoard } from "@/components/tracker/tracker-kanban-board";
 import { TrackerTable, useTrackerPageStep } from "@/components/tracker/tracker-table";
@@ -50,6 +51,7 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 import { SearchField } from "@/components/ui/search-field";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { isWeb } from "@/constants/platform";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
@@ -325,9 +327,12 @@ function TrackerScreenContent(): ReactElement {
   // Shared by BOTH views: which tracker granularities are included. Defaults to
   // "task" (preserves the board's original default; the List view inherits it).
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("task");
-  const [viewMode, setViewMode] = useState<ViewMode>("list");
+  const [viewMode, setViewMode] = useState<ViewMode>("kanban");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedTracker, setSelectedTracker] = useState<AggregatedTracker | null>(null);
+  // One shared edit target for BOTH views — the List row kebab and the Kanban
+  // card kebab both set this; TrackerEditSheet renders from it.
+  const [editingTracker, setEditingTracker] = useState<AggregatedTracker | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const search = gateTrackerSearch(useDebouncedValue(searchInput, TRACKER_SEARCH_DEBOUNCE_MS));
@@ -502,6 +507,20 @@ function TrackerScreenContent(): ReactElement {
     },
     [kanbanTrackerById],
   );
+  const handleOpenEdit = useCallback(
+    (tracker: AggregatedTracker) => setEditingTracker(tracker),
+    [],
+  );
+  const handleCloseEdit = useCallback(() => setEditingTracker(null), []);
+  const handleKanbanEdit = useCallback(
+    (trackerId: string) => {
+      const aggregated = kanbanTrackerById.get(trackerId);
+      if (aggregated) {
+        setEditingTracker(aggregated);
+      }
+    },
+    [kanbanTrackerById],
+  );
   const handleTrackerCreated = useCallback(
     (tracker: TrackerSummary, project: TrackerProjectInput) => {
       projectData.patchTracker({ ...tracker, ...project });
@@ -516,6 +535,18 @@ function TrackerScreenContent(): ReactElement {
       projectData.patchTracker({ ...selectedTracker, ...summary });
     },
     [selectedTracker, projectData],
+  );
+  // Same patch mechanism as the row/detail mutation paths — merges the fresh
+  // summary into the aggregated instance already in the shared data hook.
+  const handleEditUpdated = useCallback(
+    (summary: TrackerSummary) => {
+      if (!editingTracker) {
+        return;
+      }
+      projectData.patchTracker({ ...editingTracker, ...summary });
+      setEditingTracker(null);
+    },
+    [editingTracker, projectData],
   );
 
   const headerRightContent = useMemo(
@@ -549,6 +580,7 @@ function TrackerScreenContent(): ReactElement {
         kanbanReadyIds={readyIds}
         isComplete={projectData.isComplete}
         onTrackerPatched={projectData.patchTracker}
+        onEditTracker={handleOpenEdit}
         onTrackersRemoved={projectData.removeTrackers}
         listVariant={isListSearch ? "flat" : "sections"}
         onLoadMoreAll={searchState.loadMore}
@@ -569,6 +601,7 @@ function TrackerScreenContent(): ReactElement {
         onOpenTracker={handleOpenTracker}
         onKanbanTransition={handleKanbanTransition}
         onKanbanTransitionError={handleKanbanTransitionError}
+        onKanbanEdit={handleKanbanEdit}
         onKanbanCardPress={handleKanbanCardPress}
         onCreate={handleOpenCreate}
         onOpenProject={handleOpenProject}
@@ -593,6 +626,12 @@ function TrackerScreenContent(): ReactElement {
         onClose={handleCloseDetail}
         initialSummary={selectedTracker}
         onMutated={handleDetailMutated}
+      />
+      <TrackerEditSheet
+        tracker={editingTracker}
+        visible={editingTracker !== null}
+        onClose={handleCloseEdit}
+        onUpdated={handleEditUpdated}
       />
     </View>
   );
@@ -1029,19 +1068,87 @@ function renderErrorsTrigger(state: DropdownMenuTriggerState, count: number): Re
 }
 
 function TrackerErrorsButton({ errors }: { errors: TrackerProjectError[] }): ReactElement {
+  const [open, setOpen] = useState(false);
+  const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const triggerBoxRef = useRef<View>(null);
+  const wasInsideRef = useRef(false);
+
+  const clearTimers = useCallback(() => {
+    if (openTimer.current) clearTimeout(openTimer.current);
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    openTimer.current = null;
+    closeTimer.current = null;
+  }, []);
+
+  useEffect(() => clearTimers, [clearTimers]);
+
+  const cancelHoverClose = useCallback(() => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    closeTimer.current = null;
+  }, []);
+
+  const scheduleHoverClose = useCallback(() => {
+    if (openTimer.current) clearTimeout(openTimer.current);
+    openTimer.current = null;
+    cancelHoverClose();
+    closeTimer.current = setTimeout(() => {
+      closeTimer.current = null;
+      setOpen(false);
+    }, 260);
+  }, [cancelHoverClose]);
+
+  // The trigger's own color changes when the menu opens (the bell "activates"),
+  // which on some renders swaps which DOM node sits under the cursor — plain
+  // onPointerEnter/onPointerLeave on the trigger then fire a spurious
+  // leave+enter pair with the pointer never having moved, flapping the menu
+  // open/closed in a loop. Tracking real pointer coordinates against the
+  // trigger's own rect side-steps that: it only cares where the cursor is,
+  // never which element the browser currently thinks is topmost.
+  useEffect(() => {
+    if (!isWeb) return;
+    function handlePointerMove(event: PointerEvent): void {
+      const node = triggerBoxRef.current as unknown as Element | null;
+      const rect = node?.getBoundingClientRect?.();
+      if (!rect) return;
+      const inside =
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom;
+      if (inside === wasInsideRef.current) return;
+      wasInsideRef.current = inside;
+      if (inside) {
+        clearTimers();
+        setOpen(true);
+      } else {
+        scheduleHoverClose();
+      }
+    }
+    document.addEventListener("pointermove", handlePointerMove);
+    return () => document.removeEventListener("pointermove", handlePointerMove);
+  }, [clearTimers, scheduleHoverClose]);
+
   const renderTrigger = useCallback(
     (state: DropdownMenuTriggerState) => renderErrorsTrigger(state, errors.length),
     [errors.length],
   );
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        style={styles.errorsButtonTrigger}
-        testID="trackers-project-errors-trigger"
+    <DropdownMenu open={open} onOpenChange={setOpen}>
+      <View ref={triggerBoxRef}>
+        <DropdownMenuTrigger
+          style={styles.errorsButtonTrigger}
+          testID="trackers-project-errors-trigger"
+        >
+          {renderTrigger}
+        </DropdownMenuTrigger>
+      </View>
+      <DropdownMenuContent
+        align="end"
+        width={360}
+        onPointerEnter={cancelHoverClose}
+        onPointerLeave={scheduleHoverClose}
       >
-        {renderTrigger}
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" width={360}>
         <View style={styles.errorsMenuList} testID="trackers-project-errors">
           <View style={styles.errorsMenuTitleRow}>
             <Text style={styles.errorsMenuTitle}>{"Track your projects with "}</Text>
@@ -1073,6 +1180,7 @@ function TrackerScreenBody({
   kanbanReadyIds,
   isComplete,
   onTrackerPatched,
+  onEditTracker,
   onTrackersRemoved,
   listVariant,
   onLoadMoreAll,
@@ -1093,6 +1201,7 @@ function TrackerScreenBody({
   onOpenTracker,
   onKanbanTransition,
   onKanbanTransitionError,
+  onKanbanEdit,
   onKanbanCardPress,
   onCreate,
   onOpenProject,
@@ -1111,6 +1220,7 @@ function TrackerScreenBody({
    * TrackerTable (gates the delete-confirmation path). */
   isComplete: boolean;
   onTrackerPatched: (tracker: AggregatedTracker) => void;
+  onEditTracker: (tracker: AggregatedTracker) => void;
   onTrackersRemoved: (ids: string[]) => void;
   listVariant: "sections" | "flat";
   onLoadMoreAll: () => void;
@@ -1131,6 +1241,7 @@ function TrackerScreenBody({
   onOpenTracker: (tracker: AggregatedTracker) => void;
   onKanbanTransition: (trackerId: string, transition: TrackerTransition) => Promise<void>;
   onKanbanTransitionError: (trackerId: string, message: string) => void;
+  onKanbanEdit: (trackerId: string) => void;
   onKanbanCardPress: (trackerId: string) => void;
   onCreate: () => void;
   onOpenProject: () => void;
@@ -1275,6 +1386,7 @@ function TrackerScreenBody({
               isComplete={isComplete}
               onTransition={onKanbanTransition}
               onTransitionError={onKanbanTransitionError}
+              onEdit={onKanbanEdit}
               getProjectLabel={getKanbanProjectLabel}
               onCardPress={onKanbanCardPress}
             />
@@ -1304,6 +1416,7 @@ function TrackerScreenBody({
             hierarchy={trackerHierarchy}
             isComplete={isComplete}
             onTrackerPatched={onTrackerPatched}
+            onEditTracker={onEditTracker}
             onTrackersRemoved={onTrackersRemoved}
             variant={listVariant}
             onLoadMoreAll={onLoadMoreAll}

@@ -214,6 +214,13 @@ vi.mock("@/components/tracker/tracker-form-sheet", () => ({
   },
 }));
 
+// Same reason as the form/detail sheet mocks above: the real TrackerEditSheet
+// pulls AdaptiveModalSheet → @gorhom/bottom-sheet/reanimated, which cannot load
+// raw under this node-environment suite.
+vi.mock("@/components/tracker/tracker-edit-sheet", () => ({
+  TrackerEditSheet: () => null,
+}));
+
 vi.mock("@/components/tracker/tracker-table", () => ({
   TrackerTable: (props: {
     trackers: readonly unknown[];
