@@ -66,7 +66,12 @@ vi.mock("@/tracker/use-tracker-mutations", () => ({
     closeTracker: vi.fn(),
     reopenTracker: vi.fn(),
     cancelTracker: vi.fn(),
+    deleteTracker: vi.fn(),
   }),
+}));
+
+vi.mock("@/utils/confirm-dialog", () => ({
+  confirmDialog: vi.fn().mockResolvedValue(false),
 }));
 
 // Render the real row id so we can assert which trackers land in which section.
@@ -76,6 +81,7 @@ vi.mock("@/components/tracker/tracker-row", () => ({
 }));
 
 import { TrackerTable } from "./tracker-table";
+import { buildTrackerHierarchy } from "@/tracker/tracker-hierarchy";
 
 function tracker(overrides: Partial<AggregatedTracker> = {}): AggregatedTracker {
   return {
@@ -103,6 +109,7 @@ function renderTable(trackers: AggregatedTracker[]): { container: HTMLElement; r
         trackers,
         showProjectLabel: false,
         onOpenTracker: vi.fn(),
+        hierarchy: buildTrackerHierarchy(trackers),
       }),
     );
   });

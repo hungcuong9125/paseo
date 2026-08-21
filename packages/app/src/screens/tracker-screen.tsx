@@ -65,6 +65,7 @@ import {
 } from "@/tracker/aggregated-trackers";
 import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
 import { useAggregatedTrackers } from "@/tracker/use-aggregated-trackers";
+import { buildTrackerHierarchy, type TrackerHierarchy } from "@/tracker/tracker-hierarchy";
 import {
   getTrackerStatCounts,
   matchesListStatFilter,
@@ -233,6 +234,13 @@ function TrackerScreenContent(): ReactElement {
         : allTrackers,
     [allTrackers, selectedProjectId],
   );
+  // Built from the project-filtered but otherwise unfiltered set — the List
+  // row's delete action needs to know the *real* child count (any type,
+  // any status), not just what the current type/status toolbar filter shows.
+  const trackerHierarchy = useMemo(
+    () => buildTrackerHierarchy(projectFilteredTrackers),
+    [projectFilteredTrackers],
+  );
   // List-only: Kanban receives the project-filtered but not status-filtered set
   // (kanbanTrackers below) — see "Toolbar contract" in the redesign doc. The
   // shared typeFilter composes with listStatFilter rather than replacing it:
@@ -392,6 +400,7 @@ function TrackerScreenContent(): ReactElement {
       <TrackerScreenBody
         bodyState={bodyState}
         trackers={orderedTrackers}
+        trackerHierarchy={trackerHierarchy}
         statsTrackers={kanbanTrackers}
         kanbanTrackers={kanbanTrackers}
         kanbanReadyIds={readyIds}
@@ -428,6 +437,7 @@ function TrackerScreenContent(): ReactElement {
         visible={selectedTracker !== null}
         trackerId={selectedTracker?.id ?? null}
         onClose={handleCloseDetail}
+        initialSummary={selectedTracker}
       />
     </View>
   );
@@ -853,7 +863,7 @@ function TrackerErrorsButton({ errors }: { errors: TrackerProjectError[] }): Rea
             <TrackerAitRepoLink />
           </View>
           <Text style={styles.errorsMenuDescription}>
-            These projects don&apos;t have one set up yet — run{" "}
+            These projects don&apos;t have one set up yet. Run{" "}
             <Text style={styles.errorsRowEmphasis}>ait init</Text> in each to enable it.
           </Text>
           <View style={styles.errorsMenuDescriptionDivider} />
@@ -872,6 +882,7 @@ function TrackerErrorsButton({ errors }: { errors: TrackerProjectError[] }): Rea
 function TrackerScreenBody({
   bodyState,
   trackers,
+  trackerHierarchy,
   statsTrackers,
   kanbanTrackers,
   kanbanReadyIds,
@@ -896,6 +907,7 @@ function TrackerScreenBody({
 }: {
   bodyState: TrackerScreenBodyState;
   trackers: AggregatedTracker[];
+  trackerHierarchy: TrackerHierarchy;
   statsTrackers: AggregatedTracker[];
   kanbanTrackers: AggregatedTracker[];
   kanbanReadyIds: ReadonlySet<string>;
@@ -1057,6 +1069,7 @@ function TrackerScreenBody({
             trackers={trackers}
             showProjectLabel={showProjectLabel}
             onOpenTracker={onOpenTracker}
+            hierarchy={trackerHierarchy}
           />
         </ScrollView>
       );

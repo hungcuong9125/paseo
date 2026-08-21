@@ -4,14 +4,21 @@ import { StyleSheet } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import type { TrackerStatus } from "@getpaseo/protocol/tracker/types";
 import { TrackerRow, type TrackerRowPending } from "@/components/tracker/tracker-row";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import type { AggregatedTracker } from "@/tracker/aggregated-trackers";
+import type { TrackerHierarchy } from "@/tracker/tracker-hierarchy";
 import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
+import { confirmDialog } from "@/utils/confirm-dialog";
 import { settingsStyles } from "@/styles/settings";
 
 interface TrackerTableProps {
   trackers: AggregatedTracker[];
   showProjectLabel: boolean;
   onOpenTracker: (tracker: AggregatedTracker) => void;
+  /** Built from the full (unfiltered) project set, not `trackers` above — a
+   * type/status filter must never hide a real child and make a parent look
+   * deletable when `ait delete` would actually refuse it. */
+  hierarchy: TrackerHierarchy;
 }
 
 // The four real statuses, in the order they read top-to-bottom in the List view.
@@ -28,19 +35,18 @@ const LIST_SECTIONS: ReadonlyArray<{ status: TrackerStatus; labelKey: string }> 
 ];
 
 // Mirrors the Kanban board's Done-lane reveal: a long status section renders at
-// most REVEAL_STEP rows with a "Show N more" control that reveals more *within
+// most one reveal step of rows with a "Show N more" control that reveals more *within
 // that section only*. One reveal count per section (not shared), so paging one
 // section never disturbs the others. Grouping happens over the full set passed
 // in (no flat pagination), so the per-section membership/count is always the
-// true total for that status.
-const REVEAL_STEP = 50;
+// true total for that status. Compact/mobile gets a smaller step — 50 rows at
+// once is a lot of scrolling on a phone.
+const REVEAL_STEP_DESKTOP = 50;
+const REVEAL_STEP_COMPACT = 20;
 
-const INITIAL_REVEAL: Readonly<Record<TrackerStatus, number>> = {
-  open: REVEAL_STEP,
-  in_progress: REVEAL_STEP,
-  closed: REVEAL_STEP,
-  cancelled: REVEAL_STEP,
-};
+function buildInitialReveal(step: number): Record<TrackerStatus, number> {
+  return { open: step, in_progress: step, closed: step, cancelled: step };
+}
 
 /**
  * The trackers list, grouped into one section per real `TrackerStatus` (Open,
@@ -54,11 +60,14 @@ export function TrackerTable({
   trackers,
   showProjectLabel,
   onOpenTracker,
+  hierarchy,
 }: TrackerTableProps): ReactElement {
   const { t } = useTranslation();
-  const [revealCounts, setRevealCounts] = useState<Record<TrackerStatus, number>>(() => ({
-    ...INITIAL_REVEAL,
-  }));
+  const isCompact = useIsCompactFormFactor();
+  const revealStep = isCompact ? REVEAL_STEP_COMPACT : REVEAL_STEP_DESKTOP;
+  const [revealCounts, setRevealCounts] = useState<Record<TrackerStatus, number>>(() =>
+    buildInitialReveal(revealStep),
+  );
 
   const sortedTrackers = useMemo(
     () =>
@@ -85,12 +94,15 @@ export function TrackerTable({
     return buckets;
   }, [sortedTrackers]);
 
-  const handleShowMore = useCallback((status: TrackerStatus) => {
-    setRevealCounts((current) => ({
-      ...current,
-      [status]: current[status] + REVEAL_STEP,
-    }));
-  }, []);
+  const handleShowMore = useCallback(
+    (status: TrackerStatus) => {
+      setRevealCounts((current) => ({
+        ...current,
+        [status]: current[status] + revealStep,
+      }));
+    },
+    [revealStep],
+  );
 
   // Pre-bind one stable handler per section so the Pressable's onPress prop is
   // not a fresh closure on every render (mirrors the Kanban column's pattern).
@@ -132,6 +144,7 @@ export function TrackerTable({
                   projectLabel={showProjectLabel ? tracker.projectName : null}
                   isFirst={index === 0}
                   onOpenTracker={onOpenTracker}
+                  hasChildren={hierarchy.descendantStats(tracker.id).childCount > 0}
                 />
               ))}
             </View>
@@ -141,12 +154,12 @@ export function TrackerTable({
                 onPress={sectionShowMore[section.status]}
                 accessibilityRole="button"
                 accessibilityLabel={t("tracker.list.showMore", {
-                  count: Math.min(REVEAL_STEP, remaining),
+                  count: Math.min(revealStep, remaining),
                 })}
                 testID={`tracker-table-section-${section.status}-show-more`}
               >
                 <Text style={styles.showMoreText}>
-                  {t("tracker.list.showMore", { count: Math.min(REVEAL_STEP, remaining) })}
+                  {t("tracker.list.showMore", { count: Math.min(revealStep, remaining) })}
                 </Text>
               </Pressable>
             ) : null}
@@ -164,11 +177,13 @@ function TrackerTableRow({
   projectLabel,
   isFirst,
   onOpenTracker,
+  hasChildren,
 }: {
   tracker: AggregatedTracker;
   projectLabel: string | null;
   isFirst: boolean;
   onOpenTracker: (tracker: AggregatedTracker) => void;
+  hasChildren: boolean;
 }): ReactElement {
   const mutations = useTrackerMutations({
     serverId: tracker.serverId,
@@ -214,10 +229,33 @@ function TrackerTableRow({
     void runAction("cancel", () => mutations.cancelTracker({ trackerId: tracker.id }));
   }, [runAction, mutations, tracker.id]);
 
+  // Permanent and unrecorded — confirm before sending it, same as file/folder
+  // deletion elsewhere in the app. `cascade` mirrors `hasChildren`: `ait`
+  // itself refuses a non-cascaded delete of a tracker with descendants.
+  const handleDelete = useCallback(() => {
+    void (async () => {
+      const confirmed = await confirmDialog({
+        title: hasChildren ? "Delete tree?" : "Remove item?",
+        message: hasChildren
+          ? `"${tracker.title}" and all of its children will be permanently deleted. This can't be undone.`
+          : `"${tracker.title}" will be permanently deleted. This can't be undone.`,
+        confirmLabel: hasChildren ? "Delete tree" : "Remove",
+        destructive: true,
+      });
+      if (!confirmed) {
+        return;
+      }
+      await runAction("delete", () =>
+        mutations.deleteTracker({ trackerId: tracker.id, cascade: hasChildren }),
+      );
+    })();
+  }, [runAction, mutations, tracker.id, tracker.title, hasChildren]);
+
   return (
     <TrackerRow
       tracker={tracker}
       projectLabel={projectLabel}
+      hasChildren={hasChildren}
       isFirst={isFirst}
       pending={pending}
       onPress={handlePress}
@@ -225,6 +263,7 @@ function TrackerTableRow({
       onClose={handleClose}
       onReopen={handleReopen}
       onCancel={handleCancel}
+      onDelete={handleDelete}
     />
   );
 }

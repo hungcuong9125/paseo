@@ -2308,6 +2308,8 @@ export class Session {
         return this.trackerSession.handleProjectTrackerReopenRequest(msg);
       case "project.tracker.cancel.request":
         return this.trackerSession.handleProjectTrackerCancelRequest(msg);
+      case "project.tracker.delete.request":
+        return this.trackerSession.handleProjectTrackerDeleteRequest(msg);
       case "project.tracker.note_add.request":
         return this.trackerSession.handleProjectTrackerNoteAddRequest(msg);
       case "project.tracker.init.request":

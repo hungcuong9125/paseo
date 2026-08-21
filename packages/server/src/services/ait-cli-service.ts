@@ -77,6 +77,12 @@ export interface CancelTrackerOptions {
   reason?: string;
 }
 
+export interface DeleteTrackerOptions {
+  cwd: string;
+  trackerId: string;
+  cascade?: boolean;
+}
+
 export interface AddTrackerNoteOptions {
   cwd: string;
   trackerId: string;
@@ -100,6 +106,10 @@ export interface AitService {
   closeTracker(options: CloseTrackerOptions): Promise<TrackerSummary>;
   reopenTracker(options: ReopenTrackerOptions): Promise<TrackerSummary>;
   cancelTracker(options: CancelTrackerOptions): Promise<TrackerSummary>;
+  // Permanent and unrecorded — returns the ids `ait` actually removed (root
+  // plus every cascaded descendant), not a TrackerSummary; there's nothing
+  // left to show once the delete succeeds.
+  deleteTracker(options: DeleteTrackerOptions): Promise<string[]>;
   addNote(options: AddTrackerNoteOptions): Promise<TrackerNote>;
   initTracker(options: InitTrackerOptions): Promise<{ initialised: boolean }>;
   listReadyIds(options: ListReadyIdsOptions): Promise<string[]>;
@@ -171,6 +181,10 @@ const AitInitResponseSchema = z.object({
 
 const AitReadyResponseSchema = z.object({
   issues: z.array(AitIssueRefSchema),
+});
+
+const AitDeleteResponseSchema = z.object({
+  deleted: z.array(AitIssueRefSchema),
 });
 
 function toTrackerSummary(raw: z.infer<typeof AitIssueLongSchema>): TrackerSummary {
@@ -392,6 +406,16 @@ export function createAitService(): AitService {
     return getTrackerSummary(cwd, trackerId);
   }
 
+  async function deleteTracker({
+    cwd,
+    trackerId,
+    cascade,
+  }: DeleteTrackerOptions): Promise<string[]> {
+    const args = ["delete", trackerId, "--force", ...(cascade ? ["--cascade"] : [])];
+    const raw = await run(args, cwd, AitDeleteResponseSchema);
+    return raw.deleted.map((issue) => issue.id);
+  }
+
   async function addNote({ cwd, trackerId, body }: AddTrackerNoteOptions): Promise<TrackerNote> {
     const added = await run(["note", "add", trackerId, body], cwd, AitNoteAddResponseSchema);
     const list = await run(["note", "list", trackerId], cwd, AitNoteListResponseSchema);
@@ -424,6 +448,7 @@ export function createAitService(): AitService {
     closeTracker,
     reopenTracker,
     cancelTracker,
+    deleteTracker,
     addNote,
     initTracker,
     listReadyIds,

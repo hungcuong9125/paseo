@@ -5441,6 +5441,30 @@ export class DaemonClient {
     return payload.tracker;
   }
 
+  // Permanent — the tracker no longer exists on success, so there's no
+  // updated record to return, only the ids `ait` actually removed.
+  async trackerDelete(options: {
+    projectId: string;
+    trackerId: string;
+    cascade?: boolean;
+    requestId?: string;
+  }): Promise<string[]> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.delete.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.tracker.delete.request",
+          projectId: options.projectId,
+          trackerId: options.trackerId,
+          ...(options.cascade ? { cascade: options.cascade } : {}),
+        },
+      });
+    if (payload.error || !payload.deletedIds) {
+      throw new TrackerRpcError(payload.errorCode ?? "unknown", payload.error ?? "Delete failed");
+    }
+    return payload.deletedIds;
+  }
+
   async trackerAddNote(options: {
     projectId: string;
     trackerId: string;

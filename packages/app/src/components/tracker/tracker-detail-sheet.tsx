@@ -18,6 +18,11 @@ export interface TrackerDetailSheetProps {
   visible: boolean;
   trackerId: string | null;
   onClose: () => void;
+  /** The summary already on hand from the row/card that opened this sheet —
+   * lets the sheet render title/status/priority immediately instead of a
+   * spinner, while the full record (children/blockedBy/notes/description)
+   * loads in behind it. Omit when there's nothing to seed with. */
+  initialSummary?: TrackerSummary | null;
 }
 
 type DetailState =
@@ -26,12 +31,35 @@ type DetailState =
   | { status: "error"; error: string }
   | { status: "loaded"; tracker: TrackerDetail };
 
+// The fields `ait show` adds beyond a summary row are unknown until the real
+// fetch resolves — description/children/blockedBy/notes stay empty in the
+// placeholder and fill in once `load()`'s background fetch completes.
+function placeholderDetailFromSummary(summary: TrackerSummary): TrackerDetail {
+  return {
+    id: summary.id,
+    title: summary.title,
+    type: summary.type,
+    status: summary.status,
+    priority: summary.priority,
+    parentId: summary.parentId,
+    description: null,
+    claimedBy: summary.claimedBy ?? null,
+    createdAt: summary.createdAt ?? "",
+    updatedAt: summary.updatedAt ?? "",
+    closedAt: summary.closedAt ?? null,
+    children: [],
+    blockedBy: [],
+    notes: [],
+  };
+}
+
 export function TrackerDetailSheet({
   serverId,
   projectId,
   visible,
   trackerId,
   onClose,
+  initialSummary,
 }: TrackerDetailSheetProps): ReactElement | null {
   if (!visible || !trackerId) {
     return null;
@@ -43,6 +71,7 @@ export function TrackerDetailSheet({
       projectId={projectId}
       trackerId={trackerId}
       onClose={onClose}
+      initialSummary={initialSummary ?? null}
     />
   );
 }
@@ -52,14 +81,20 @@ function OpenTrackerDetailSheet({
   projectId,
   trackerId,
   onClose,
+  initialSummary,
 }: {
   serverId: string;
   projectId: string;
   trackerId: string;
   onClose: () => void;
+  initialSummary: TrackerSummary | null;
 }): ReactElement {
   const client = useHostRuntimeClient(serverId);
-  const [state, setState] = useState<DetailState>({ status: "idle" });
+  const [state, setState] = useState<DetailState>(() =>
+    initialSummary
+      ? { status: "loaded", tracker: placeholderDetailFromSummary(initialSummary) }
+      : { status: "idle" },
+  );
   const [noteBody, setNoteBody] = useState("");
   // The root tracker is history[0]; opening a child pushes its id, Back pops.
   // The sheet always shows history[history.length - 1].
@@ -72,7 +107,11 @@ function OpenTrackerDetailSheet({
       setState({ status: "error", error: "Host disconnected" });
       return;
     }
-    setState({ status: "loading" });
+    // Only drop to the spinner state when there's nothing on screen yet —
+    // once something is loaded (the seeded placeholder, a previous fetch, or
+    // a sibling from history), a refresh happens behind it instead of
+    // flashing a blank spinner over content the user can already see.
+    setState((current) => (current.status === "loaded" ? current : { status: "loading" }));
     try {
       const tracker = await client.trackerShow({ projectId, trackerId: activeTrackerId });
       setState({ status: "loaded", tracker });

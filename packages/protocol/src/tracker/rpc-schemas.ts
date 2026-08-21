@@ -86,6 +86,19 @@ export const ProjectTrackerCancelRequestSchema = z.object({
   reason: z.string().optional(),
 });
 
+// Permanent and unrecorded (mirrors `ait delete <id> --force [--cascade]`) —
+// unlike cancel/close, this removes the row entirely rather than changing its
+// status. `cascade` must be true when the tracker has children; `ait` itself
+// refuses otherwise, so the client is expected to already know via
+// tracker-hierarchy.ts's descendantStats before sending this.
+export const ProjectTrackerDeleteRequestSchema = z.object({
+  type: z.literal("project.tracker.delete.request"),
+  requestId: z.string(),
+  projectId: z.string(),
+  trackerId: z.string(),
+  cascade: z.boolean().optional(),
+});
+
 export const ProjectTrackerNoteAddRequestSchema = z.object({
   type: z.literal("project.tracker.note_add.request"),
   requestId: z.string(),
@@ -197,6 +210,19 @@ export const ProjectTrackerReopenResponseSchema = z.object({
 export const ProjectTrackerCancelResponseSchema = z.object({
   type: z.literal("project.tracker.cancel.response"),
   payload: ProjectTrackerMutationPayloadSchema,
+});
+
+export const ProjectTrackerDeleteResponseSchema = z.object({
+  type: z.literal("project.tracker.delete.response"),
+  payload: z.object({
+    requestId: z.string(),
+    projectId: z.string(),
+    // The root id plus every cascaded descendant id, in the order `ait`
+    // deleted them — null on failure (nothing was removed).
+    deletedIds: z.array(z.string()).nullable(),
+    error: z.string().nullable(),
+    errorCode: TrackerErrorCodeSchema.nullable(),
+  }),
 });
 
 export const ProjectTrackerNoteAddResponseSchema = z.object({

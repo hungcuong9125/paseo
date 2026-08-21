@@ -32,6 +32,7 @@ export interface UseTrackerMutationsResult {
   closeTracker: (input: { trackerId: string; note?: string }) => Promise<TrackerSummary>;
   reopenTracker: (trackerId: string) => Promise<TrackerSummary>;
   cancelTracker: (input: { trackerId: string; reason?: string }) => Promise<TrackerSummary>;
+  deleteTracker: (input: { trackerId: string; cascade?: boolean }) => Promise<string[]>;
   addNote: (input: { trackerId: string; body: string }) => Promise<TrackerNote>;
   initTracker: (prefix?: string) => Promise<{ initialised: boolean }>;
   isCreating: boolean;
@@ -39,6 +40,7 @@ export interface UseTrackerMutationsResult {
   isClosing: boolean;
   isReopening: boolean;
   isCancelling: boolean;
+  isDeleting: boolean;
   isAddingNote: boolean;
   isInitialising: boolean;
 }
@@ -103,6 +105,12 @@ export function useTrackerMutations({
     onSettled: invalidate,
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (input: { trackerId: string; cascade?: boolean }): Promise<string[]> =>
+      requireClient(serverId, unavailableMessage).trackerDelete({ projectId, ...input }),
+    onSettled: invalidate,
+  });
+
   const addNoteMutation = useMutation({
     mutationFn: (input: { trackerId: string; body: string }): Promise<TrackerNote> =>
       requireClient(serverId, unavailableMessage).trackerAddNote({ projectId, ...input }),
@@ -120,6 +128,7 @@ export function useTrackerMutations({
     closeTracker: (input) => closeMutation.mutateAsync(input),
     reopenTracker: (trackerId) => reopenMutation.mutateAsync(trackerId),
     cancelTracker: (input) => cancelMutation.mutateAsync(input),
+    deleteTracker: (input) => deleteMutation.mutateAsync(input),
     addNote: (input) => addNoteMutation.mutateAsync(input),
     initTracker: (prefix) => initMutation.mutateAsync(prefix),
     isCreating: createMutation.isPending,
@@ -127,6 +136,7 @@ export function useTrackerMutations({
     isClosing: closeMutation.isPending,
     isReopening: reopenMutation.isPending,
     isCancelling: cancelMutation.isPending,
+    isDeleting: deleteMutation.isPending,
     isAddingNote: addNoteMutation.isPending,
     isInitialising: initMutation.isPending,
   };

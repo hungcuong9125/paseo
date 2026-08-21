@@ -203,4 +203,55 @@ describe("createAitService", () => {
     expect(ready).not.toContain(blocked.id);
     expect(ready).not.toContain(willClose.id);
   });
+
+  it("deletes a childless tracker permanently", async () => {
+    await service.initTracker({ cwd });
+    const task = await service.createTracker({ cwd, input: { title: "Throwaway" } });
+
+    const deletedIds = await service.deleteTracker({ cwd, trackerId: task.id });
+    expect(deletedIds).toEqual([task.id]);
+
+    await expect(service.showTracker({ cwd, trackerId: task.id })).rejects.toMatchObject({
+      code: "not_found",
+    });
+  });
+
+  it("refuses to delete a tracker with children unless cascade is set", async () => {
+    await service.initTracker({ cwd });
+    const epic = await service.createTracker({
+      cwd,
+      input: { title: "Epic", trackerType: "epic" },
+    });
+    await service.createTracker({ cwd, input: { title: "Child", parentId: epic.id } });
+
+    await expect(service.deleteTracker({ cwd, trackerId: epic.id })).rejects.toMatchObject({
+      code: "validation",
+    });
+
+    // The epic (and its child) must still exist after the refused delete.
+    const shown = await service.showTracker({ cwd, trackerId: epic.id });
+    expect(shown.children).toHaveLength(1);
+  });
+
+  it("cascade-deletes a tracker and every descendant", async () => {
+    await service.initTracker({ cwd });
+    const epic = await service.createTracker({
+      cwd,
+      input: { title: "Epic", trackerType: "epic" },
+    });
+    const child = await service.createTracker({
+      cwd,
+      input: { title: "Child", parentId: epic.id },
+    });
+
+    const deletedIds = await service.deleteTracker({ cwd, trackerId: epic.id, cascade: true });
+    expect(deletedIds).toEqual(expect.arrayContaining([epic.id, child.id]));
+
+    await expect(service.showTracker({ cwd, trackerId: epic.id })).rejects.toMatchObject({
+      code: "not_found",
+    });
+    await expect(service.showTracker({ cwd, trackerId: child.id })).rejects.toMatchObject({
+      code: "not_found",
+    });
+  });
 });

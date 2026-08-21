@@ -388,6 +388,41 @@ export class TrackerSession {
     }
   }
 
+  async handleProjectTrackerDeleteRequest(
+    request: Extract<SessionInboundMessage, { type: "project.tracker.delete.request" }>,
+  ): Promise<void> {
+    try {
+      const cwd = await this.resolveCwd(request.projectId);
+      const deletedIds = await this.aitService.deleteTracker({
+        cwd,
+        trackerId: request.trackerId,
+        cascade: request.cascade,
+      });
+      await this.refreshAfterMutation(cwd);
+      this.host.emit({
+        type: "project.tracker.delete.response",
+        payload: {
+          requestId: request.requestId,
+          projectId: request.projectId,
+          deletedIds,
+          error: null,
+          errorCode: null,
+        },
+      });
+    } catch (error) {
+      this.logFailure(request.type, error);
+      this.host.emit({
+        type: "project.tracker.delete.response",
+        payload: {
+          requestId: request.requestId,
+          projectId: request.projectId,
+          deletedIds: null,
+          ...this.toErrorTuple(error),
+        },
+      });
+    }
+  }
+
   async handleProjectTrackerNoteAddRequest(
     request: Extract<SessionInboundMessage, { type: "project.tracker.note_add.request" }>,
   ): Promise<void> {
