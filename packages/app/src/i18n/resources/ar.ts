@@ -1014,6 +1014,7 @@ export const ar: TranslationResources = {
     sections: {
       sessions: "السجل",
       schedules: "الجداول",
+      tracker: "المتابعة",
     },
     worktreeSetup: {
       title: "إعداد البرامج النصية لشجرة العمل",
@@ -2461,6 +2462,59 @@ export const ar: TranslationResources = {
         saving: "جارٍ الحفظ...",
         cancel: "يلغي",
       },
+    },
+  },
+  tracker: {
+    card: {
+      childProgress: "{{done}}/{{count}}",
+      claimedBy: "تمت المطالبة به بواسطة {{name}}",
+      created: "تم الإنشاء {{time}}",
+      closed: "أُغلق {{time}}",
+    },
+    kanban: {
+      lane: {
+        ready: "التراكم",
+        open: "مهام",
+        inProgress: "قيد التنفيذ",
+        done: "منجز",
+        cancelled: "ملغى",
+      },
+      empty: {
+        ready: "لا توجد عناصر في التراكم",
+        open: "لا توجد مهام",
+        inProgress: "لا توجد عناصر قيد التنفيذ",
+        done: "لا توجد عناصر منجزة",
+        cancelled: "لا توجد عناصر ملغاة",
+      },
+      showMore: "عرض {{count}} المزيد",
+      moveMenu: {
+        trigger: "نقل {{title}}",
+        title: "نقل إلى…",
+      },
+      moveTo: {
+        open: "نقل إلى مفتوح",
+        inProgress: "نقل إلى قيد التنفيذ",
+        done: "نقل إلى منجز",
+        cancelled: "نقل إلى ملغى",
+      },
+      type: {
+        tasks: "المهام",
+        epics: "الملاحم",
+        initiatives: "المبادرات",
+        all: "الكل",
+      },
+      error: {
+        transitionFailed: "تعذر نقل {{title}}. حاول مرة أخرى.",
+      },
+    },
+    list: {
+      section: {
+        open: "مهام",
+        inProgress: "قيد التنفيذ",
+        done: "مكتمل",
+        cancelled: "ملغى",
+      },
+      showMore: "عرض {{count}} المزيد",
     },
   },
 };

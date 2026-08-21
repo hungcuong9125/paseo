@@ -159,6 +159,9 @@ import {
   createGitMetadataGenerator,
 } from "./session/checkout/git-metadata-generator.js";
 import { ScheduleSession } from "./session/schedule/schedule-session.js";
+import { TrackerSession } from "./session/tracker/tracker-session.js";
+import type { AitService } from "../services/ait-cli-service.js";
+import type { TrackerSyncManager } from "./tracker-sync-manager.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { WorkspaceFilesSession } from "./session/files/workspace-files-session.js";
 import { AgentConfigSession } from "./session/agent-config/agent-config-session.js";
@@ -448,6 +451,8 @@ export interface SessionOptions {
   workspaceRegistry: WorkspaceRegistry;
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
+  aitService: AitService;
+  trackerSyncManager?: TrackerSyncManager;
   checkoutDiffManager: CheckoutDiffManager;
   github?: ForgeService;
   createAgentMcpTransport?: AgentMcpTransportFactory;
@@ -668,6 +673,7 @@ export class Session {
   private readonly voiceSession: VoiceSession;
   private readonly checkoutSession: CheckoutSession;
   private readonly scheduleSession: ScheduleSession;
+  private readonly trackerSession: TrackerSession;
   private readonly providerCatalogSession: ProviderCatalogSession;
   private readonly workspaceFilesSession: WorkspaceFilesSession;
   private readonly agentConfigSession: AgentConfigSession;
@@ -701,6 +707,8 @@ export class Session {
       workspaceRegistry,
       filesystem,
       scheduleService,
+      aitService,
+      trackerSyncManager,
       checkoutDiffManager,
       github,
       renameCurrentBranch,
@@ -830,6 +838,13 @@ export class Session {
       host: { emit: (msg) => this.emit(msg) },
       scheduleService,
       logger: this.sessionLogger,
+    });
+    this.trackerSession = new TrackerSession({
+      host: { emit: (msg) => this.emit(msg) },
+      aitService,
+      projectRegistry: this.projectRegistry,
+      logger: this.sessionLogger,
+      trackerSyncManager,
     });
     this.providerCatalogSession = new ProviderCatalogSession({
       host: {
@@ -1833,6 +1848,7 @@ export class Session {
       this.dispatchProviderMessage(msg) ??
       this.dispatchTerminalMessage(msg) ??
       this.dispatchScheduleMessage(msg) ??
+      this.dispatchTrackerMessage(msg) ??
       this.dispatchMiscMessage(msg);
     if (promise) await promise;
   }
@@ -2267,6 +2283,37 @@ export class Session {
         return this.scheduleSession.handleScheduleRunOnceRequest(msg);
       case "schedule/update":
         return this.scheduleSession.handleScheduleUpdateRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private dispatchTrackerMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "project.tracker.list.request":
+        return this.trackerSession.handleProjectTrackerListRequest(msg);
+      case "project.tracker.subscribe.request":
+        return this.trackerSession.handleProjectTrackerSubscribeRequest(msg);
+      case "project.tracker.unsubscribe.request":
+        return this.trackerSession.handleProjectTrackerUnsubscribeRequest(msg);
+      case "project.tracker.show.request":
+        return this.trackerSession.handleProjectTrackerShowRequest(msg);
+      case "project.tracker.create.request":
+        return this.trackerSession.handleProjectTrackerCreateRequest(msg);
+      case "project.tracker.update.request":
+        return this.trackerSession.handleProjectTrackerUpdateRequest(msg);
+      case "project.tracker.close.request":
+        return this.trackerSession.handleProjectTrackerCloseRequest(msg);
+      case "project.tracker.reopen.request":
+        return this.trackerSession.handleProjectTrackerReopenRequest(msg);
+      case "project.tracker.cancel.request":
+        return this.trackerSession.handleProjectTrackerCancelRequest(msg);
+      case "project.tracker.note_add.request":
+        return this.trackerSession.handleProjectTrackerNoteAddRequest(msg);
+      case "project.tracker.init.request":
+        return this.trackerSession.handleProjectTrackerInitRequest(msg);
+      case "project.tracker.ready.request":
+        return this.trackerSession.handleProjectTrackerReadyRequest(msg);
       default:
         return undefined;
     }
@@ -6950,6 +6997,8 @@ export class Session {
     this.terminalController.dispose();
 
     this.checkoutSession.cleanup();
+
+    await this.trackerSession.cleanup();
 
     this.workspaceGitObserver.dispose();
     this.workspaceFilesSession.dispose();

@@ -42,6 +42,32 @@ import {
   ScheduleUpdateResponseSchema,
 } from "./schedule/rpc-schemas.js";
 import {
+  ProjectTrackerListRequestSchema,
+  ProjectTrackerSubscribeRequestSchema,
+  ProjectTrackerUnsubscribeRequestSchema,
+  ProjectTrackerShowRequestSchema,
+  ProjectTrackerCreateRequestSchema,
+  ProjectTrackerUpdateRequestSchema,
+  ProjectTrackerCloseRequestSchema,
+  ProjectTrackerReopenRequestSchema,
+  ProjectTrackerCancelRequestSchema,
+  ProjectTrackerNoteAddRequestSchema,
+  ProjectTrackerInitRequestSchema,
+  ProjectTrackerReadyRequestSchema,
+  ProjectTrackerListResponseSchema,
+  ProjectTrackerSubscribeResponseSchema,
+  ProjectTrackerUpdatedSchema,
+  ProjectTrackerShowResponseSchema,
+  ProjectTrackerCreateResponseSchema,
+  ProjectTrackerUpdateResponseSchema,
+  ProjectTrackerCloseResponseSchema,
+  ProjectTrackerReopenResponseSchema,
+  ProjectTrackerCancelResponseSchema,
+  ProjectTrackerNoteAddResponseSchema,
+  ProjectTrackerInitResponseSchema,
+  ProjectTrackerReadyResponseSchema,
+} from "./tracker/rpc-schemas.js";
+import {
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
@@ -2864,6 +2890,18 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ScheduleDeleteRequestSchema,
   ScheduleRunOnceRequestSchema,
   ScheduleUpdateRequestSchema,
+  ProjectTrackerListRequestSchema,
+  ProjectTrackerSubscribeRequestSchema,
+  ProjectTrackerUnsubscribeRequestSchema,
+  ProjectTrackerShowRequestSchema,
+  ProjectTrackerCreateRequestSchema,
+  ProjectTrackerUpdateRequestSchema,
+  ProjectTrackerCloseRequestSchema,
+  ProjectTrackerReopenRequestSchema,
+  ProjectTrackerCancelRequestSchema,
+  ProjectTrackerNoteAddRequestSchema,
+  ProjectTrackerInitRequestSchema,
+  ProjectTrackerReadyRequestSchema,
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
@@ -3048,6 +3086,8 @@ export const ServerInfoStatusPayloadSchema = z
         forgeCheckDetails: z.boolean().optional(),
         // COMPAT(forgeSearch): added in v0.1.106, remove github_search fallback after 2026-12-28.
         forgeSearch: z.boolean().optional(),
+        // COMPAT(aitTrackerLive): added in v0.4.1, remove gate after 2027-02-19.
+        aitTrackerLive: z.boolean().optional(),
         // COMPAT(daemonStatusRpc): added in v0.1.76, remove gate after 2026-11-18.
         daemonStatusRpc: z.boolean().optional(),
         // COMPAT(relayConfig): added in v0.2.6, remove gate after 2027-01-31.
@@ -3112,6 +3152,10 @@ export const ServerInfoStatusPayloadSchema = z
         commitsList: z.boolean().optional(),
         // COMPAT(commitBaseClassification): added in v0.2.0, remove gate after 2027-01-23.
         commitBaseClassification: z.boolean().optional(),
+        // COMPAT(aitTracker): added in v0.4.1, remove gate after 2027-02-19.
+        aitTracker: z.boolean().optional(),
+        // COMPAT(aitTrackerReady): added in v0.4.1, remove gate after 2027-02-19.
+        aitTrackerReady: z.boolean().optional(),
         // COMPAT(providerRemoval): added in v0.1.105, drop the gate when floor >= v0.1.105.
         providerRemoval: z.boolean().optional(),
         // COMPAT(importSessionWorkspaceTarget): added in v0.1.110, remove gate after 2027-01-16.
@@ -5823,6 +5867,18 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ScheduleDeleteResponseSchema,
   ScheduleRunOnceResponseSchema,
   ScheduleUpdateResponseSchema,
+  ProjectTrackerListResponseSchema,
+  ProjectTrackerSubscribeResponseSchema,
+  ProjectTrackerUpdatedSchema,
+  ProjectTrackerShowResponseSchema,
+  ProjectTrackerCreateResponseSchema,
+  ProjectTrackerUpdateResponseSchema,
+  ProjectTrackerCloseResponseSchema,
+  ProjectTrackerReopenResponseSchema,
+  ProjectTrackerCancelResponseSchema,
+  ProjectTrackerNoteAddResponseSchema,
+  ProjectTrackerInitResponseSchema,
+  ProjectTrackerReadyResponseSchema,
   LoopRunResponseSchema,
   LoopListResponseSchema,
   LoopInspectResponseSchema,
