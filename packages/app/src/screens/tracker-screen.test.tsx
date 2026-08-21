@@ -12,6 +12,7 @@ import type { UseProjectsResult } from "@/hooks/use-projects";
 const { theme, projectsState, aggregatedState, lastKanbanBoardProps, lastListTableProps } =
   vi.hoisted(() => ({
     theme: {
+      colorScheme: "light" as const,
       colors: {
         surface0: "#000",
         surface1: "#111",
@@ -20,11 +21,12 @@ const { theme, projectsState, aggregatedState, lastKanbanBoardProps, lastListTab
         foreground: "#fff",
         foregroundMuted: "#aaa",
         border: "#444",
+        accent: "#20744a",
         palette: {
           blue: { 600: "#2563eb" },
           amber: { 700: "#b45309" },
           red: { 300: "#fca5a5", 600: "#dc2626" },
-          green: { 600: "#16a34a" },
+          green: { 500: "#22c55e", 600: "#16a34a" },
           orange: { 600: "#ea580c" },
           yellow: { 600: "#ca8a04" },
           sky: { 600: "#0284c7" },
@@ -34,7 +36,8 @@ const { theme, projectsState, aggregatedState, lastKanbanBoardProps, lastListTab
       spacing: { 0: 0, 1: 4, "1.5": 6, 2: 8, 3: 12, 4: 16, 6: 24 },
       fontSize: { xs: 11, sm: 13, base: 15 },
       fontWeight: { normal: "400" as const, medium: "500" as const },
-      borderRadius: { md: 6, lg: 8 },
+      fontFamily: { ui: "System", mono: "Menlo" },
+      borderRadius: { sm: 4, md: 6, lg: 8, full: 999 },
       borderWidth: { 1: 1 },
       opacity: { 50: 0.5 },
       iconSize: { sm: 14, md: 20, lg: 32 },
@@ -136,6 +139,10 @@ vi.mock("@/stores/session-store", () => ({
   useSessionStore: { getState: () => ({ sessions: {} }) },
 }));
 
+vi.mock("@/utils/copy-to-clipboard", () => ({
+  copyToClipboard: vi.fn(),
+}));
+
 vi.mock("@/components/headers/menu-header", () => ({
   MenuHeader: (props: { rightContent?: React.ReactNode }) =>
     React.createElement("div", { "data-testid": "menu-header" }, props.rightContent ?? null),
@@ -174,13 +181,17 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
     children,
     testID,
   }: {
-    children?: React.ReactNode | (() => React.ReactNode);
+    children?:
+      | React.ReactNode
+      | ((state: { pressed: boolean; hovered: boolean; open: boolean }) => React.ReactNode);
     testID?: string;
   }) =>
     React.createElement(
       "button",
       { type: "button", "data-testid": testID },
-      typeof children === "function" ? children() : children,
+      typeof children === "function"
+        ? children({ pressed: false, hovered: false, open: false })
+        : children,
     ),
   DropdownMenuContent: ({ children }: { children?: React.ReactNode }) =>
     React.createElement("div", null, children),
