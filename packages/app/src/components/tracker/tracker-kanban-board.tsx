@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useReducer, useRef, useState, type ReactElement } from "react";
-import { View } from "react-native";
+import { ScrollView, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
@@ -116,17 +116,23 @@ export function TrackerKanbanBoard({
   return (
     <View style={styles.board} testID={testID}>
       {isCompact && board.visibleLanes.length > 1 ? (
-        <SegmentedControl
-          options={board.visibleLanes.map((lane) => ({
-            value: lane,
-            label: t(`tracker.kanban.lane.${laneTranslationKey(lane)}`),
-            testID: `${testID}-lane-selector-${lane}`,
-          }))}
-          value={effectiveLane}
-          onValueChange={setSelectedLane}
-          style={styles.laneSelector}
-          testID={`${testID}-lane-selector`}
-        />
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.laneSelectorScroll}
+          contentContainerStyle={styles.laneSelectorScrollContent}
+        >
+          <SegmentedControl
+            options={board.visibleLanes.map((lane) => ({
+              value: lane,
+              label: t(`tracker.kanban.lane.${laneTranslationKey(lane)}`),
+              testID: `${testID}-lane-selector-${lane}`,
+            }))}
+            value={effectiveLane}
+            onValueChange={setSelectedLane}
+            testID={`${testID}-lane-selector`}
+          />
+        </ScrollView>
       ) : null}
       <View style={styles.columns}>
         {lanesToRender.map((lane) => (
@@ -154,9 +160,15 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[2],
     paddingTop: theme.spacing[2],
   },
-  laneSelector: {
-    alignSelf: "flex-start",
-    marginHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
+  // flexGrow/flexShrink: 0 keeps this ScrollView pinned to its content height —
+  // as a flex child of `board` (a column flex:1 container) it would otherwise
+  // stretch to fill the remaining vertical space instead of hugging the pills.
+  laneSelectorScroll: {
+    flexGrow: 0,
+    flexShrink: 0,
+  },
+  laneSelectorScrollContent: {
+    paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
   },
   columns: {
     flex: 1,

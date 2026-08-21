@@ -19,7 +19,7 @@ import {
 import { useIsFocused } from "@react-navigation/native";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, LayoutGrid, ListChecks, Plus } from "lucide-react-native";
+import { ChevronDown, LayoutGrid, ListChecks, ListFilter, Plus } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { TrackerSummary, TrackerType } from "@getpaseo/protocol/tracker/types";
@@ -38,6 +38,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
 import { useProjects } from "@/hooks/use-projects";
 import { useToast } from "@/contexts/toast-context";
@@ -106,6 +107,7 @@ function callTrackerTransition(
 }
 
 const ThemedChevronDown = withUnistyles(ChevronDown);
+const ThemedListFilter = withUnistyles(ListFilter);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const inverseColorMapping = (theme: Theme) => ({ color: theme.colors.surface0 });
 const EMPTY_TRACKERS: AggregatedTracker[] = [];
@@ -342,9 +344,23 @@ function TrackerScreenContent(): ReactElement {
     [kanbanTrackerById],
   );
 
+  const viewModeToggle = useMemo(
+    () => (
+      <SegmentedControl
+        options={viewModeOptions}
+        value={viewMode}
+        onValueChange={setViewMode}
+        size="sm"
+        hideLabels
+        testID="trackers-view-mode"
+      />
+    ),
+    [viewMode],
+  );
+
   return (
     <View style={styles.container}>
-      <MenuHeader title="Tracker" />
+      <MenuHeader title="Tracker" rightContent={viewModeToggle} />
       <TrackerScreenBody
         bodyState={bodyState}
         trackers={orderedTrackers}
@@ -358,7 +374,6 @@ function TrackerScreenContent(): ReactElement {
         statFilter={effectiveStatFilter}
         onStatFilterChange={effectiveOnStatFilterChange}
         viewMode={viewMode}
-        onViewModeChange={setViewMode}
         typeFilter={typeFilter}
         onTypeFilterChange={handleTypeFilterChange}
         projectErrors={projectErrors}
@@ -571,6 +586,100 @@ function PriorityFilterDropdown({
   );
 }
 
+function TypeFilterMenuItem({
+  value,
+  label,
+  selected,
+  onSelect,
+}: {
+  value: TypeFilter;
+  label: string;
+  selected: boolean;
+  onSelect: (value: TypeFilter) => void;
+}): ReactElement {
+  const handleSelect = useCallback(() => onSelect(value), [onSelect, value]);
+  return (
+    <DropdownMenuItem
+      selected={selected}
+      onSelect={handleSelect}
+      testID={`trackers-filter-menu-type-${value}`}
+    >
+      {label}
+    </DropdownMenuItem>
+  );
+}
+
+// Compact-width replacement for the type SegmentedControl (trackers-type-filter)
+// and PriorityFilterDropdown/KanbanPriorityFilterRow — both collapsed into one
+// overflow trigger so the toolbar stays a single row below the `md` breakpoint
+// (see useIsCompactFormFactor in @/constants/layout). Desktop keeps the
+// always-visible controls; this is compact-only.
+function TrackerFilterMenu({
+  typeFilter,
+  onTypeFilterChange,
+  statFilter,
+  onStatFilterChange,
+}: {
+  typeFilter: TypeFilter;
+  onTypeFilterChange: (value: TypeFilter) => void;
+  statFilter: StatFilter;
+  onStatFilterChange: (value: StatFilter) => void;
+}): ReactElement {
+  const { t } = useTranslation();
+  const selectedLevel = PRIORITY_HELP_LEVELS.find((level) => level.filter === statFilter) ?? null;
+  const typeLabel =
+    t(TYPE_FILTER_DEFS.find((def) => def.value === typeFilter)?.labelKey ?? "") || "Filters";
+  const handleSelectAllPriority = useCallback(
+    () => onStatFilterChange("all"),
+    [onStatFilterChange],
+  );
+  const handleSelectLevel = useCallback(
+    (filter: PriorityStatFilter) => onStatFilterChange(filter),
+    [onStatFilterChange],
+  );
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        style={styles.projectPickerTrigger}
+        testID="trackers-filter-menu-trigger"
+      >
+        <ThemedListFilter size={14} uniProps={mutedColorMapping} />
+        <Text style={styles.projectPickerText} numberOfLines={1}>
+          {selectedLevel ? `${typeLabel} · ${selectedLevel.id}` : typeLabel}
+        </Text>
+        <ThemedChevronDown size={14} uniProps={mutedColorMapping} />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" width={240}>
+        {TYPE_FILTER_DEFS.map((def) => (
+          <TypeFilterMenuItem
+            key={def.value}
+            value={def.value}
+            label={t(def.labelKey)}
+            selected={typeFilter === def.value}
+            onSelect={onTypeFilterChange}
+          />
+        ))}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          selected={selectedLevel === null}
+          onSelect={handleSelectAllPriority}
+          testID="trackers-filter-menu-priority-all"
+        >
+          All priorities
+        </DropdownMenuItem>
+        {PRIORITY_HELP_LEVELS.map((level) => (
+          <PriorityFilterItem
+            key={level.id}
+            level={level}
+            selected={selectedLevel?.filter === level.filter}
+            onSelect={handleSelectLevel}
+          />
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function ProjectErrorsBanner({ errors }: { errors: TrackerProjectError[] }): ReactElement {
   return (
     <View style={styles.errorsBannerWrap}>
@@ -598,7 +707,6 @@ function TrackerScreenBody({
   statFilter,
   onStatFilterChange,
   viewMode,
-  onViewModeChange,
   typeFilter,
   onTypeFilterChange,
   projectErrors,
@@ -624,7 +732,6 @@ function TrackerScreenBody({
   statFilter: StatFilter;
   onStatFilterChange: (value: StatFilter) => void;
   viewMode: ViewMode;
-  onViewModeChange: (value: ViewMode) => void;
   typeFilter: TypeFilter;
   onTypeFilterChange: (value: TypeFilter) => void;
   projectErrors: TrackerProjectError[];
@@ -709,7 +816,6 @@ function TrackerScreenBody({
             statFilter={statFilter}
             onStatFilterChange={onStatFilterChange}
             viewMode={viewMode}
-            onViewModeChange={onViewModeChange}
             typeFilter={typeFilter}
             onTypeFilterChange={onTypeFilterChange}
             onCreate={onCreate}
@@ -739,7 +845,6 @@ function TrackerScreenBody({
           statFilter={statFilter}
           onStatFilterChange={onStatFilterChange}
           viewMode={viewMode}
-          onViewModeChange={onViewModeChange}
           typeFilter={typeFilter}
           onTypeFilterChange={onTypeFilterChange}
           onCreate={onCreate}
@@ -989,16 +1094,22 @@ function StatFilterRow({
   statFilter,
   onStatFilterChange,
   viewMode,
+  isCompact,
 }: {
   trackers: AggregatedTracker[];
   statFilter: StatFilter;
   onStatFilterChange: (value: StatFilter) => void;
   viewMode: ViewMode;
-}): ReactElement {
+  isCompact: boolean;
+}): ReactElement | null {
   const counts = getTrackerStatCounts(trackers);
 
+  // Compact width folds the priority filter into TrackerFilterMenu (the
+  // toolbar's overflow trigger) instead of rendering it inline — Kanban's
+  // priority-buttons row is the whole of this component in that mode, so
+  // there's nothing left to show here at all.
   if (viewMode === "kanban") {
-    return (
+    return isCompact ? null : (
       <KanbanPriorityFilterRow
         counts={counts}
         statFilter={statFilter}
@@ -1024,7 +1135,7 @@ function StatFilterRow({
             active={statFilter === def.value}
             onSelect={onStatFilterChange}
           />
-          {index === 2 ? (
+          {index === 2 && !isCompact ? (
             <>
               <View style={styles.statDivider} />
               <PriorityFilterDropdown
@@ -1048,7 +1159,6 @@ function TrackersToolbar({
   statFilter,
   onStatFilterChange,
   viewMode,
-  onViewModeChange,
   typeFilter,
   onTypeFilterChange,
   onCreate,
@@ -1060,12 +1170,12 @@ function TrackersToolbar({
   statFilter: StatFilter;
   onStatFilterChange: (value: StatFilter) => void;
   viewMode: ViewMode;
-  onViewModeChange: (value: ViewMode) => void;
   typeFilter: TypeFilter;
   onTypeFilterChange: (value: TypeFilter) => void;
   onCreate: () => void;
 }): ReactElement {
   const { t } = useTranslation();
+  const isCompact = useIsCompactFormFactor();
   const typeFilterOptions: SegmentedControlOption<TypeFilter>[] = useMemo(
     () =>
       TYPE_FILTER_DEFS.map((def) => ({
@@ -1090,24 +1200,26 @@ function TrackersToolbar({
           statFilter={statFilter}
           onStatFilterChange={onStatFilterChange}
           viewMode={viewMode}
+          isCompact={isCompact}
         />
       </View>
       <View style={styles.toolbarActions}>
-        <SegmentedControl
-          options={typeFilterOptions}
-          value={typeFilter}
-          onValueChange={onTypeFilterChange}
-          size="sm"
-          testID="trackers-type-filter"
-        />
-        <SegmentedControl
-          options={viewModeOptions}
-          value={viewMode}
-          onValueChange={onViewModeChange}
-          size="sm"
-          hideLabels
-          testID="trackers-view-mode"
-        />
+        {isCompact ? (
+          <TrackerFilterMenu
+            typeFilter={typeFilter}
+            onTypeFilterChange={onTypeFilterChange}
+            statFilter={statFilter}
+            onStatFilterChange={onStatFilterChange}
+          />
+        ) : (
+          <SegmentedControl
+            options={typeFilterOptions}
+            value={typeFilter}
+            onValueChange={onTypeFilterChange}
+            size="sm"
+            testID="trackers-type-filter"
+          />
+        )}
         <Button
           variant="outline"
           leftIcon={Plus}
@@ -1168,6 +1280,7 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    flexWrap: "wrap",
     gap: theme.spacing[3],
     paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
     paddingTop: theme.spacing[4],
