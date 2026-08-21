@@ -43,11 +43,14 @@ describe("getTrackerStatCounts", () => {
     expect(getTrackerStatCounts(trackers)).toEqual({
       open: 3,
       inProgress: 2,
-      p0: 2,
+      // Priority counts span every status, not just open/in_progress — the
+      // closed a-task-closed (P0) and cancelled b-initiative-cancelled (P3) /
+      // b-task-cancelled (P4) all still count toward their priority level.
+      p0: 3,
       p1: 1,
       p2: 2,
-      p3: 0,
-      p4: 0,
+      p3: 1,
+      p4: 1,
       done: 3,
       all: 8,
     });
@@ -74,7 +77,17 @@ describe("getTrackerStatCounts", () => {
     });
   });
 
-  it("matches status and active priority filters across tracker types", () => {
+  it("counts a priority regardless of status — a closed or cancelled item still counts toward its priority", () => {
+    const trackers = [
+      tracker("open-p1", { type: "task", status: "open", priority: "P1" }),
+      tracker("closed-p1", { type: "task", status: "closed", priority: "P1" }),
+      tracker("cancelled-p1", { type: "task", status: "cancelled", priority: "P1" }),
+    ];
+
+    expect(getTrackerStatCounts(trackers).p1).toBe(3);
+  });
+
+  it("matches status filters across tracker types, and priority filters regardless of status", () => {
     const doneTask = tracker("done-task", { type: "task", status: "closed", priority: "P0" });
     expect(
       matchesTrackerStatFilter(
@@ -93,7 +106,7 @@ describe("getTrackerStatCounts", () => {
       ),
     ).toBe(true);
     expect(matchesTrackerStatFilter(doneTask, "done")).toBe(true);
-    expect(matchesTrackerStatFilter(doneTask, "p0")).toBe(false);
+    expect(matchesTrackerStatFilter(doneTask, "p0")).toBe(true);
     expect(matchesTrackerStatFilter(doneTask, "all")).toBe(true);
 
     const priorityPairs = [
@@ -107,6 +120,12 @@ describe("getTrackerStatCounts", () => {
       expect(
         matchesTrackerStatFilter(
           tracker(`active-${priority}`, { type: "initiative", status: "open", priority }),
+          filter,
+        ),
+      ).toBe(true);
+      expect(
+        matchesTrackerStatFilter(
+          tracker(`done-${priority}`, { type: "initiative", status: "closed", priority }),
           filter,
         ),
       ).toBe(true);

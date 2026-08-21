@@ -890,19 +890,122 @@ function StatFilterPillView({
   );
 }
 
+type KanbanPriorityFilter = Extract<StatFilter, "p0" | "p1" | "p2" | "p3" | "p4" | "all">;
+
+interface KanbanPriorityButtonDef {
+  filter: KanbanPriorityFilter;
+  label: string;
+}
+
+// Buttons instead of a dropdown: the whole point of the priority filter on a
+// board you're already looking at is to see every level at a glance and pick
+// one in a single tap, not open a menu to find out what the levels even are.
+const KANBAN_PRIORITY_BUTTONS: readonly KanbanPriorityButtonDef[] = [
+  { filter: "p0", label: "Critical" },
+  { filter: "p1", label: "High priority" },
+  { filter: "p2", label: "Normal" },
+  { filter: "p3", label: "Low priority" },
+  { filter: "p4", label: "Nice to have" },
+  { filter: "all", label: "All" },
+];
+
+function KanbanPriorityFilterButton({
+  def,
+  count,
+  active,
+  onSelect,
+}: {
+  def: KanbanPriorityButtonDef;
+  count: number;
+  active: boolean;
+  onSelect: (value: StatFilter) => void;
+}): ReactElement {
+  const [isHovered, setIsHovered] = useState(false);
+  const handlePress = useCallback(() => onSelect(def.filter), [onSelect, def.filter]);
+  const handleHoverIn = useCallback(() => setIsHovered(true), []);
+  const handleHoverOut = useCallback(() => setIsHovered(false), []);
+  // Same pill geometry/active treatment as StatFilterPillView, count digit included.
+  const pillStyle = useCallback(
+    ({ pressed }: PressableStateCallbackType) => [
+      styles.statCard,
+      active ? styles.statCardActive : (Boolean(isHovered) || pressed) && styles.statCardHovered,
+    ],
+    [isHovered, active],
+  );
+  const accessibilityState = useMemo(() => ({ selected: active }), [active]);
+  return (
+    <Pressable
+      style={pillStyle}
+      onPress={handlePress}
+      onHoverIn={handleHoverIn}
+      onHoverOut={handleHoverOut}
+      accessibilityRole="button"
+      accessibilityState={accessibilityState}
+      accessibilityLabel={`Filter: ${def.label}`}
+      testID={`trackers-kanban-priority-${def.filter}`}
+    >
+      <Text style={[styles.statNumber, active && styles.statNumberActive]}>{count}</Text>
+      <Text style={[styles.statLabel, active && styles.statLabelActive]}>{def.label}</Text>
+    </Pressable>
+  );
+}
+
+function KanbanPriorityFilterRow({
+  counts,
+  statFilter,
+  onStatFilterChange,
+}: {
+  counts: TrackerStatCounts;
+  statFilter: StatFilter;
+  onStatFilterChange: (value: StatFilter) => void;
+}): ReactElement {
+  return (
+    <View style={styles.kanbanPriorityRow}>
+      {KANBAN_PRIORITY_BUTTONS.map((def) => (
+        <KanbanPriorityFilterButton
+          key={def.filter}
+          def={def}
+          count={counts[def.filter]}
+          active={statFilter === def.filter}
+          onSelect={onStatFilterChange}
+        />
+      ))}
+    </View>
+  );
+}
+
 // "Ready" (unblocked) is intentionally omitted: it needs dependency/blocker
 // data that `ait list` doesn't return per-row, only `ait show <id>` does — a
 // dedicated ready-count RPC is follow-up work.
+//
+// Kanban only gets the Priority buttons, not the Open/In Progress/Done pills.
+// Those pills used to project the board down to whichever lanes matched,
+// which left a single lane stretched full-width with a lot of empty space —
+// Kanban already shows every status as its own column, so filtering by status
+// there is redundant. Priority stays, but dims non-matching cards in place
+// (buildTrackerBoard's isDimmed) instead of hiding lanes.
 function StatFilterRow({
   trackers,
   statFilter,
   onStatFilterChange,
+  viewMode,
 }: {
   trackers: AggregatedTracker[];
   statFilter: StatFilter;
   onStatFilterChange: (value: StatFilter) => void;
+  viewMode: ViewMode;
 }): ReactElement {
   const counts = getTrackerStatCounts(trackers);
+
+  if (viewMode === "kanban") {
+    return (
+      <KanbanPriorityFilterRow
+        counts={counts}
+        statFilter={statFilter}
+        onStatFilterChange={onStatFilterChange}
+      />
+    );
+  }
 
   const defs: StatFilterPillDef[] = [
     { value: "open", label: "Open", count: counts.open },
@@ -986,6 +1089,7 @@ function TrackersToolbar({
           trackers={statsTrackers}
           statFilter={statFilter}
           onStatFilterChange={onStatFilterChange}
+          viewMode={viewMode}
         />
       </View>
       <View style={styles.toolbarActions}>
@@ -1086,6 +1190,14 @@ const styles = StyleSheet.create((theme) => ({
     flexWrap: "wrap",
     alignItems: "center",
     gap: theme.spacing[1],
+  },
+  // Wider than statsRow's gap — with no dividers between these buttons (unlike
+  // the List pills), they need more breathing room to read as separate buttons.
+  kanbanPriorityRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: theme.spacing[3],
   },
   statDivider: {
     width: 1,

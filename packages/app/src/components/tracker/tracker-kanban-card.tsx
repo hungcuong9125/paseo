@@ -17,8 +17,6 @@ export interface TrackerKanbanCardProps {
   childCount?: number;
   doneCount?: number;
   createdAt?: string | null;
-  /** Only meaningful for `closed` — `ait` never sets this for `cancelled`. */
-  closedAt?: string | null;
   testID?: string;
 }
 
@@ -49,12 +47,10 @@ export function TrackerKanbanCard({
   childCount,
   doneCount,
   createdAt = null,
-  closedAt = null,
   testID,
 }: TrackerKanbanCardProps): ReactElement {
   const { t } = useTranslation();
   const hasChildren = typeof childCount === "number" && childCount > 0;
-  const showClosedAt = status === "closed" && Boolean(closedAt);
 
   return (
     <View style={styles.card} testID={testID ?? `tracker-kanban-card-${id}`}>
@@ -72,19 +68,19 @@ export function TrackerKanbanCard({
       <Text style={styles.title} numberOfLines={2}>
         {title}
       </Text>
-      {createdAt ? (
-        <Text style={styles.dates} numberOfLines={1}>
-          {t("tracker.card.created", { time: formatTimeAgo(new Date(createdAt)) })}
-          {showClosedAt && closedAt
-            ? ` · ${t("tracker.card.closed", { time: formatTimeAgo(new Date(closedAt)) })}`
-            : null}
-        </Text>
-      ) : null}
-      {/* Content-sized, not stretched — a bare child of this column-flex View
-          would otherwise default to cross-axis stretch (full card width). */}
-      {projectLabel ? (
-        <View style={styles.projectChipWrap}>
-          <StatusBadge label={projectLabel} variant="muted" size="sm" />
+      {projectLabel || createdAt ? (
+        <View style={styles.footerRow}>
+          {/* Content-sized, not stretched — a bare child of this row would
+              otherwise default to cross-axis stretch. Rendered even when
+              empty so createdAt still lands on the right via space-between. */}
+          <View style={styles.projectChipWrap}>
+            {projectLabel ? <StatusBadge label={projectLabel} variant="muted" size="sm" /> : null}
+          </View>
+          {createdAt ? (
+            <Text style={styles.dates} numberOfLines={1}>
+              {t("tracker.card.created", { time: formatTimeAgo(new Date(createdAt)) })}
+            </Text>
+          ) : null}
         </View>
       ) : null}
     </View>
@@ -93,7 +89,7 @@ export function TrackerKanbanCard({
 
 const styles = StyleSheet.create((theme) => ({
   card: {
-    gap: theme.spacing[1],
+    gap: theme.spacing[2],
     padding: theme.spacing[3],
     borderRadius: theme.borderRadius.md,
     borderWidth: 1,
@@ -120,6 +116,12 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.xs,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foregroundExtraMuted,
+  },
+  footerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.spacing[2],
   },
   projectChipWrap: {
     alignSelf: "flex-start",

@@ -287,52 +287,47 @@ describe("TrackerKanbanBoard — compact single-lane projection", () => {
     expect(screen.getByText("Done one")).toBeTruthy();
   });
 
-  it("renders the Done filter as a 2-lane segmented control (Done + Cancelled) and shows only the selected lane", () => {
+  // Open/In Progress/Done only filter the List view's dataset — Kanban (compact
+  // or not) never hides a lane for them, so the 5-lane switcher is identical to
+  // the "all" filter regardless of which of these three is passed.
+  it.each(["open", "in_progress", "done"] as const)(
+    "the %s filter still offers all 5 lanes behind the segmented control — it's a List-only filter",
+    (filter) => {
+      const trackers = [
+        tracker({ id: "a", status: "closed", title: "Done one" }),
+        tracker({ id: "b", status: "cancelled", title: "Cancelled one" }),
+      ];
+
+      render(<TrackerKanbanBoard trackers={trackers} filter={filter} onTransition={vi.fn()} />);
+
+      expect(screen.getByTestId("tracker-kanban-board-lane-selector-ready")).toBeTruthy();
+      expect(screen.getByTestId("tracker-kanban-board-lane-selector-open")).toBeTruthy();
+      expect(screen.getByTestId("tracker-kanban-board-lane-selector-in_progress")).toBeTruthy();
+      expect(screen.getByTestId("tracker-kanban-board-lane-selector-done")).toBeTruthy();
+      expect(screen.getByTestId("tracker-kanban-board-lane-selector-cancelled")).toBeTruthy();
+
+      fireEvent.click(screen.getByTestId("tracker-kanban-board-lane-selector-cancelled"));
+      expect(screen.getByTestId("tracker-kanban-column-cancelled").textContent).toContain(
+        "Cancelled one",
+      );
+    },
+  );
+
+  it("a priority filter removes non-matching cards from their lane instead of hiding the lane, even in the single-lane view", () => {
     const trackers = [
-      tracker({ id: "a", status: "closed", title: "Done one" }),
-      tracker({ id: "b", status: "cancelled", title: "Cancelled one" }),
+      tracker({ id: "match", status: "open", priority: "P0", title: "Matches P0" }),
+      tracker({ id: "no-match", status: "open", priority: "P1", title: "Not P0" }),
     ];
 
-    render(<TrackerKanbanBoard trackers={trackers} filter="done" onTransition={vi.fn()} />);
+    render(<TrackerKanbanBoard trackers={trackers} filter="p0" onTransition={vi.fn()} />);
 
+    // Still all 5 lanes — priority never removes a lane from the switcher.
+    expect(screen.getByTestId("tracker-kanban-board-lane-selector-in_progress")).toBeTruthy();
     expect(screen.getByTestId("tracker-kanban-board-lane-selector-done")).toBeTruthy();
-    expect(screen.getByTestId("tracker-kanban-board-lane-selector-cancelled")).toBeTruthy();
-    // Effective lane defaults to the first projected lane (done); cancelled is hidden until selected.
-    expect(screen.getByTestId("tracker-kanban-column-done")).toBeTruthy();
-    expect(screen.queryByTestId("tracker-kanban-column-cancelled")).toBeNull();
-
-    fireEvent.click(screen.getByTestId("tracker-kanban-board-lane-selector-cancelled"));
-
-    expect(screen.queryByTestId("tracker-kanban-column-done")).toBeNull();
-    expect(screen.getByTestId("tracker-kanban-column-cancelled")).toBeTruthy();
-    expect(screen.getByText("Cancelled one")).toBeTruthy();
-  });
-
-  it("the Open filter still offers both Ready and Open lanes behind the segmented control", () => {
-    const trackers = [
-      tracker({ id: "unblocked", status: "open", title: "Unblocked one" }),
-      tracker({ id: "blocked", status: "open", title: "Blocked one" }),
-    ];
-
-    render(
-      <TrackerKanbanBoard
-        trackers={trackers}
-        filter="open"
-        readyIds={new Set(["unblocked"])}
-        onTransition={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByTestId("tracker-kanban-board-lane-selector-ready")).toBeTruthy();
-    expect(screen.getByTestId("tracker-kanban-board-lane-selector-open")).toBeTruthy();
-    expect(screen.queryByTestId("tracker-kanban-board-lane-selector-in_progress")).toBeNull();
-    expect(screen.queryByTestId("tracker-kanban-board-lane-selector-done")).toBeNull();
-
-    expect(screen.getByTestId("tracker-kanban-column-ready").textContent).toContain(
-      "Unblocked one",
-    );
-
+    // Effective lane defaults to the first lane (Ready); both cards' status is
+    // "open" with no readyIds, so they land in Open instead.
     fireEvent.click(screen.getByTestId("tracker-kanban-board-lane-selector-open"));
-    expect(screen.getByTestId("tracker-kanban-column-open").textContent).toContain("Blocked one");
+    expect(screen.getByText("Matches P0")).toBeTruthy();
+    expect(screen.queryByText("Not P0")).toBeNull();
   });
 });

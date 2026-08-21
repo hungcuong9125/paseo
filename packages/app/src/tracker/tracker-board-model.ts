@@ -2,9 +2,11 @@ import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 import { compareTrackers } from "@/tracker/tracker-hierarchy";
 import { matchesTrackerStatFilter, type TrackerStatFilter } from "@/tracker/tracker-stats";
 
-// Same domain as the toolbar's filter, reused directly — see "Toolbar contract"
-// in docs/refactors/tracker-kanban-redesign.md: Kanban gives this one control a
-// second meaning (lane projection) rather than inventing a parallel filter type.
+// Same domain as the toolbar's filter, reused directly. Only the priority
+// values (p0-p4) actually affect the board (a card not matching the selected
+// priority is left out of its lane entirely); "open"/"in_progress"/"done"
+// only filter the List view's dataset and reach here as "all" would (every
+// lane stays visible, nothing filtered) if ever passed.
 export type TrackerBoardFilter = TrackerStatFilter;
 
 export type TrackerBoardLaneKey = "ready" | "open" | "in_progress" | "done" | "cancelled";
@@ -18,10 +20,11 @@ export interface TrackerBoardCard {
 }
 
 export interface TrackerBoard {
-  /** Lanes the toolbar filter projects onto, in display order. A lane absent
-   * here is a different signal than "this lane has zero cards" — it should
-   * not be rendered at all (see docs/refactors/tracker-kanban-redesign.md,
-   * "Toolbar contract"). */
+  /** Every lane, in display order — the priority filter removes individual
+   * cards from a lane, it never removes the lane itself (unlike the old
+   * status filter behaviour, which collapsed the board down to whichever
+   * lanes still matched and left one lane stretched full-width). This field
+   * stays mainly for the compact single-lane-at-a-time layout's switcher. */
   visibleLanes: readonly TrackerBoardLaneKey[];
   ready: TrackerBoardCard[];
   open: TrackerBoardCard[];
@@ -58,29 +61,6 @@ function laneForTracker(
   }
 }
 
-function visibleLanesForFilter(filter: TrackerBoardFilter): readonly TrackerBoardLaneKey[] {
-  switch (filter) {
-    case "all":
-      return ALL_LANES;
-    case "open":
-      // Ready and Open are both status==="open" under the hood, split only
-      // visually — selecting the Open filter must not hide unblocked items.
-      return ["ready", "open"];
-    case "in_progress":
-      return ["in_progress"];
-    case "done":
-      // Closed and cancelled are both terminal and both excluded from the
-      // priority filters; selecting the Done filter must not hide cancelled items.
-      return ["done", "cancelled"];
-    case "p0":
-    case "p1":
-    case "p2":
-    case "p3":
-    case "p4":
-      return ["ready", "open", "in_progress"];
-  }
-}
-
 function isPriorityFilter(filter: TrackerBoardFilter): filter is "p0" | "p1" | "p2" | "p3" | "p4" {
   return (
     filter === "p0" || filter === "p1" || filter === "p2" || filter === "p3" || filter === "p4"
@@ -104,10 +84,13 @@ function compareByRecency(left: TrackerSummary, right: TrackerSummary): number {
 }
 
 /**
- * Partitions a flat tracker list into the five Kanban lanes and projects them
- * through the toolbar's status filter. Partitioning is by `status` (plus
- * `readyIds` membership for the open/ready split) alone — `parentId` is never
- * read, so malformed or cyclic hierarchy data cannot affect lane placement.
+ * Partitions a flat tracker list into the five Kanban lanes, every one of
+ * which always renders — the toolbar's priority filter (the only Kanban stat
+ * filter left; Open/In Progress/Done only filter the List view) removes
+ * non-matching cards from their lane rather than hiding the lane itself.
+ * Partitioning is by `status` (plus `readyIds` membership for the open/ready
+ * split) alone — `parentId` is never read, so malformed or cyclic hierarchy
+ * data cannot affect lane placement.
  *
  * `readyIds` defaults to an empty Set so callers that don't have the data yet
  * (loading, or the server doesn't advertise the capability) degrade to
@@ -119,7 +102,6 @@ export function buildTrackerBoard(
   filter: TrackerBoardFilter,
   readyIds: ReadonlySet<string> = new Set(),
 ): TrackerBoard {
-  const visibleLanes = visibleLanesForFilter(filter);
   const isPriority = isPriorityFilter(filter);
 
   const ready: TrackerBoardCard[] = [];
@@ -129,14 +111,10 @@ export function buildTrackerBoard(
   const cancelled: TrackerBoardCard[] = [];
 
   for (const tracker of trackers) {
-    const lane = laneForTracker(tracker, readyIds);
-    if (!visibleLanes.includes(lane)) {
-      continue;
-    }
     if (isPriority && !matchesTrackerStatFilter(tracker, filter)) {
       continue;
     }
-
+    const lane = laneForTracker(tracker, readyIds);
     const card: TrackerBoardCard = { tracker, isCancelled: tracker.status === "cancelled" };
     switch (lane) {
       case "ready":
@@ -163,5 +141,5 @@ export function buildTrackerBoard(
   done.sort((a, b) => compareByRecency(a.tracker, b.tracker));
   cancelled.sort((a, b) => compareByRecency(a.tracker, b.tracker));
 
-  return { visibleLanes, ready, open, in_progress: inProgress, done, cancelled };
+  return { visibleLanes: ALL_LANES, ready, open, in_progress: inProgress, done, cancelled };
 }

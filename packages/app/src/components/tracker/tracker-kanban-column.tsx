@@ -133,7 +133,6 @@ export function TrackerKanbanColumn({
                 childCount={stats.childCount}
                 doneCount={stats.doneCount}
                 createdAt={tracker.createdAt ?? null}
-                closedAt={tracker.closedAt ?? null}
                 testID={cardTestID}
               />
             );
