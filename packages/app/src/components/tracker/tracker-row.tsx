@@ -156,11 +156,6 @@ export function TrackerRow({
                 </>
               ) : null}
             </Text>
-            {tracker.description ? (
-              <Text style={styles.description} numberOfLines={1}>
-                {tracker.description}
-              </Text>
-            ) : null}
             {tracker.createdAt ? (
               <Text style={styles.dates} numberOfLines={1}>
                 {t("tracker.card.created", { time: formatTimeAgo(new Date(tracker.createdAt)) })}
@@ -327,10 +322,6 @@ const styles = StyleSheet.create((theme) => ({
   textGroup: {
     flex: 1,
     minWidth: 0,
-  },
-  description: {
-    fontSize: theme.fontSize.xs,
-    color: theme.colors.foregroundMuted,
   },
   dates: {
     fontSize: theme.fontSize.xs,

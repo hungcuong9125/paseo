@@ -42,7 +42,6 @@ describe("TrackerKanbanCard", () => {
       <TrackerKanbanCard
         {...baseProps}
         projectLabel="paseo"
-        description="A short summary of the work"
         childCount={7}
         doneCount={3}
         claimedBy="ada"
@@ -57,7 +56,6 @@ describe("TrackerKanbanCard", () => {
     expect(screen.getByText(/3\/7/)).toBeTruthy();
     expect(screen.getByText("paseo")).toBeTruthy();
     expect(screen.getByText("Fix the thing")).toBeTruthy();
-    expect(screen.getByText("A short summary of the work")).toBeTruthy();
     expect(screen.getByText("Claimed by ada")).toBeTruthy();
     expect(screen.getByText(/Created/)).toBeTruthy();
     expect(screen.getByText(/Closed/)).toBeTruthy();

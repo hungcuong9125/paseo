@@ -14,7 +14,6 @@ export interface TrackerKanbanCardProps {
   status: TrackerStatus;
   /** Rendered as a chip only when passed — relevant in multi-project (aggregated) context. */
   projectLabel?: string | null;
-  description?: string | null;
   childCount?: number;
   doneCount?: number;
   claimedBy?: string | null;
@@ -48,7 +47,6 @@ export function TrackerKanbanCard({
   priority,
   status,
   projectLabel = null,
-  description = null,
   childCount,
   doneCount,
   claimedBy = null,
@@ -76,11 +74,6 @@ export function TrackerKanbanCard({
       <Text style={styles.title} numberOfLines={2}>
         {title}
       </Text>
-      {description ? (
-        <Text style={styles.description} numberOfLines={1}>
-          {description}
-        </Text>
-      ) : null}
       {claimedBy ? (
         <Text style={styles.claimedBy} numberOfLines={1}>
           {t("tracker.card.claimedBy", { name: claimedBy })}
@@ -129,11 +122,6 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foreground,
-  },
-  description: {
-    fontSize: theme.fontSize.xs,
-    fontWeight: theme.fontWeight.normal,
-    color: theme.colors.foregroundMuted,
   },
   claimedBy: {
     fontSize: theme.fontSize.xs,

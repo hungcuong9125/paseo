@@ -26,7 +26,6 @@ export const TrackerSummarySchema = z.object({
   updatedAt: z.string().optional(),
   // Only ever set for `closed` — `ait` clears it on reopen and never sets it for `cancelled`.
   closedAt: z.string().nullable().optional(),
-  description: z.string().nullable().optional(),
 });
 export type TrackerSummary = z.infer<typeof TrackerSummarySchema>;
 

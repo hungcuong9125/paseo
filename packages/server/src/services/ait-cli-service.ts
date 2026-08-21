@@ -185,7 +185,6 @@ function toTrackerSummary(raw: z.infer<typeof AitIssueLongSchema>): TrackerSumma
     createdAt: raw.created_at,
     updatedAt: raw.updated_at,
     closedAt: raw.closed_at ?? null,
-    description: raw.description.length > 0 ? raw.description : null,
   };
 }
 

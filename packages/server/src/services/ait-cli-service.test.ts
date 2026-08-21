@@ -48,7 +48,6 @@ describe("createAitService", () => {
     expect(created.status).toBe("open");
     expect(created.type).toBe("task");
     expect(created.parentId).toBeNull();
-    expect(created.description).toBe("Because it's broken");
 
     const shown = await service.showTracker({ cwd, trackerId: created.id });
     expect(shown.title).toBe("Fix the thing");
