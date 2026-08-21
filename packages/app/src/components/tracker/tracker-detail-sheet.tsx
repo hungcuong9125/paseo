@@ -61,7 +61,10 @@ function OpenTrackerDetailSheet({
   const client = useHostRuntimeClient(serverId);
   const [state, setState] = useState<DetailState>({ status: "idle" });
   const [noteBody, setNoteBody] = useState("");
-  const [activeTrackerId, setActiveTrackerId] = useState(trackerId);
+  // The root tracker is history[0]; opening a child pushes its id, Back pops.
+  // The sheet always shows history[history.length - 1].
+  const [history, setHistory] = useState<string[]>([trackerId]);
+  const activeTrackerId = history[history.length - 1] ?? trackerId;
   const mutations = useTrackerMutations({ serverId, projectId });
 
   const load = useCallback(async (): Promise<void> => {
@@ -113,8 +116,14 @@ function OpenTrackerDetailSheet({
   }, [activeTrackerId, load, mutations, noteBody]);
 
   const handleOpenChild = useCallback((childId: string) => {
-    setActiveTrackerId(childId);
+    setHistory((current) => [...current, childId]);
   }, []);
+
+  const handleBack = useCallback(() => {
+    setHistory((current) => (current.length > 1 ? current.slice(0, -1) : current));
+  }, []);
+
+  const canGoBack = history.length > 1;
 
   const headerTitle = state.status === "loaded" ? state.tracker.id : "Loading…";
   const headerStatus = state.status === "loaded" ? state.tracker.status : null;
@@ -125,6 +134,10 @@ function OpenTrackerDetailSheet({
     }),
     [headerStatus, headerTitle],
   );
+  const footer = useMemo(
+    () => (canGoBack ? <TrackerDetailBackButton onBack={handleBack} /> : null),
+    [canGoBack, handleBack],
+  );
 
   return (
     <AdaptiveModalSheet
@@ -132,6 +145,8 @@ function OpenTrackerDetailSheet({
       visible
       onClose={onClose}
       onDismiss={onClose}
+      footer={footer}
+      footerContainerStyle={styles.footerContainer}
       testID="tracker-detail-sheet"
     >
       {state.status === "loading" || state.status === "idle" ? (
@@ -222,56 +237,14 @@ function TrackerDetailContent({
 
       {tracker.description ? <Text style={styles.description}>{tracker.description}</Text> : null}
 
-      <View style={styles.actionsRow}>
-        {tracker.status === "open" ? (
-          <Button
-            variant="outline"
-            size="sm"
-            textStyle={styles.actionInProgress}
-            hoverStyle={styles.actionInProgressHover}
-            onPress={onStart}
-            testID="tracker-detail-start"
-          >
-            Start
-          </Button>
-        ) : null}
-        {isOpenOrInProgress ? (
-          <Button
-            variant="outline"
-            size="sm"
-            textStyle={styles.actionClosed}
-            hoverStyle={styles.actionClosedHover}
-            onPress={onClose}
-            testID="tracker-detail-close"
-          >
-            Close
-          </Button>
-        ) : null}
-        {!isOpenOrInProgress ? (
-          <Button
-            variant="outline"
-            size="sm"
-            textStyle={styles.actionOpen}
-            hoverStyle={styles.actionOpenHover}
-            onPress={onReopen}
-            testID="tracker-detail-reopen"
-          >
-            Reopen
-          </Button>
-        ) : null}
-        {isOpenOrInProgress ? (
-          <Button
-            variant="ghost"
-            size="sm"
-            textStyle={styles.actionCancel}
-            hoverStyle={styles.actionCancelHover}
-            onPress={onCancel}
-            testID="tracker-detail-cancel"
-          >
-            Cancel
-          </Button>
-        ) : null}
-      </View>
+      <TrackerDetailActions
+        isOpenOrInProgress={isOpenOrInProgress}
+        isOpen={tracker.status === "open"}
+        onStart={onStart}
+        onClose={onClose}
+        onReopen={onReopen}
+        onCancel={onCancel}
+      />
 
       {tracker.children.length > 0 ? (
         <View style={styles.section}>
@@ -323,6 +296,91 @@ function TrackerDetailContent({
           </Button>
         </View>
       </View>
+    </View>
+  );
+}
+
+function TrackerDetailBackButton({ onBack }: { onBack: () => void }): ReactElement {
+  return (
+    <View style={styles.backRow}>
+      <Button
+        variant="outline"
+        size="sm"
+        style={styles.backButton}
+        onPress={onBack}
+        testID="tracker-detail-back"
+      >
+        Back
+      </Button>
+    </View>
+  );
+}
+
+function TrackerDetailActions({
+  isOpenOrInProgress,
+  isOpen,
+  onStart,
+  onClose,
+  onReopen,
+  onCancel,
+}: {
+  isOpenOrInProgress: boolean;
+  isOpen: boolean;
+  onStart: () => void;
+  onClose: () => void;
+  onReopen: () => void;
+  onCancel: () => void;
+}): ReactElement {
+  return (
+    <View style={styles.actionsRow}>
+      {isOpen ? (
+        <Button
+          variant="outline"
+          size="sm"
+          textStyle={styles.actionInProgress}
+          hoverStyle={styles.actionInProgressHover}
+          onPress={onStart}
+          testID="tracker-detail-start"
+        >
+          Start
+        </Button>
+      ) : null}
+      {isOpenOrInProgress ? (
+        <Button
+          variant="outline"
+          size="sm"
+          textStyle={styles.actionClosed}
+          hoverStyle={styles.actionClosedHover}
+          onPress={onClose}
+          testID="tracker-detail-close"
+        >
+          Close
+        </Button>
+      ) : null}
+      {!isOpenOrInProgress ? (
+        <Button
+          variant="outline"
+          size="sm"
+          textStyle={styles.actionOpen}
+          hoverStyle={styles.actionOpenHover}
+          onPress={onReopen}
+          testID="tracker-detail-reopen"
+        >
+          Reopen
+        </Button>
+      ) : null}
+      {isOpenOrInProgress ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          textStyle={styles.actionCancel}
+          hoverStyle={styles.actionCancelHover}
+          onPress={onCancel}
+          testID="tracker-detail-cancel"
+        >
+          Cancel
+        </Button>
+      ) : null}
     </View>
   );
 }
@@ -503,5 +561,16 @@ const styles = StyleSheet.create((theme) => ({
   noteMeta: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.xs,
+  },
+  footerContainer: {
+    borderTopWidth: 0,
+    paddingTop: 0,
+  },
+  backRow: {
+    flex: 1,
+  },
+  backButton: {
+    width: "100%",
+    minHeight: 38,
   },
 }));
