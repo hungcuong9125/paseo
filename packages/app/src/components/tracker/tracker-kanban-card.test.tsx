@@ -14,7 +14,6 @@ vi.mock("react-i18next", () => ({
     t: (key: string, options?: Record<string, unknown>) => {
       const templates: Record<string, string> = {
         "tracker.card.childProgress": "{{done}}/{{count}}",
-        "tracker.card.claimedBy": "Claimed by {{name}}",
         "tracker.card.created": "Created {{time}}",
         "tracker.card.closed": "Closed {{time}}",
       };
@@ -44,7 +43,6 @@ describe("TrackerKanbanCard", () => {
         projectLabel="paseo"
         childCount={7}
         doneCount={3}
-        claimedBy="ada"
         createdAt="2024-01-01T00:00:00.000Z"
         status="closed"
         closedAt="2024-06-01T00:00:00.000Z"
@@ -56,7 +54,6 @@ describe("TrackerKanbanCard", () => {
     expect(screen.getByText(/3\/7/)).toBeTruthy();
     expect(screen.getByText("paseo")).toBeTruthy();
     expect(screen.getByText("Fix the thing")).toBeTruthy();
-    expect(screen.getByText("Claimed by ada")).toBeTruthy();
     expect(screen.getByText(/Created/)).toBeTruthy();
     expect(screen.getByText(/Closed/)).toBeTruthy();
   });
@@ -66,7 +63,6 @@ describe("TrackerKanbanCard", () => {
 
     expect(screen.getByText("Fix the thing")).toBeTruthy();
     expect(screen.queryByText(/3\/7/)).toBeNull();
-    expect(screen.queryByText(/Claimed by/)).toBeNull();
     expect(screen.queryByText(/Created/)).toBeNull();
     expect(screen.queryByText(/No tasks/i)).toBeNull();
     expect(screen.queryByText(/Standalone/i)).toBeNull();

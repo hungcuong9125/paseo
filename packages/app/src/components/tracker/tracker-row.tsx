@@ -326,6 +326,7 @@ const styles = StyleSheet.create((theme) => ({
   dates: {
     fontSize: theme.fontSize.xs,
     color: theme.colors.foregroundExtraMuted,
+    marginTop: theme.spacing[1],
   },
   trailing: {
     flexDirection: "row",

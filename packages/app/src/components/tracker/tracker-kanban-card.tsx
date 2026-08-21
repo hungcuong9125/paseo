@@ -16,7 +16,6 @@ export interface TrackerKanbanCardProps {
   projectLabel?: string | null;
   childCount?: number;
   doneCount?: number;
-  claimedBy?: string | null;
   createdAt?: string | null;
   /** Only meaningful for `closed` — `ait` never sets this for `cancelled`. */
   closedAt?: string | null;
@@ -49,7 +48,6 @@ export function TrackerKanbanCard({
   projectLabel = null,
   childCount,
   doneCount,
-  claimedBy = null,
   createdAt = null,
   closedAt = null,
   testID,
@@ -74,11 +72,6 @@ export function TrackerKanbanCard({
       <Text style={styles.title} numberOfLines={2}>
         {title}
       </Text>
-      {claimedBy ? (
-        <Text style={styles.claimedBy} numberOfLines={1}>
-          {t("tracker.card.claimedBy", { name: claimedBy })}
-        </Text>
-      ) : null}
       {createdAt ? (
         <Text style={styles.dates} numberOfLines={1}>
           {t("tracker.card.created", { time: formatTimeAgo(new Date(createdAt)) })}
@@ -122,11 +115,6 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.normal,
     color: theme.colors.foreground,
-  },
-  claimedBy: {
-    fontSize: theme.fontSize.xs,
-    fontWeight: theme.fontWeight.normal,
-    color: theme.colors.foregroundMuted,
   },
   dates: {
     fontSize: theme.fontSize.xs,

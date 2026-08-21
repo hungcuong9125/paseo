@@ -54,7 +54,7 @@ import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
 import { useAggregatedTrackers } from "@/tracker/use-aggregated-trackers";
 import {
   getTrackerStatCounts,
-  matchesTrackerStatFilter,
+  matchesListStatFilter,
   type TrackerStatCounts,
   type TrackerStatFilter,
 } from "@/tracker/tracker-stats";
@@ -209,7 +209,9 @@ function TrackerScreenContent(): ReactElement {
   // List-only: Kanban receives the project-filtered but not status-filtered set
   // (kanbanTrackers below) — see "Toolbar contract" in the redesign doc. The
   // shared typeFilter composes with listStatFilter rather than replacing it:
-  // type filtering narrows the dataset first, then the stat filter applies.
+  // type filtering narrows the dataset first, then the stat filter applies —
+  // to every type (Tasks/Epics/Initiatives/All), not just Tasks, so switching
+  // to the Epics tab still respects Open/In Progress/Done/Priority.
   const visibleTrackers = useMemo(() => {
     const typeFiltered =
       typeFilter === "all"
@@ -217,9 +219,7 @@ function TrackerScreenContent(): ReactElement {
         : projectFilteredTrackers.filter((tracker) => tracker.type === typeFilter);
     return listStatFilter === "all"
       ? typeFiltered
-      : typeFiltered.filter(
-          (tracker) => tracker.type !== "task" || matchesTrackerStatFilter(tracker, listStatFilter),
-        );
+      : typeFiltered.filter((tracker) => matchesListStatFilter(tracker, listStatFilter));
   }, [projectFilteredTrackers, typeFilter, listStatFilter]);
   // Type filter is applied here, before the board — buildTrackerBoard's own
   // partitioning stays status-only (see tracker-board-model.ts docstring). The
@@ -921,7 +921,7 @@ function StatFilterRow({
             active={statFilter === def.value}
             onSelect={onStatFilterChange}
           />
-          {index === 1 ? (
+          {index === 2 ? (
             <>
               <View style={styles.statDivider} />
               <PriorityFilterDropdown
@@ -1113,7 +1113,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   statNumber: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.xs,
     fontWeight: theme.fontWeight.medium,
   },
   // Inverse text on the solid active pill — matches SegmentedControl's
@@ -1186,7 +1186,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   priorityFilterCount: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
+    fontSize: theme.fontSize.xs,
     fontWeight: theme.fontWeight.medium,
   },
   priorityFilterCountHovered: {

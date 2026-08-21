@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { AggregatedTracker } from "./aggregated-trackers";
-import { getTrackerStatCounts, matchesTrackerStatFilter } from "./tracker-stats";
+import {
+  getTrackerStatCounts,
+  matchesListStatFilter,
+  matchesTrackerStatFilter,
+} from "./tracker-stats";
 
 function tracker(
   id: string,
@@ -107,5 +111,55 @@ describe("getTrackerStatCounts", () => {
         ),
       ).toBe(true);
     }
+  });
+});
+
+describe("matchesListStatFilter", () => {
+  it("'done' matches closed only — cancelled never surfaces under Done in the List view", () => {
+    const closed = tracker("closed", { type: "task", status: "closed", priority: "P0" });
+    const cancelled = tracker("cancelled", { type: "task", status: "cancelled", priority: "P0" });
+    expect(matchesListStatFilter(closed, "done")).toBe(true);
+    expect(matchesListStatFilter(cancelled, "done")).toBe(false);
+  });
+
+  it("priority filters match a tracker of that priority in any status, not just open/in_progress", () => {
+    const openP2 = tracker("open-p2", { type: "task", status: "open", priority: "P2" });
+    const doneP2 = tracker("done-p2", { type: "task", status: "closed", priority: "P2" });
+    const cancelledP2 = tracker("cancelled-p2", {
+      type: "task",
+      status: "cancelled",
+      priority: "P2",
+    });
+    const doneP3 = tracker("done-p3", { type: "task", status: "closed", priority: "P3" });
+    expect(matchesListStatFilter(openP2, "p2")).toBe(true);
+    expect(matchesListStatFilter(doneP2, "p2")).toBe(true);
+    expect(matchesListStatFilter(cancelledP2, "p2")).toBe(true);
+    expect(matchesListStatFilter(doneP3, "p2")).toBe(false);
+  });
+
+  it("applies to every tracker type, not just tasks — Epics/Initiatives respect the toolbar filter too", () => {
+    const inProgressEpic = tracker("epic", { type: "epic", status: "in_progress", priority: "P1" });
+    const openInitiative = tracker("initiative", {
+      type: "initiative",
+      status: "open",
+      priority: "P1",
+    });
+    expect(matchesListStatFilter(inProgressEpic, "in_progress")).toBe(true);
+    expect(matchesListStatFilter(inProgressEpic, "open")).toBe(false);
+    expect(matchesListStatFilter(openInitiative, "open")).toBe(true);
+    expect(matchesListStatFilter(openInitiative, "in_progress")).toBe(false);
+  });
+
+  it("'open'/'in_progress'/'all' behave the same as the shared predicate", () => {
+    const open = tracker("open", { type: "task", status: "open", priority: "P0" });
+    const inProgress = tracker("in-progress", {
+      type: "task",
+      status: "in_progress",
+      priority: "P0",
+    });
+    expect(matchesListStatFilter(open, "open")).toBe(true);
+    expect(matchesListStatFilter(inProgress, "in_progress")).toBe(true);
+    expect(matchesListStatFilter(open, "all")).toBe(true);
+    expect(matchesListStatFilter(inProgress, "all")).toBe(true);
   });
 });

@@ -69,8 +69,8 @@ export function TrackerTable({
   );
 
   // Bucket the already-sorted list by status, preserving the sorted order within
-  // each section. Every section always renders (empty sections show a 0 count and
-  // no rows, mirroring how the Kanban board renders empty lanes).
+  // each section. A section with zero items is hidden entirely (see below) —
+  // this is how a toolbar status filter removes the other sections from view.
   const trackersByStatus = useMemo(() => {
     const buckets = new Map<TrackerStatus, AggregatedTracker[]>();
     for (const section of LIST_SECTIONS) {
@@ -106,6 +106,12 @@ export function TrackerTable({
     <View style={styles.listContent} testID="tracker-table">
       {LIST_SECTIONS.map((section) => {
         const items = trackersByStatus.get(section.status) ?? [];
+        // A status the toolbar filter excludes ends up with zero items here — hide
+        // that section entirely rather than showing an empty "0" header, so picking
+        // "In progress" doesn't leave Todo/Done/Cancelled visible with nothing in them.
+        if (items.length === 0) {
+          return null;
+        }
         const revealed = items.slice(0, revealCounts[section.status]);
         const remaining = Math.max(0, items.length - revealed.length);
         return (

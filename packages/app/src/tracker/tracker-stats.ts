@@ -1,4 +1,4 @@
-import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
+import type { TrackerStatus, TrackerSummary } from "@getpaseo/protocol/tracker/types";
 
 export type TrackerStatFilter =
   | "open"
@@ -48,6 +48,53 @@ export function matchesTrackerStatFilter(
     case "all":
       return true;
   }
+}
+
+// Which real statuses the List view's toolbar filter surfaces, applied to
+// whichever type granularity (Tasks/Epics/Initiatives/All) is currently
+// selected — unlike Kanban's lane projection (visibleLanesForFilter in
+// tracker-board-model.ts), which deliberately keeps cancelled grouped with
+// closed under "Done" (a swimlane board), List's flat sections split them:
+// "done" here means closed only, so selecting it never surfaces a Cancelled
+// section. Priority filters span every status instead of only open/in_progress
+// — List is a lookup table, not a live triage board, so a P2 item that's
+// already Done is still worth finding by priority.
+function listVisibleStatusesForFilter(filter: TrackerStatFilter): readonly TrackerStatus[] {
+  switch (filter) {
+    case "open":
+      return ["open"];
+    case "in_progress":
+      return ["in_progress"];
+    case "done":
+      return ["closed"];
+    case "p0":
+    case "p1":
+    case "p2":
+    case "p3":
+    case "p4":
+    case "all":
+      return ["open", "in_progress", "closed", "cancelled"];
+  }
+}
+
+const PRIORITY_FILTER_TO_LEVEL: Readonly<Record<"p0" | "p1" | "p2" | "p3" | "p4", string>> = {
+  p0: "P0",
+  p1: "P1",
+  p2: "P2",
+  p3: "P3",
+  p4: "P4",
+};
+
+// The single source of truth for the List view's status/priority filter — both
+// the dataset filter (tracker-screen.tsx) and the section-visibility decision
+// (tracker-table.tsx hides a section once it has zero items) derive from it,
+// so the two can never drift out of sync.
+export function matchesListStatFilter(tracker: TrackerSummary, filter: TrackerStatFilter): boolean {
+  if (!listVisibleStatusesForFilter(filter).includes(tracker.status)) {
+    return false;
+  }
+  const priorityLevel = (PRIORITY_FILTER_TO_LEVEL as Record<string, string | undefined>)[filter];
+  return priorityLevel === undefined || tracker.priority === priorityLevel;
 }
 
 // Counts whatever set it is given — it does not filter by `type` itself. The

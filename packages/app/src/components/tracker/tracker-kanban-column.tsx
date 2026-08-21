@@ -132,7 +132,6 @@ export function TrackerKanbanColumn({
                 projectLabel={getProjectLabel?.(tracker) ?? null}
                 childCount={stats.childCount}
                 doneCount={stats.doneCount}
-                claimedBy={tracker.claimedBy ?? null}
                 createdAt={tracker.createdAt ?? null}
                 closedAt={tracker.closedAt ?? null}
                 testID={cardTestID}

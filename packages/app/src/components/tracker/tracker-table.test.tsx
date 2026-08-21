@@ -130,7 +130,7 @@ describe("TrackerTable status grouping", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders one section per real status", () => {
+  it("renders a section for every status that has at least one item", () => {
     const { container: c } = renderTable([
       tracker({ id: "a-open", status: "open" }),
       tracker({ id: "a-ip", status: "in_progress" }),
@@ -204,18 +204,14 @@ describe("TrackerTable status grouping", () => {
     expect(ipRowIds).toEqual(["row-a-ip", "row-b-ip"]);
   });
 
-  it("renders every section even when empty", () => {
+  it("hides sections that have no items — e.g. a toolbar status filter leaves only one status", () => {
     const { container: c } = renderTable([tracker({ id: "only-open", status: "open" })]);
     container = c;
 
-    const ipSection = c.querySelector('[data-testid="tracker-table-section-in_progress"]');
-    const doneSection = c.querySelector('[data-testid="tracker-table-section-closed"]');
-    const cancSection = c.querySelector('[data-testid="tracker-table-section-cancelled"]');
-
-    expect(ipSection?.textContent).toContain("0");
-    expect(doneSection?.textContent).toContain("0");
-    expect(cancSection?.textContent).toContain("0");
-    expect(ipSection?.querySelector('[data-testid^="row-"]')).toBeNull();
+    expect(c.querySelector('[data-testid="tracker-table-section-open"]')).not.toBeNull();
+    expect(c.querySelector('[data-testid="tracker-table-section-in_progress"]')).toBeNull();
+    expect(c.querySelector('[data-testid="tracker-table-section-closed"]')).toBeNull();
+    expect(c.querySelector('[data-testid="tracker-table-section-cancelled"]')).toBeNull();
   });
 
   it("reveals at most REVEAL_STEP rows per section with a Show more control", () => {
