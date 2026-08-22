@@ -170,6 +170,13 @@ export function useTrackerSearch(options: UseTrackerSearchOptions): UseTrackerSe
             fetched.push({ trackers: page.trackers, pageInfo: page.pageInfo, key });
           } catch {
             // Same silent per-project tolerance as the initial search.
+            // Stop retrying this project's cursor on subsequent "Load more"
+            // presses, while allowing the other projects' pages to merge.
+            fetched.push({
+              trackers: [],
+              pageInfo: { nextCursor: null, hasMore: false },
+              key,
+            });
           }
         }),
       );
