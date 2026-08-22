@@ -59,7 +59,7 @@ describe("createAitService", () => {
     expect(result.trackers.map((tracker) => tracker.id)).toEqual([p0.id]);
   });
 
-  it("omits page info when an old ait binary rejects pagination", async () => {
+  it("fails loudly when an ait binary rejects pagination", async () => {
     const binDir = mkdtempSync(join(tmpdir(), "ait-old-cli-test-"));
     const fakeAit = join(binDir, "ait");
     writeFileSync(
@@ -71,9 +71,13 @@ describe("createAitService", () => {
     process.env.PATH = binDir;
     try {
       const oldCliService = createAitService();
-      await expect(oldCliService.listTrackers({ cwd, limit: 1 })).resolves.toEqual({
-        trackers: [],
-        hiddenCount: 0,
+      await expect(oldCliService.listTrackers({ cwd, limit: 1 })).rejects.toMatchObject({
+        code: "unknown",
+        message: "flag provided but not defined: --limit",
+      });
+      await expect(oldCliService.listTrackers({ cwd, limit: 1 })).rejects.toMatchObject({
+        code: "unknown",
+        message: "flag provided but not defined: --limit",
       });
     } finally {
       process.env.PATH = originalPath;
