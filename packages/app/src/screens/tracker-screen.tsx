@@ -37,7 +37,13 @@ import {
 } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import type { TrackerSummary, TrackerType } from "@getpaseo/protocol/tracker/types";
+import type { TrackerStatsCounts } from "@getpaseo/protocol/tracker/rpc-schemas";
+import type {
+  TrackerPriority,
+  TrackerStatus,
+  TrackerSummary,
+  TrackerType,
+} from "@getpaseo/protocol/tracker/types";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { TrackerDetailSheet } from "@/components/tracker/tracker-detail-sheet";
 import { TrackerEditSheet } from "@/components/tracker/tracker-edit-sheet";
@@ -78,14 +84,15 @@ import {
 } from "@/tracker/aggregated-trackers";
 import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
 // This screen no longer subscribes to the live-push path (useAggregatedTrackers) —
-// it drives both List and Kanban from useTrackerProjectData's progressive
-// background sweep and reflects the user's own mutations via local patching.
-import type { AggregateLoadState } from "@/tracker/use-aggregated-trackers";
+// it drives both List and Kanban from useTrackerProjectData's single first-page
+// load per section plus explicit loadMore, and reflects the user's own
+// mutations via local patching.
 import { useTrackerProjectData } from "@/tracker/use-tracker-project-data";
+import { useTrackerStats } from "@/tracker/use-tracker-stats";
 import { useTrackerSearch } from "@/tracker/use-tracker-search";
 import { buildTrackerHierarchy, type TrackerHierarchy } from "@/tracker/tracker-hierarchy";
+import type { TrackerBoardLaneKey } from "@/tracker/tracker-board-model";
 import {
-  getTrackerStatCounts,
   matchesListStatFilter,
   type TrackerStatCounts,
   type TrackerStatFilter,
@@ -172,13 +179,6 @@ const STAT_COUNT_WIDTH = 24;
 // in the needle) rather than being trimmed away, so "v1 " (4 chars) narrows to
 // the "v1" prefix instead of also matching "v10", "v123", etc. — only an
 // all-whitespace query is treated as empty.
-// Extracted out of TrackerScreenContent to keep the branch out of its own
-// cyclomatic complexity — List and Kanban now read the same shared
-// project-data sweep, so there is exactly one loading source to resolve,
-// regardless of view mode.
-function resolveEffectiveLoadState(isLoading: boolean): AggregateLoadState<AggregatedTracker> {
-  return isLoading ? { status: "loading" } : { status: "loaded", data: EMPTY_TRACKERS };
-}
 
 // Extracted purely to keep these `??` fallbacks out of TrackerScreenContent's
 // own cyclomatic complexity count — no behavior change from inlining them.
@@ -256,8 +256,22 @@ function bellIconColor(theme: Theme, isHovered: boolean): string {
   return theme.colorScheme === "dark" ? theme.colors.foreground : theme.colors.palette.red[600];
 }
 const inverseColorMapping = (theme: Theme) => ({ color: theme.colors.surface0 });
-const EMPTY_TRACKERS: AggregatedTracker[] = [];
 const EMPTY_READY_IDS: ReadonlySet<string> = new Set();
+
+const STAT_FILTER_TO_PRIORITY: Readonly<Partial<Record<StatFilter, TrackerPriority>>> = {
+  p0: "P0",
+  p1: "P1",
+  p2: "P2",
+  p3: "P3",
+  p4: "P4",
+};
+
+// The p0-p4 values are the only StatFilter members that name a dataset
+// narrowing rather than a status/lane projection — see the priority-vs-status
+// split documented on useTrackerListView below.
+function isPriorityStatFilter(filter: StatFilter): boolean {
+  return filter in STAT_FILTER_TO_PRIORITY;
+}
 
 // Only fetched in Kanban mode — List never renders a Ready lane. The fetch
 // itself (fetchTrackerReadyIds) is per-project resilient: a project whose
@@ -291,16 +305,16 @@ function useTrackerReadyIds(options: {
 }
 
 // List view's data source switch: browse mode reads `browseTrackers` — the
-// same shared project-data array Kanban renders from, just filtered and
-// bucketed differently; search mode always queries the server
-// (project.tracker.search) and never filters what browse has loaded. Kanban
-// never depends on isListSearch at all — only this hook (and TrackerTable's
-// own rendering) branches on it.
+// same shared project-data array Kanban renders from, already scoped to the
+// active type/priority filters server-side (see useTrackerProjectData's
+// `type`/`priority` options in TrackerScreenContent); search mode always
+// queries the server (project.tracker.search) and never filters what browse
+// has loaded. Kanban never depends on isListSearch at all — only this hook
+// (and TrackerTable's own rendering) branches on it.
 function useTrackerListView(options: {
   hasAnyProject: boolean;
   viewMode: ViewMode;
   search: string;
-  typeFilter: TypeFilter;
   selectedProjectId: string | null;
   projects: TrackerProjectInput[];
   listStatFilter: StatFilter;
@@ -319,10 +333,14 @@ function useTrackerListView(options: {
     enabled: options.hasAnyProject && options.viewMode === "list" && isListSearch,
     pageSize: pageStep,
   });
-  // The toolbar's stat filter stays client-side for both sources. The type
-  // filter only narrows the browse source — search has never applied it
-  // client-side (a server-side search result set is already small and
-  // specific; narrowing it further by type isn't part of this feature).
+  // Search has no server-side status/priority filter (project.tracker.search
+  // takes only a query), so it keeps the full client-side matchesListStatFilter
+  // application. Browse is already priority-scoped server-side, so a priority
+  // value here narrows nothing further — it would only re-confirm every row
+  // still matches. A status value (open/in_progress/done/all) still applies:
+  // it never truncates a section that stays visible, it only empties out
+  // (hides) whole sections that don't match, which is section visibility, not
+  // dataset selection — see docs/refactors/tracker-lazy-counts.md.
   const listViewTrackers = useMemo(() => {
     if (isListSearch) {
       return options.listStatFilter === "all"
@@ -331,20 +349,12 @@ function useTrackerListView(options: {
             matchesListStatFilter(tracker, options.listStatFilter),
           );
     }
-    const typeFiltered =
-      options.typeFilter === "all"
-        ? options.browseTrackers
-        : options.browseTrackers.filter((tracker) => tracker.type === options.typeFilter);
-    return options.listStatFilter === "all"
-      ? typeFiltered
-      : typeFiltered.filter((tracker) => matchesListStatFilter(tracker, options.listStatFilter));
-  }, [
-    isListSearch,
-    searchState.results,
-    options.browseTrackers,
-    options.typeFilter,
-    options.listStatFilter,
-  ]);
+    return options.listStatFilter === "all" || isPriorityStatFilter(options.listStatFilter)
+      ? options.browseTrackers
+      : options.browseTrackers.filter((tracker) =>
+          matchesListStatFilter(tracker, options.listStatFilter),
+        );
+  }, [isListSearch, searchState.results, options.browseTrackers, options.listStatFilter]);
   return { isListSearch, searchState, listViewTrackers };
 }
 
@@ -479,12 +489,21 @@ function TrackerScreenContent(): ReactElement {
     }
   }, [projectInputs, selectedProjectId]);
 
+  // The priority filter only ever narrows the fetch while List is the active
+  // view — Kanban's own priority filter (kanbanStatFilter) stays a client-side
+  // lane projection over the unfiltered set (buildTrackerBoard's isDimmed), so
+  // pushing it server-side here would wrongly narrow Kanban's data too, since
+  // both views share this one fetch.
+  const priorityOption = useMemo(
+    () => (viewMode === "list" ? STAT_FILTER_TO_PRIORITY[listStatFilter] : undefined),
+    [viewMode, listStatFilter],
+  );
   // The single shared data source for both List and Kanban — always running
-  // regardless of view mode or search, exactly like the old Kanban-only
-  // aggregate fetch used to. Switching view mode only changes how this array
-  // renders, never how it loads. Already scoped to `selectedProjectId`
-  // internally (or every project when none is selected), so callers use
-  // `projectData.trackers` directly, no separate project filter needed.
+  // regardless of view mode or search. Switching view mode only changes how
+  // this array renders, never how it loads. Already scoped to
+  // `selectedProjectId` internally (or every project when none is selected),
+  // and now to `typeFilter`/the List priority filter too, so callers use
+  // `projectData.trackers` directly, no separate in-memory filter needed.
   const pageStep = useTrackerPageStep();
   const projectData = useTrackerProjectData({
     projects: projectInputs,
@@ -492,54 +511,59 @@ function TrackerScreenContent(): ReactElement {
     all: true,
     enabled: hasAnyProject,
     pageSize: pageStep,
+    type: typeFilter === "all" ? undefined : typeFilter,
+    priority: priorityOption,
+  });
+  // Exact server-computed counts for the toolbar stat pills — a separate
+  // fetch from projectData because it has to stay unfiltered by
+  // listStatFilter/kanbanStatFilter (the pills show every bucket at once) and
+  // report every tracker type at once (one bucket per type), which the
+  // paginated `projectData.trackers` array can't do once type is scoped into
+  // its own fetch.
+  const stats = useTrackerStats({
+    projects: projectInputs,
+    selectedProjectId,
+    enabled: hasAnyProject,
   });
 
   // The header bell reports "which projects in this workspace need `ait
   // init`" — a workspace-wide fact, unrelated to which project the toolbar
-  // picker has narrowed the List/Kanban data to. `projectData.projectErrors`
-  // above is scoped to that picker (by design, so a wrong project doesn't pay
-  // for fetching data nobody's viewing), so it goes silent on every project
-  // except whichever one is currently selected. This second sweep is
-  // unscoped and exists purely to keep the bell honest; `pageSize: 1` because
-  // nothing here reads `.trackers` — the sweep only needs to run long enough
-  // to surface the per-project error, not to fetch real pages. Only enabled
-  // while a project is actually selected — with "All projects" active it
-  // would just be an identical, wasted duplicate of the sweep above.
+  // picker has narrowed the List/Kanban data to, or to the type/priority
+  // filters. `stats.projectErrors` is scoped to the picker (by design, so a
+  // wrong project doesn't pay for fetching data nobody's viewing), so it goes
+  // silent on every project except whichever one is currently selected. A
+  // second, unscoped stats call keeps the bell honest — one request per
+  // project (not the four a status-paginated fetch would cost), and only
+  // enabled while a project is actually selected, since with "All projects"
+  // active it would be an identical, wasted duplicate of `stats` above.
   const isProjectFiltered = selectedProjectId !== null;
-  const bellProjectData = useTrackerProjectData({
+  const bellStats = useTrackerStats({
     projects: projectInputs,
     selectedProjectId: null,
-    all: true,
     enabled: hasAnyProject && isProjectFiltered,
-    pageSize: 1,
   });
-  const bellProjectErrors = isProjectFiltered
-    ? bellProjectData.projectErrors
-    : projectData.projectErrors;
+  const bellProjectErrors = isProjectFiltered ? bellStats.projectErrors : stats.projectErrors;
 
-  // Built from the full (unfiltered) project set project data returns — the
-  // List row's delete action needs to know the *real* child count (any type,
-  // any status), not just what the current type/status toolbar filter shows.
+  // Built from the full (unfiltered-by-status) project set project data
+  // returns — the List row's delete action needs to know the *real* child
+  // count (any status), and is only a fallback now: both TrackerTable and
+  // TrackerKanbanBoard/Card prefer each tracker's own server-computed
+  // `childCount`/`doneCount` and fall back to this hierarchy only when those
+  // are undefined (an old daemon that predates the feature).
   const trackerHierarchy = useMemo(
     () => buildTrackerHierarchy(projectData.trackers),
     [projectData.trackers],
   );
-  // Type filter is applied here, before the board — buildTrackerBoard's own
-  // partitioning stays status-only (see tracker-board-model.ts docstring).
-  const kanbanTrackers = useMemo(
-    () =>
-      typeFilter === "all"
-        ? projectData.trackers
-        : projectData.trackers.filter((tracker) => tracker.type === typeFilter),
-    [projectData.trackers, typeFilter],
-  );
+  // Type filtering now happens server-side via projectData's `type` option
+  // above — this is the same array, kept under its own name purely for
+  // readability at the Kanban call sites below.
+  const kanbanTrackers = projectData.trackers;
   const readyIds = useTrackerReadyIds({ viewMode, projects: projectInputs, selectedProjectId });
 
   const { isListSearch, searchState, listViewTrackers } = useTrackerListView({
     hasAnyProject,
     viewMode,
     search,
-    typeFilter,
     selectedProjectId,
     projects: projectInputs,
     listStatFilter,
@@ -554,14 +578,10 @@ function TrackerScreenContent(): ReactElement {
   );
   // Search's own loading routes through isSearchLoading below, not here — it
   // would otherwise unmount the search row on every keystroke.
-  const effectiveLoadState = useMemo(
-    () => resolveEffectiveLoadState(isListSearch ? false : projectData.isLoading),
-    [isListSearch, projectData.isLoading],
-  );
   const bodyState = resolveTrackerScreenBodyState({
     hasAnyProject,
     isProjectListLoading,
-    loadState: effectiveLoadState,
+    isLoading: isListSearch ? false : projectData.isLoading,
     selectedProjectId: selectedProjectId ?? "all",
     projectErrors: projectData.projectErrors,
     visibleTrackersCount,
@@ -583,6 +603,26 @@ function TrackerScreenContent(): ReactElement {
   const toast = useToast();
   const { t } = useTranslation();
 
+  // The toolbar's stat pills are a separate fetch (`stats`) from the
+  // paginated `projectData` array, so every local mutation that patches or
+  // removes a tracker in `projectData` has to refresh `stats` too — otherwise
+  // the pills stay stale (e.g. still counting a just-closed item as open)
+  // until the next unrelated re-fetch.
+  const patchTrackerAndRefreshStats = useCallback(
+    (updated: AggregatedTracker) => {
+      projectData.patchTracker(updated);
+      stats.refetch();
+    },
+    [projectData, stats],
+  );
+  const removeTrackersAndRefreshStats = useCallback(
+    (ids: string[]) => {
+      projectData.removeTrackers(ids);
+      stats.refetch();
+    },
+    [projectData, stats],
+  );
+
   const handleOpenTracker = useCallback(
     (tracker: AggregatedTracker) => setSelectedTracker(tracker),
     [],
@@ -594,13 +634,19 @@ function TrackerScreenContent(): ReactElement {
     void openProjectPicker();
   }, [openProjectPicker]);
   const handleInitialise = useCallback(() => {
-    // `ait init` doesn't return a tracker to patch in — a fresh sweep is the
-    // only way to move this project out of its `uninitialised` error state.
-    void initMutations.initTracker().then(() => projectData.refetch());
-  }, [initMutations, projectData]);
+    // `ait init` doesn't return a tracker to patch in — a fresh first-page
+    // load is the only way to move this project out of its `uninitialised`
+    // error state.
+    void initMutations.initTracker().then(() => {
+      projectData.refetch();
+      stats.refetch();
+      return undefined;
+    });
+  }, [initMutations, projectData, stats]);
   const handleRetry = useCallback(() => {
     projectData.refetch();
-  }, [projectData]);
+    stats.refetch();
+  }, [projectData, stats]);
   const handleSelectProject = useCallback((projectId: string | null) => {
     setSelectedProjectId(projectId);
   }, []);
@@ -630,6 +676,66 @@ function TrackerScreenContent(): ReactElement {
     () => new Map(kanbanTrackers.map((tracker) => [tracker.id, tracker])),
     [kanbanTrackers],
   );
+  // Prefers the tracker's own server-computed childCount (accurate over the
+  // full subtree, even for a tracker whose descendants aren't loaded on this
+  // page) and only falls back to the locally-built hierarchy — which can only
+  // ever see whatever pages happened to load — when an old daemon predates
+  // the feature and leaves childCount undefined.
+  const resolveHasChildren = useCallback(
+    (aggregated: Pick<AggregatedTracker, "id" | "childCount">): boolean =>
+      aggregated.childCount !== undefined
+        ? aggregated.childCount > 0
+        : trackerHierarchy.descendantStats(aggregated.id).childCount > 0,
+    [trackerHierarchy],
+  );
+  // Status totals can't express the ready-versus-blocked split within Open,
+  // so `ready` and `open` both fall back to their loaded count (laneTotal:
+  // null) — tracked separately as pas-UkLWZ.10. `done` sums closed +
+  // cancelled per the Component contract; `in_progress` and `cancelled` map
+  // straight across.
+  const laneTotals = useMemo<Partial<Record<TrackerBoardLaneKey, number | null>>>(() => {
+    const { closed, cancelled, in_progress: inProgress } = projectData.sectionTotals;
+    return {
+      ready: null,
+      open: null,
+      in_progress: inProgress,
+      done: closed !== null && cancelled !== null ? closed + cancelled : null,
+      cancelled,
+    };
+  }, [projectData.sectionTotals]);
+  const laneHasMore = useMemo<Partial<Record<TrackerBoardLaneKey, boolean>>>(() => {
+    const { closed, cancelled, in_progress: inProgress, open } = projectData.sectionHasMore;
+    return { ready: open, open, in_progress: inProgress, done: closed || cancelled, cancelled };
+  }, [projectData.sectionHasMore]);
+  const laneLoadingMore = useMemo<Partial<Record<TrackerBoardLaneKey, boolean>>>(() => {
+    const { closed, cancelled, in_progress: inProgress, open } = projectData.sectionLoadingMore;
+    return { ready: open, open, in_progress: inProgress, done: closed || cancelled, cancelled };
+  }, [projectData.sectionLoadingMore]);
+  // The Done lane merges closed+cancelled (see laneTotals above), so paging
+  // it forward has to advance both underlying status sections at once; every
+  // other lane maps onto exactly one status (`ready`/`open` both page the
+  // `open` section, since Ready is a client-side projection of it).
+  const handleKanbanLoadMore = useCallback(
+    (lane: TrackerBoardLaneKey) => {
+      switch (lane) {
+        case "ready":
+        case "open":
+          projectData.loadMore("open");
+          return;
+        case "in_progress":
+          projectData.loadMore("in_progress");
+          return;
+        case "done":
+          projectData.loadMore("closed");
+          projectData.loadMore("cancelled");
+          return;
+        case "cancelled":
+          projectData.loadMore("cancelled");
+          return;
+      }
+    },
+    [projectData],
+  );
   // The transition's own response IS the authoritative snapshot the board used
   // to rely on a caller-side refresh to pick up — patched in directly instead
   // of re-fetching or waiting on a live-push re-render.
@@ -645,25 +751,26 @@ function TrackerScreenContent(): ReactElement {
           throw new Error(t("common.errors.daemonClientUnavailable"));
         }
         const summary = await callTrackerTransition(client, aggregated, transition);
-        projectData.patchTracker({ ...aggregated, ...summary });
+        patchTrackerAndRefreshStats({ ...aggregated, ...summary });
       } finally {
         // Still relevant for the (react-query-backed) readyIds fetch, which
         // this hook doesn't own.
         void queryClient.invalidateQueries({ queryKey: trackerQueryBaseKey });
       }
     },
-    [kanbanTrackerById, queryClient, t, projectData],
+    [kanbanTrackerById, queryClient, t, patchTrackerAndRefreshStats],
   );
   const handleKanbanTransitionError = useCallback(
     (_trackerId: string, message: string) => toast.error(message),
     [toast],
   );
   // Cascade mirrors the List row's identical rule: `ait` itself refuses a
-  // non-cascaded delete of a tracker with descendants. `trackerHierarchy` is
-  // built from the full (unfiltered) project set — not the type-filtered
-  // `kanbanTrackers` the board partitions into lanes — so this agrees with
-  // whatever "Remove"/"Delete tree" copy the card's own confirm dialog showed,
-  // even when a type filter would otherwise hide a tracker's real children.
+  // non-cascaded delete of a tracker with descendants. `resolveHasChildren`
+  // prefers the tracker's own server-computed childCount — accurate for the
+  // real full subtree, not just whatever a type filter left loaded — falling
+  // back to `trackerHierarchy` (built from the full unfiltered project set)
+  // only when that daemon predates the feature, so this agrees with whatever
+  // "Remove"/"Delete tree" copy the card's own confirm dialog showed.
   const handleKanbanDelete = useCallback(
     async (trackerId: string): Promise<void> => {
       try {
@@ -675,26 +782,29 @@ function TrackerScreenContent(): ReactElement {
         if (!client) {
           throw new Error(t("common.errors.daemonClientUnavailable"));
         }
-        const hasChildren = trackerHierarchy.descendantStats(trackerId).childCount > 0;
+        const hasChildren = resolveHasChildren(aggregated);
         const removedIds = await client.trackerDelete({
           projectId: aggregated.projectId,
           trackerId: aggregated.id,
           cascade: hasChildren,
         });
-        projectData.removeTrackers(removedIds);
+        removeTrackersAndRefreshStats(removedIds);
       } finally {
         void queryClient.invalidateQueries({ queryKey: trackerQueryBaseKey });
       }
     },
-    [kanbanTrackerById, trackerHierarchy, t, projectData, queryClient],
+    [kanbanTrackerById, resolveHasChildren, t, removeTrackersAndRefreshStats, queryClient],
   );
   const handleKanbanDeleteError = useCallback(
     (_trackerId: string, message: string) => toast.error(message),
     [toast],
   );
   const getKanbanHasChildren = useCallback(
-    (trackerId: string) => trackerHierarchy.descendantStats(trackerId).childCount > 0,
-    [trackerHierarchy],
+    (trackerId: string) => {
+      const aggregated = kanbanTrackerById.get(trackerId);
+      return aggregated ? resolveHasChildren(aggregated) : false;
+    },
+    [kanbanTrackerById, resolveHasChildren],
   );
   const handleKanbanCardPress = useCallback(
     (trackerId: string) => {
@@ -721,18 +831,18 @@ function TrackerScreenContent(): ReactElement {
   );
   const handleTrackerCreated = useCallback(
     (tracker: TrackerSummary, project: TrackerProjectInput) => {
-      projectData.patchTracker({ ...tracker, ...project });
+      patchTrackerAndRefreshStats({ ...tracker, ...project });
     },
-    [projectData],
+    [patchTrackerAndRefreshStats],
   );
   const handleDetailMutated = useCallback(
     (summary: TrackerSummary) => {
       if (!selectedTracker) {
         return;
       }
-      projectData.patchTracker({ ...selectedTracker, ...summary });
+      patchTrackerAndRefreshStats({ ...selectedTracker, ...summary });
     },
-    [selectedTracker, projectData],
+    [selectedTracker, patchTrackerAndRefreshStats],
   );
   const contentWidth = useContentWidth();
   // Same patch mechanism as the row/detail mutation paths — merges the fresh
@@ -742,10 +852,10 @@ function TrackerScreenContent(): ReactElement {
       if (!editingTracker) {
         return;
       }
-      projectData.patchTracker({ ...editingTracker, ...summary });
+      patchTrackerAndRefreshStats({ ...editingTracker, ...summary });
       setEditingTracker(null);
     },
-    [editingTracker, projectData],
+    [editingTracker, patchTrackerAndRefreshStats],
   );
 
   const headerRightContent = useMemo(
@@ -773,13 +883,21 @@ function TrackerScreenContent(): ReactElement {
         bodyState={bodyState}
         trackers={listViewTrackers}
         trackerHierarchy={trackerHierarchy}
-        statsTrackers={kanbanTrackers}
+        statsCounts={stats.counts}
+        statsLoading={stats.isLoading}
         kanbanTrackers={kanbanTrackers}
         kanbanReadyIds={readyIds}
-        isComplete={projectData.isComplete}
-        onTrackerPatched={projectData.patchTracker}
+        laneTotals={laneTotals}
+        laneHasMore={laneHasMore}
+        laneLoadingMore={laneLoadingMore}
+        onKanbanLoadMore={handleKanbanLoadMore}
+        sectionTotals={projectData.sectionTotals}
+        sectionHasMore={projectData.sectionHasMore}
+        sectionLoadingMore={projectData.sectionLoadingMore}
+        onLoadMore={projectData.loadMore}
+        onTrackerPatched={patchTrackerAndRefreshStats}
         onEditTracker={handleOpenEdit}
-        onTrackersRemoved={projectData.removeTrackers}
+        onTrackersRemoved={removeTrackersAndRefreshStats}
         listVariant={isListSearch ? "flat" : "sections"}
         onLoadMoreAll={searchState.loadMore}
         hasMoreAll={searchState.hasMore}
@@ -1408,10 +1526,18 @@ function TrackerScreenBody({
   bodyState,
   trackers,
   trackerHierarchy,
-  statsTrackers,
+  statsCounts,
+  statsLoading,
   kanbanTrackers,
   kanbanReadyIds,
-  isComplete,
+  laneTotals,
+  laneHasMore,
+  laneLoadingMore,
+  onKanbanLoadMore,
+  sectionTotals,
+  sectionHasMore,
+  sectionLoadingMore,
+  onLoadMore,
   onTrackerPatched,
   onEditTracker,
   onTrackersRemoved,
@@ -1453,13 +1579,20 @@ function TrackerScreenBody({
   bodyState: TrackerScreenBodyState;
   trackers: AggregatedTracker[];
   trackerHierarchy: TrackerHierarchy;
-  statsTrackers: AggregatedTracker[];
+  /** Exact server-computed counts for the toolbar stat pills — `null` while
+   * loading or when the host lacks `aitTrackerStats`. */
+  statsCounts: TrackerStatsCounts | null;
+  statsLoading: boolean;
   kanbanTrackers: AggregatedTracker[];
   kanbanReadyIds: ReadonlySet<string>;
-  /** False while the shared project-data sweep still has sections in flight —
-   * threaded to both TrackerKanbanBoard (lane counts, card badges) and
-   * TrackerTable (gates the delete-confirmation path). */
-  isComplete: boolean;
+  laneTotals: Partial<Record<TrackerBoardLaneKey, number | null>>;
+  laneHasMore: Partial<Record<TrackerBoardLaneKey, boolean>>;
+  laneLoadingMore: Partial<Record<TrackerBoardLaneKey, boolean>>;
+  onKanbanLoadMore: (lane: TrackerBoardLaneKey) => void;
+  sectionTotals: Record<TrackerStatus, number | null>;
+  sectionHasMore: Record<TrackerStatus, boolean>;
+  sectionLoadingMore: Record<TrackerStatus, boolean>;
+  onLoadMore: (status: TrackerStatus) => void;
   onTrackerPatched: (tracker: AggregatedTracker) => void;
   onEditTracker: (tracker: AggregatedTracker) => void;
   onTrackersRemoved: (ids: string[]) => void;
@@ -1530,8 +1663,8 @@ function TrackerScreenBody({
   const toolbar = (
     <TrackersToolbar
       contentWidth={contentWidth}
-      isLoading={isLoading}
-      statsTrackers={statsTrackers}
+      statsCounts={statsCounts}
+      statsLoading={statsLoading}
       projects={projects}
       selectedProjectId={selectedProjectId}
       onSelectProject={onSelectProject}
@@ -1598,7 +1731,10 @@ function TrackerScreenBody({
             trackers={kanbanTrackers}
             filter={statFilter}
             readyIds={kanbanReadyIds}
-            isComplete={isComplete}
+            laneTotals={laneTotals}
+            laneHasMore={laneHasMore}
+            laneLoadingMore={laneLoadingMore}
+            onLoadMore={onKanbanLoadMore}
             onTransition={onKanbanTransition}
             onTransitionError={onKanbanTransitionError}
             onEdit={onKanbanEdit}
@@ -1626,18 +1762,34 @@ function TrackerScreenBody({
         onCreate={onCreate}
       />
     );
-  } else {
+  } else if (listVariant === "sections") {
     listBody = (
       <TrackerTable
+        variant="sections"
         trackers={trackers}
         showProjectLabel={showProjectLabel}
         onOpenTracker={onOpenTracker}
         hierarchy={trackerHierarchy}
-        isComplete={isComplete}
         onTrackerPatched={onTrackerPatched}
         onEditTracker={onEditTracker}
         onTrackersRemoved={onTrackersRemoved}
-        variant={listVariant}
+        sectionTotals={sectionTotals}
+        sectionHasMore={sectionHasMore}
+        sectionLoadingMore={sectionLoadingMore}
+        onLoadMore={onLoadMore}
+      />
+    );
+  } else {
+    listBody = (
+      <TrackerTable
+        variant="flat"
+        trackers={trackers}
+        showProjectLabel={showProjectLabel}
+        onOpenTracker={onOpenTracker}
+        hierarchy={trackerHierarchy}
+        onTrackerPatched={onTrackerPatched}
+        onEditTracker={onEditTracker}
+        onTrackersRemoved={onTrackersRemoved}
         onLoadMoreAll={onLoadMoreAll}
         hasMoreAll={hasMoreAll}
         isLoadingMoreAll={isLoadingMoreAll}
@@ -1945,6 +2097,25 @@ function KanbanPriorityFilterRow({
   );
 }
 
+// The toolbar pill components (StatFilterPillView, KanbanPriorityFilterButton,
+// PriorityFilterDropdown) predate server-side stats and speak the flat
+// TrackerStatCounts shape — converting TrackerStatsCounts's per-type bucket
+// into that shape here keeps all of them unchanged rather than threading the
+// nested byStatus/byPriority shape through every leaf.
+function toLegacyStatCounts(bucket: TrackerStatsCounts["all"]): TrackerStatCounts {
+  return {
+    open: bucket.byStatus.open,
+    inProgress: bucket.byStatus.in_progress,
+    p0: bucket.byPriority.P0,
+    p1: bucket.byPriority.P1,
+    p2: bucket.byPriority.P2,
+    p3: bucket.byPriority.P3,
+    p4: bucket.byPriority.P4,
+    done: bucket.byStatus.closed + bucket.byStatus.cancelled,
+    all: bucket.total,
+  };
+}
+
 // "Ready" (unblocked) is intentionally omitted: it needs dependency/blocker
 // data that `ait list` doesn't return per-row, only `ait show <id>` does — a
 // dedicated ready-count RPC is follow-up work.
@@ -1956,7 +2127,7 @@ function KanbanPriorityFilterRow({
 // there is redundant. Priority stays, but dims non-matching cards in place
 // (buildTrackerBoard's isDimmed) instead of hiding lanes.
 function StatFilterRow({
-  trackers,
+  counts,
   isLoading,
   statFilter,
   onStatFilterChange,
@@ -1965,9 +2136,13 @@ function StatFilterRow({
   placement,
   centered,
 }: {
-  trackers: AggregatedTracker[];
-  /** Renders every count as a placeholder. The labels are static and never
-   * wait for data — only the numbers do. */
+  /** Already picked for the current type filter and converted from
+   * TrackerStatsCounts's per-type bucket — see toLegacyStatCounts. `null`
+   * while loading or when the host lacks `aitTrackerStats`. */
+  counts: TrackerStatCounts | null;
+  /** Drives the skeleton pulse animation. The labels are static and never
+   * wait for data — only the numbers do, and `counts === null` alone already
+   * renders every number as a placeholder regardless of this flag. */
   isLoading: boolean;
   statFilter: StatFilter;
   onStatFilterChange: (value: StatFilter) => void;
@@ -1981,7 +2156,6 @@ function StatFilterRow({
   centered: boolean;
 }): ReactElement | null {
   const pulse = useSkeletonPulse(isLoading);
-  const counts = isLoading ? null : getTrackerStatCounts(trackers);
   const isStacked = placement === "stacked";
   // The stacked row's own margins live here rather than on a wrapper View —
   // this component already renders a ScrollView, and it returns null in the
@@ -2049,8 +2223,8 @@ function StatFilterRow({
 
 function TrackersToolbar({
   contentWidth,
-  isLoading,
-  statsTrackers,
+  statsCounts,
+  statsLoading,
   projects,
   selectedProjectId,
   onSelectProject,
@@ -2065,8 +2239,11 @@ function TrackersToolbar({
    * first frame, where every form factor is compact and lands on the stacked
    * arrangement anyway. */
   contentWidth: number | null;
-  isLoading: boolean;
-  statsTrackers: AggregatedTracker[];
+  /** Exact server-computed counts for the toolbar stat pills — already
+   * fetched unfiltered by listStatFilter/kanbanStatFilter; the pill for the
+   * current type filter is picked from its per-type bucket below. */
+  statsCounts: TrackerStatsCounts | null;
+  statsLoading: boolean;
   projects: TrackerProjectInput[];
   selectedProjectId: string | null;
   onSelectProject: (projectId: string | null) => void;
@@ -2130,12 +2307,16 @@ function TrackersToolbar({
     </>
   );
 
-  // Group 3: which status or priority.
+  // Group 3: which status or priority. The bucket matching the current type
+  // filter is what TrackerStatsCounts's per-type split exists for — picking
+  // it here (rather than in StatFilterRow) keeps that component's prop
+  // surface a plain, already-resolved TrackerStatCounts.
   const isSingleRow = contentWidth != null && contentWidth >= TOOLBAR_SINGLE_ROW_MIN_WIDTH;
+  const statsBucket = statsCounts ? statsCounts[typeFilter] : null;
   const statsGroup = (
     <StatFilterRow
-      trackers={statsTrackers}
-      isLoading={isLoading}
+      counts={statsBucket ? toLegacyStatCounts(statsBucket) : null}
+      isLoading={statsLoading}
       statFilter={statFilter}
       onStatFilterChange={onStatFilterChange}
       viewMode={viewMode}
