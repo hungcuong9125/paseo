@@ -1,7 +1,12 @@
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { TrackerRpcError } from "@getpaseo/client/internal/daemon-client";
-import type { TrackerErrorCode } from "@getpaseo/protocol/tracker/rpc-schemas";
-import type { TrackerStatus, TrackerSummary, TrackerType } from "@getpaseo/protocol/tracker/types";
+import type { TrackerErrorCode, TrackerStatsCounts } from "@getpaseo/protocol/tracker/rpc-schemas";
+import type {
+  TrackerPriority,
+  TrackerStatus,
+  TrackerSummary,
+  TrackerType,
+} from "@getpaseo/protocol/tracker/types";
 import { toErrorMessage } from "@/utils/error-messages";
 
 export const trackerQueryBaseKey = ["trackers"] as const;
@@ -203,6 +208,9 @@ export async function fetchTrackerReadyIds(
 export interface TrackerPageInfo {
   hasMore: boolean;
   nextCursor: string | null;
+  /** Rows matching the request's filters, from the daemon's `total_count`.
+   * Absent when the CLI binary predates pagination. */
+  totalCount?: number;
 }
 
 export interface FetchTrackerPageInput {
@@ -210,6 +218,7 @@ export interface FetchTrackerPageInput {
   runtime: TrackersRuntime;
   status?: TrackerStatus;
   type?: TrackerType;
+  priority?: TrackerPriority;
   all: boolean;
   limit: number;
   cursor?: string;
@@ -241,6 +250,7 @@ export async function fetchTrackerPage(input: FetchTrackerPageInput): Promise<Tr
     all: input.all,
     ...(input.status !== undefined ? { status: input.status } : {}),
     ...(input.type !== undefined ? { trackerType: input.type } : {}),
+    ...(input.priority !== undefined ? { priority: input.priority } : {}),
     page: { limit: input.limit, ...(input.cursor !== undefined ? { cursor: input.cursor } : {}) },
   });
   return {
@@ -279,6 +289,44 @@ export async function searchTrackerPage(
     trackers: result.trackers.map((tracker) => tagTracker(tracker, input.project)),
     pageInfo: result.pageInfo,
   };
+}
+
+export interface TrackerStatsRuntime {
+  getClient(
+    serverId: string,
+  ): Pick<DaemonClient, "trackerStats" | "getLastServerInfoMessage"> | null;
+  getSnapshot(serverId: string): TrackersRuntimeSnapshot | null | undefined;
+}
+
+export interface FetchTrackerStatsInput {
+  project: TrackerProjectInput;
+  runtime: TrackerStatsRuntime;
+}
+
+export interface FetchTrackerStatsResult {
+  counts: TrackerStatsCounts | null;
+}
+
+/**
+ * One project's `project.tracker.stats` fetch — the counts-only counterpart
+ * to fetchTrackerPage. Offline/no-client contributes nothing (`counts:
+ * null`), same skip as fetchTrackerPage. An RPC failure throws so the
+ * caller's fan-out can convert it into a per-project error, same as
+ * fetchTrackerPage/searchTrackerPage.
+ */
+export async function fetchTrackerStats(
+  input: FetchTrackerStatsInput,
+): Promise<FetchTrackerStatsResult> {
+  const snapshot = input.runtime.getSnapshot(input.project.serverId);
+  const client = input.runtime.getClient(input.project.serverId);
+  if (!client || snapshot?.connectionStatus !== "online") {
+    return { counts: null };
+  }
+  const result = await client.trackerStats({ projectId: input.project.projectId });
+  if (result.error) {
+    throw new TrackerRpcError(result.errorCode ?? "unknown", result.error);
+  }
+  return { counts: result.counts };
 }
 
 /** Same per-project error mapping fetchAggregatedTrackers uses for its fan-out,
