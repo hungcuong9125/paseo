@@ -2568,6 +2568,7 @@ export const fr: TranslationResources = {
       },
       error: {
         transitionFailed: "Impossible de déplacer {{title}}. Réessayez.",
+        deleteFailed: "Impossible de supprimer {{title}}. Réessayez.",
       },
     },
     list: {

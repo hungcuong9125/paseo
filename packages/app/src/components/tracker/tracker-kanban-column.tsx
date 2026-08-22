@@ -97,6 +97,12 @@ export interface TrackerKanbanColumnProps {
   onTransition: (trackerId: string, transition: TrackerTransition) => void;
   /** Opens the caller's edit sheet for a card — omit to hide the kebab menu's Edit entry. */
   onEdit?: (trackerId: string) => void;
+  /** Performs the delete after the user confirms — omit to hide the kebab menu's
+   * Remove/Delete tree entry. */
+  onDelete?: (trackerId: string) => void;
+  /** Resolves whether a tracker has descendants from the caller's own (unfiltered)
+   * hierarchy — falls back to this column's own `hierarchy` prop when omitted. */
+  getHasChildren?: (trackerId: string) => boolean;
   /** Tapping a card body (not the move menu) — omit to render cards non-pressable. */
   onCardPress?: (trackerId: string) => void;
   /** Position in the rendered lane row — only decides how many skeleton cards
@@ -118,6 +124,8 @@ export function TrackerKanbanColumn({
   isPending,
   onTransition,
   onEdit,
+  onDelete,
+  getHasChildren,
   onCardPress,
   laneIndex = 0,
   isLoading = false,
@@ -180,6 +188,9 @@ export function TrackerKanbanColumn({
           isPending={pending}
           onTransition={onTransition}
           onEdit={onEdit}
+          hasChildren={getHasChildren ? getHasChildren(tracker.id) : stats.childCount > 0}
+          deleteDisabled={!isComplete}
+          onDelete={onDelete}
           onCardPress={isNative ? onCardPress : undefined}
           testID={`${cardTestID}-move`}
         >

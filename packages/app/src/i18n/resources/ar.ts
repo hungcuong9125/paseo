@@ -2505,6 +2505,7 @@ export const ar: TranslationResources = {
       },
       error: {
         transitionFailed: "تعذر نقل {{title}}. حاول مرة أخرى.",
+        deleteFailed: "تعذر حذف {{title}}. حاول مرة أخرى.",
       },
     },
     list: {

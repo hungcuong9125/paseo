@@ -2530,6 +2530,7 @@ export const ja: TranslationResources = {
       },
       error: {
         transitionFailed: "{{title}} を移動できませんでした。もう一度お試しください。",
+        deleteFailed: "{{title}} を削除できませんでした。もう一度お試しください。",
       },
     },
     list: {

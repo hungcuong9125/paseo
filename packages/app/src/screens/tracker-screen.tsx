@@ -658,6 +658,44 @@ function TrackerScreenContent(): ReactElement {
     (_trackerId: string, message: string) => toast.error(message),
     [toast],
   );
+  // Cascade mirrors the List row's identical rule: `ait` itself refuses a
+  // non-cascaded delete of a tracker with descendants. `trackerHierarchy` is
+  // built from the full (unfiltered) project set — not the type-filtered
+  // `kanbanTrackers` the board partitions into lanes — so this agrees with
+  // whatever "Remove"/"Delete tree" copy the card's own confirm dialog showed,
+  // even when a type filter would otherwise hide a tracker's real children.
+  const handleKanbanDelete = useCallback(
+    async (trackerId: string): Promise<void> => {
+      try {
+        const aggregated = kanbanTrackerById.get(trackerId);
+        if (!aggregated) {
+          throw new Error(`Unknown tracker: ${trackerId}`);
+        }
+        const client = useSessionStore.getState().sessions[aggregated.serverId]?.client;
+        if (!client) {
+          throw new Error(t("common.errors.daemonClientUnavailable"));
+        }
+        const hasChildren = trackerHierarchy.descendantStats(trackerId).childCount > 0;
+        const removedIds = await client.trackerDelete({
+          projectId: aggregated.projectId,
+          trackerId: aggregated.id,
+          cascade: hasChildren,
+        });
+        projectData.removeTrackers(removedIds);
+      } finally {
+        void queryClient.invalidateQueries({ queryKey: trackerQueryBaseKey });
+      }
+    },
+    [kanbanTrackerById, trackerHierarchy, t, projectData, queryClient],
+  );
+  const handleKanbanDeleteError = useCallback(
+    (_trackerId: string, message: string) => toast.error(message),
+    [toast],
+  );
+  const getKanbanHasChildren = useCallback(
+    (trackerId: string) => trackerHierarchy.descendantStats(trackerId).childCount > 0,
+    [trackerHierarchy],
+  );
   const handleKanbanCardPress = useCallback(
     (trackerId: string) => {
       const aggregated = kanbanTrackerById.get(trackerId);
@@ -763,6 +801,9 @@ function TrackerScreenContent(): ReactElement {
         onKanbanTransition={handleKanbanTransition}
         onKanbanTransitionError={handleKanbanTransitionError}
         onKanbanEdit={handleKanbanEdit}
+        onKanbanDelete={handleKanbanDelete}
+        onKanbanDeleteError={handleKanbanDeleteError}
+        getKanbanHasChildren={getKanbanHasChildren}
         onKanbanCardPress={handleKanbanCardPress}
         onCreate={handleOpenCreate}
         onOpenProject={handleOpenProject}
@@ -1395,6 +1436,9 @@ function TrackerScreenBody({
   onKanbanTransition,
   onKanbanTransitionError,
   onKanbanEdit,
+  onKanbanDelete,
+  onKanbanDeleteError,
+  getKanbanHasChildren,
   onKanbanCardPress,
   onCreate,
   onOpenProject,
@@ -1443,6 +1487,9 @@ function TrackerScreenBody({
   onKanbanTransition: (trackerId: string, transition: TrackerTransition) => Promise<void>;
   onKanbanTransitionError: (trackerId: string, message: string) => void;
   onKanbanEdit: (trackerId: string) => void;
+  onKanbanDelete: (trackerId: string) => Promise<void>;
+  onKanbanDeleteError: (trackerId: string, message: string) => void;
+  getKanbanHasChildren: (trackerId: string) => boolean;
   onKanbanCardPress: (trackerId: string) => void;
   onCreate: () => void;
   onOpenProject: () => void;
@@ -1555,6 +1602,9 @@ function TrackerScreenBody({
             onTransition={onKanbanTransition}
             onTransitionError={onKanbanTransitionError}
             onEdit={onKanbanEdit}
+            onDelete={onKanbanDelete}
+            onDeleteError={onKanbanDeleteError}
+            getHasChildren={getKanbanHasChildren}
             getProjectLabel={getKanbanProjectLabel}
             onCardPress={onKanbanCardPress}
           />

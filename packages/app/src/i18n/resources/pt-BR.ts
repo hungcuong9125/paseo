@@ -2545,6 +2545,7 @@ export const ptBR: TranslationResources = {
       },
       error: {
         transitionFailed: "Não foi possível mover {{title}}. Tente novamente.",
+        deleteFailed: "Não foi possível excluir {{title}}. Tente novamente.",
       },
     },
     list: {

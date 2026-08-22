@@ -2561,6 +2561,7 @@ export const es: TranslationResources = {
       },
       error: {
         transitionFailed: "No se pudo mover {{title}}. Inténtalo de nuevo.",
+        deleteFailed: "No se pudo eliminar {{title}}. Inténtalo de nuevo.",
       },
     },
     list: {

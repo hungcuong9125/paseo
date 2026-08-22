@@ -2522,6 +2522,7 @@ export const ko: TranslationResources = {
       },
       error: {
         transitionFailed: "{{title}}을(를) 이동할 수 없습니다. 다시 시도하세요.",
+        deleteFailed: "{{title}}을(를) 삭제할 수 없습니다. 다시 시도하세요.",
       },
     },
     list: {

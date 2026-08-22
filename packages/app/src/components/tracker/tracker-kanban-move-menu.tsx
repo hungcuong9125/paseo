@@ -13,6 +13,7 @@ import { MenuItem, MenuSeparator } from "@/components/ui/menu";
 import { laneTranslationKey } from "@/components/tracker/tracker-kanban-column";
 import { isNative } from "@/constants/platform";
 import type { Theme } from "@/styles/theme";
+import { confirmDialog } from "@/utils/confirm-dialog";
 import {
   getTrackerTransition,
   type TrackerLane,
@@ -111,6 +112,57 @@ const TrackerKanbanEditItems = memo(function TrackerKanbanEditItems({
   );
 });
 
+interface TrackerKanbanDeleteItemProps {
+  trackerId: string;
+  trackerTitle: string;
+  hasChildren: boolean;
+  disabled: boolean;
+  onDelete?: (trackerId: string) => void;
+  testID?: string;
+}
+
+// Same confirm-before-mutate copy as TrackerRow's List "Remove"/"Delete tree" item:
+// the title/message/confirmLabel flip on hasChildren so cascade-vs-single is explicit
+// before the irreversible call fires. Omit onDelete to hide the item entirely, same
+// convention as TrackerKanbanEditItems.
+const TrackerKanbanDeleteItem = memo(function TrackerKanbanDeleteItem({
+  trackerId,
+  trackerTitle,
+  hasChildren,
+  disabled,
+  onDelete,
+  testID,
+}: TrackerKanbanDeleteItemProps): ReactElement | null {
+  const handleSelect = useCallback(() => {
+    void (async () => {
+      const confirmed = await confirmDialog({
+        title: hasChildren ? "Delete tree?" : "Remove item?",
+        message: hasChildren
+          ? `"${trackerTitle}" and all of its children will be permanently deleted. This can't be undone.`
+          : `"${trackerTitle}" will be permanently deleted. This can't be undone.`,
+        confirmLabel: hasChildren ? "Delete tree" : "Remove",
+        destructive: true,
+      });
+      if (!confirmed) {
+        return;
+      }
+      onDelete?.(trackerId);
+    })();
+  }, [hasChildren, trackerId, trackerTitle, onDelete]);
+
+  if (!onDelete) {
+    return null;
+  }
+  return (
+    <>
+      <MenuSeparator />
+      <MenuItem destructive disabled={disabled} onSelect={handleSelect} testID={testID}>
+        {hasChildren ? "Delete tree" : "Remove"}
+      </MenuItem>
+    </>
+  );
+});
+
 export interface TrackerKanbanCardMenuProps {
   trackerId: string;
   trackerTitle: string;
@@ -119,6 +171,17 @@ export interface TrackerKanbanCardMenuProps {
   onTransition: (trackerId: string, transition: TrackerTransition) => void;
   /** Opens the caller's edit sheet for this card — no mutation happens until that sheet submits. */
   onEdit?: (trackerId: string) => void;
+  /** True when this tracker has any descendants — decides the delete item's label
+   * ("Remove" vs "Delete tree") and whether the mutation needs `cascade`, mirroring
+   * TrackerRow's identical Remove/Delete-tree treatment in List. */
+  hasChildren?: boolean;
+  /** True while the shared project-data sweep still has sections in flight — disables
+   * the delete item rather than risk offering a non-cascaded delete for something that
+   * actually has un-swept children. */
+  deleteDisabled?: boolean;
+  /** Performs the delete after the user confirms — omit to hide the Remove/Delete tree
+   * entry entirely (mirrors onEdit). */
+  onDelete?: (trackerId: string) => void;
   /**
    * Tapping the card body (not long-press, not the kebab). Native passes this straight
    * to `ContextMenuTrigger`'s own `onPress` — RN's core `Pressable` natively combines
@@ -150,6 +213,9 @@ export function TrackerKanbanCardMenu({
   isPending,
   onTransition,
   onEdit,
+  hasChildren = false,
+  deleteDisabled = false,
+  onDelete,
   onCardPress,
   testID,
 }: PropsWithChildren<TrackerKanbanCardMenuProps>): ReactElement {
@@ -190,6 +256,14 @@ export function TrackerKanbanCardMenu({
                 testID={testID ? `${testID}-context-item-${to}` : undefined}
               />
             ))}
+            <TrackerKanbanDeleteItem
+              trackerId={trackerId}
+              trackerTitle={trackerTitle}
+              hasChildren={hasChildren}
+              disabled={isPending || deleteDisabled}
+              onDelete={onDelete}
+              testID={testID ? `${testID}-context-item-delete` : undefined}
+            />
           </ContextMenuContent>
         </ContextMenu>
       ) : (
@@ -224,6 +298,14 @@ export function TrackerKanbanCardMenu({
                 testID={testID ? `${testID}-item-${to}` : undefined}
               />
             ))}
+            <TrackerKanbanDeleteItem
+              trackerId={trackerId}
+              trackerTitle={trackerTitle}
+              hasChildren={hasChildren}
+              disabled={isPending || deleteDisabled}
+              onDelete={onDelete}
+              testID={testID ? `${testID}-item-delete` : undefined}
+            />
           </DropdownMenuContent>
         </DropdownMenu>
       </View>
@@ -237,7 +319,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   kebabOverlay: {
     position: "absolute",
-    top: theme.spacing[1],
+    top: theme.spacing[2],
     right: theme.spacing[1],
   },
   kebabOverlayPending: {

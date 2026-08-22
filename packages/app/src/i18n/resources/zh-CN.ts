@@ -2476,6 +2476,7 @@ export const zhCN: TranslationResources = {
       },
       error: {
         transitionFailed: "无法移动 {{title}}。请重试。",
+        deleteFailed: "无法删除 {{title}}。请重试。",
       },
     },
     list: {
