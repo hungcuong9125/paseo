@@ -24,7 +24,7 @@ import type {
   TrackerSummary,
   TrackerType,
 } from "@getpaseo/protocol/tracker/types";
-import type { TrackerErrorCode } from "@getpaseo/protocol/tracker/rpc-schemas";
+import type { TrackerErrorCode, TrackerStatsCounts } from "@getpaseo/protocol/tracker/rpc-schemas";
 import type {
   AgentStreamEventPayload,
   AgentSnapshotPayload,
@@ -5229,12 +5229,13 @@ export class DaemonClient {
     all?: boolean;
     status?: TrackerStatus;
     trackerType?: TrackerType;
+    priority?: TrackerPriority;
     page?: { limit: number; cursor?: string };
     requestId?: string;
   }): Promise<{
     trackers: TrackerSummary[];
     hiddenCount: number;
-    pageInfo?: { nextCursor: string | null; hasMore: boolean };
+    pageInfo?: { nextCursor: string | null; hasMore: boolean; totalCount?: number };
   }> {
     const payload =
       await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.list.response">({
@@ -5245,6 +5246,7 @@ export class DaemonClient {
           ...(options.all !== undefined ? { all: options.all } : {}),
           ...(options.status !== undefined ? { status: options.status } : {}),
           ...(options.trackerType !== undefined ? { trackerType: options.trackerType } : {}),
+          ...(options.priority !== undefined ? { priority: options.priority } : {}),
           ...(options.page !== undefined
             ? {
                 page: {
@@ -5264,6 +5266,26 @@ export class DaemonClient {
       // Absent when the daemon served the complete unpaginated result (old CLI
       // binary fallback or a request without `page`) — not "no more pages".
       ...(payload.pageInfo !== undefined ? { pageInfo: payload.pageInfo } : {}),
+    };
+  }
+
+  async trackerStats(options: { projectId: string; requestId?: string }): Promise<{
+    counts: TrackerStatsCounts | null;
+    error: string | null;
+    errorCode: TrackerErrorCode | null;
+  }> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.stats.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.tracker.stats.request",
+          projectId: options.projectId,
+        },
+      });
+    return {
+      counts: payload.counts,
+      error: payload.error,
+      errorCode: payload.errorCode,
     };
   }
 

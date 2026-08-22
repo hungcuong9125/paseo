@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import { join } from "node:path";
-import type { TrackerErrorCode } from "@getpaseo/protocol/tracker/rpc-schemas";
+import type { TrackerErrorCode, TrackerStatsCounts } from "@getpaseo/protocol/tracker/rpc-schemas";
 import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 import { AitCliError, type AitService } from "../services/ait-cli-service.js";
 import {
@@ -36,6 +36,75 @@ const DEBOUNCE_MS = 150;
 const MAX_DEBOUNCE_MS = 1_000;
 const UNINITIALISED_PROBE_MS = 5_000;
 const WATCH_RETRY_MS = 10_000;
+export const MAX_TREE_DEPTH = 32;
+// Keep one screen load's sequential project reads on the same watched snapshot,
+// while bounding idle watcher lifetime for projects nobody is looking at.
+export const TRACKER_ROOT_IDLE_TTL_MS = 5_000;
+
+type TrackerStatsBucket = TrackerStatsCounts["all"];
+
+function emptyTrackerStatsBucket(): TrackerStatsBucket {
+  return {
+    total: 0,
+    byStatus: { open: 0, in_progress: 0, closed: 0, cancelled: 0 },
+    byPriority: { P0: 0, P1: 0, P2: 0, P3: 0, P4: 0 },
+  };
+}
+
+export function getTrackerStatsCounts(trackers: readonly TrackerSummary[]): TrackerStatsCounts {
+  const counts: TrackerStatsCounts = {
+    all: emptyTrackerStatsBucket(),
+    task: emptyTrackerStatsBucket(),
+    epic: emptyTrackerStatsBucket(),
+    initiative: emptyTrackerStatsBucket(),
+  };
+  for (const tracker of trackers) {
+    const buckets: Array<keyof TrackerStatsCounts> = ["all", tracker.type];
+    for (const bucketName of buckets) {
+      const bucket = counts[bucketName];
+      bucket.total += 1;
+      bucket.byStatus[tracker.status] += 1;
+      bucket.byPriority[tracker.priority] += 1;
+    }
+  }
+  return counts;
+}
+
+export function withTrackerSubtreeStats(
+  trackers: readonly TrackerSummary[],
+  snapshot: readonly TrackerSummary[] = trackers,
+): TrackerSummary[] {
+  const childrenOf = new Map<string, TrackerSummary[]>();
+  for (const tracker of snapshot) {
+    if (!tracker.parentId) continue;
+    const children = childrenOf.get(tracker.parentId) ?? [];
+    children.push(tracker);
+    childrenOf.set(tracker.parentId, children);
+  }
+
+  const descendantStats = (
+    parentId: string,
+    ancestors: ReadonlySet<string> = new Set<string>(),
+    depth = 0,
+  ): { childCount: number; doneCount: number } => {
+    if (depth >= MAX_TREE_DEPTH || ancestors.has(parentId)) {
+      return { childCount: 0, doneCount: 0 };
+    }
+    const nextAncestors = new Set(ancestors).add(parentId);
+    let childCount = 0;
+    let doneCount = 0;
+    for (const child of childrenOf.get(parentId) ?? []) {
+      childCount += 1;
+      doneCount += child.status === "closed" || child.status === "cancelled" ? 1 : 0;
+      const nested = descendantStats(child.id, nextAncestors, depth + 1);
+      childCount += nested.childCount;
+      doneCount += nested.doneCount;
+    }
+    return { childCount, doneCount };
+  };
+
+  return trackers.map((tracker) => ({ ...tracker, ...descendantStats(tracker.id) }));
+}
 
 export class TrackerSyncManager {
   private readonly aitService: AitService;
@@ -43,6 +112,8 @@ export class TrackerSyncManager {
   private readonly fileObserver: FileObserver;
   private readonly directoryExists: (directory: string) => Promise<boolean>;
   private readonly roots = new Map<string, AitRootWatch>();
+  private readonly idleDisposalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly idleDisposals = new Set<Promise<void>>();
   private nextEpoch = 1;
 
   constructor(options: TrackerSyncManagerOptions) {
@@ -81,6 +152,7 @@ export class TrackerSyncManager {
       );
       this.roots.set(rootPath, root);
     }
+    this.cancelIdleDisposal(rootPath);
     const variant = root.getVariant(input.all === true, () => this.allocateEpoch());
     variant.addListener(input.subscriptionId, input.projectId, input.listener);
     try {
@@ -117,12 +189,42 @@ export class TrackerSyncManager {
       );
       this.roots.set(rootPath, root);
     }
+    this.cancelIdleDisposal(rootPath);
     const variant = root.getVariant(all, () => this.allocateEpoch());
     try {
-      return await variant.refresh(variant.listenerCount > 0);
+      await root.start();
+      return variant.listenerCount > 0 || !variant.initialized
+        ? await variant.refresh(variant.listenerCount > 0)
+        : variant.current;
     } finally {
       if (variant.listenerCount === 0) {
-        root.removeVariant(all);
+        await this.maybeDisposeRoot(root);
+      }
+    }
+  }
+
+  async getSnapshot(projectId: string, all = true): Promise<TrackerSnapshot> {
+    const rootPath = await this.resolveRoot(projectId);
+    let root = this.roots.get(rootPath);
+    if (!root) {
+      root = new AitRootWatch(
+        rootPath,
+        this.fileObserver,
+        this.aitService,
+        this.directoryExists,
+        () => {
+          this.roots.delete(rootPath);
+        },
+      );
+      this.roots.set(rootPath, root);
+    }
+    this.cancelIdleDisposal(rootPath);
+    const variant = root.getVariant(all, () => this.allocateEpoch());
+    try {
+      await root.start();
+      return variant.initialized ? variant.current : await variant.refresh(false);
+    } finally {
+      if (variant.listenerCount === 0) {
         await this.maybeDisposeRoot(root);
       }
     }
@@ -144,8 +246,13 @@ export class TrackerSyncManager {
 
   async close(): Promise<void> {
     const roots = [...this.roots.values()];
+    const idleDisposals = [...this.idleDisposals];
     this.roots.clear();
-    await Promise.all(roots.map((root) => root.close()));
+    for (const timer of this.idleDisposalTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.idleDisposalTimers.clear();
+    await Promise.all([...roots.map((root) => root.close()), ...idleDisposals]);
     await this.fileObserver.close();
   }
 
@@ -165,10 +272,33 @@ export class TrackerSyncManager {
 
   private async maybeDisposeRoot(root: AitRootWatch): Promise<void> {
     if (root.hasListeners) {
+      this.cancelIdleDisposal(root.rootPath);
       return;
     }
-    this.roots.delete(root.rootPath);
-    await root.close();
+    this.cancelIdleDisposal(root.rootPath);
+    const timer = setTimeout(() => {
+      this.idleDisposalTimers.delete(root.rootPath);
+      if (root.hasListeners || this.roots.get(root.rootPath) !== root) {
+        return;
+      }
+      this.roots.delete(root.rootPath);
+      const disposal = root.close();
+      this.idleDisposals.add(disposal);
+      void disposal.then(
+        () => this.idleDisposals.delete(disposal),
+        () => this.idleDisposals.delete(disposal),
+      );
+    }, TRACKER_ROOT_IDLE_TTL_MS);
+    (timer as unknown as { unref?: () => void }).unref?.();
+    this.idleDisposalTimers.set(root.rootPath, timer);
+  }
+
+  private cancelIdleDisposal(rootPath: string): void {
+    const timer = this.idleDisposalTimers.get(rootPath);
+    if (timer) {
+      clearTimeout(timer);
+      this.idleDisposalTimers.delete(rootPath);
+    }
   }
 }
 
@@ -211,9 +341,8 @@ class AitRootWatch {
   }
 
   removeListener(subscriptionId: string): boolean {
-    for (const [all, variant] of this.variants) {
+    for (const variant of this.variants.values()) {
       if (variant.removeListener(subscriptionId)) {
-        if (variant.listenerCount === 0) this.variants.delete(all);
         return true;
       }
     }
@@ -231,11 +360,7 @@ class AitRootWatch {
   }
 
   async refreshActiveVariants(): Promise<void> {
-    await Promise.all(
-      [...this.variants.values()]
-        .filter((variant) => variant.listenerCount > 0)
-        .map((variant) => variant.refresh(true)),
-    );
+    await Promise.all([...this.variants.values()].map((variant) => variant.refresh(true)));
   }
 
   async close(): Promise<void> {

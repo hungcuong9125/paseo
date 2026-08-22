@@ -26,6 +26,10 @@ export const TrackerSummarySchema = z.object({
   updatedAt: z.string().optional(),
   // Only ever set for `closed` — `ait` clears it on reopen and never sets it for `cancelled`.
   closedAt: z.string().nullable().optional(),
+  // Computed by the daemon over the full tracker snapshot. Absent on a daemon
+  // that predates server-side subtree counts.
+  childCount: z.number().int().nonnegative().optional(),
+  doneCount: z.number().int().nonnegative().optional(),
 });
 export type TrackerSummary = z.infer<typeof TrackerSummarySchema>;
 

@@ -56,6 +56,7 @@ import {
   ProjectTrackerNoteAddRequestSchema,
   ProjectTrackerInitRequestSchema,
   ProjectTrackerReadyRequestSchema,
+  ProjectTrackerStatsRequestSchema,
   ProjectTrackerListResponseSchema,
   ProjectTrackerSearchResponseSchema,
   ProjectTrackerSubscribeResponseSchema,
@@ -70,6 +71,7 @@ import {
   ProjectTrackerNoteAddResponseSchema,
   ProjectTrackerInitResponseSchema,
   ProjectTrackerReadyResponseSchema,
+  ProjectTrackerStatsResponseSchema,
 } from "./tracker/rpc-schemas.js";
 import {
   LoopRunRequestSchema,
@@ -2908,6 +2910,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ProjectTrackerNoteAddRequestSchema,
   ProjectTrackerInitRequestSchema,
   ProjectTrackerReadyRequestSchema,
+  ProjectTrackerStatsRequestSchema,
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
@@ -3082,6 +3085,8 @@ export const ServerInfoStatusPayloadSchema = z
         providersSnapshot: z.boolean().optional(),
         // COMPAT(providersSnapshotCwd): added in v0.3.2, remove gate after 2027-02-10.
         providersSnapshotCwd: z.boolean().optional(),
+        // COMPAT(aitTrackerStats): added in v0.4.0, remove after 2027-02-19.
+        aitTrackerStats: z.boolean().optional(),
         // COMPAT(checkoutForgeSetAutoMerge): added in v0.1.106, remove old
         // checkoutGithubSetAutoMerge fallback after 2026-12-28.
         checkoutForgeSetAutoMerge: z.boolean().optional(),
@@ -5887,6 +5892,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ProjectTrackerNoteAddResponseSchema,
   ProjectTrackerInitResponseSchema,
   ProjectTrackerReadyResponseSchema,
+  ProjectTrackerStatsResponseSchema,
   LoopRunResponseSchema,
   LoopListResponseSchema,
   LoopInspectResponseSchema,

@@ -40,6 +40,7 @@ export interface ListTrackersOptions {
   all?: boolean;
   status?: TrackerStatus;
   type?: TrackerType;
+  priority?: TrackerPriority;
   limit?: number;
   // Only ever sent together with `limit` — the CLI rejects a bare `--offset`
   // with a usage error.
@@ -49,6 +50,7 @@ export interface ListTrackersOptions {
 export interface TrackerPageInfoResult {
   hasMore: boolean;
   nextCursor: string | null;
+  totalCount?: number;
 }
 
 export interface ListTrackersResult {
@@ -415,7 +417,11 @@ export function createAitService(): AitService {
       (raw.total_count !== undefined
         ? offset + returnedCount < raw.total_count
         : returnedCount === limit);
-    return { hasMore, nextCursor: hasMore ? String(offset + returnedCount) : null };
+    return {
+      hasMore,
+      nextCursor: hasMore ? String(offset + returnedCount) : null,
+      ...(raw.total_count !== undefined ? { totalCount: raw.total_count } : {}),
+    };
   }
 
   async function listTrackers({
@@ -423,6 +429,7 @@ export function createAitService(): AitService {
     all,
     status,
     type,
+    priority,
     limit,
     offset,
   }: ListTrackersOptions): Promise<ListTrackersResult> {
@@ -432,6 +439,7 @@ export function createAitService(): AitService {
       ...(all ? ["--all"] : []),
       ...(status ? ["--status", status] : []),
       ...(type ? ["--type", type] : []),
+      ...(priority ? ["--priority", priority] : []),
     ];
     // Once a prior call has proven the binary doesn't understand pagination,
     // every later call must skip straight to the unpaginated args — sending

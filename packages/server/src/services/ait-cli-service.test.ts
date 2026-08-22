@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -34,6 +34,51 @@ describe("createAitService", () => {
 
     const list = await service.listTrackers({ cwd });
     expect(list).toEqual({ trackers: [], hiddenCount: 0 });
+  });
+
+  it("passes through ait list total_count for paginated results", async () => {
+    await service.initTracker({ cwd });
+    await service.createTracker({ cwd, input: { title: "First" } });
+    await service.createTracker({ cwd, input: { title: "Second" } });
+
+    const result = await service.listTrackers({ cwd, all: true, limit: 1 });
+
+    expect(result.pageInfo).toMatchObject({ totalCount: 2, hasMore: true });
+  });
+
+  it("filters list arguments by priority", async () => {
+    await service.initTracker({ cwd });
+    const p0 = await service.createTracker({
+      cwd,
+      input: { title: "Urgent", priority: "P0" },
+    });
+    await service.createTracker({ cwd, input: { title: "Normal", priority: "P2" } });
+
+    const result = await service.listTrackers({ cwd, all: true, priority: "P0" });
+
+    expect(result.trackers.map((tracker) => tracker.id)).toEqual([p0.id]);
+  });
+
+  it("omits page info when an old ait binary rejects pagination", async () => {
+    const binDir = mkdtempSync(join(tmpdir(), "ait-old-cli-test-"));
+    const fakeAit = join(binDir, "ait");
+    writeFileSync(
+      fakeAit,
+      '#!/bin/sh\ncase " $* " in\n  *" --limit "*) echo "flag provided but not defined: --limit" >&2; exit 2;;\n  *) printf \'%s\\n\' \'{"issues":[],"hidden_count":0}\';;\nesac\n',
+    );
+    chmodSync(fakeAit, 0o755);
+    const originalPath = process.env.PATH;
+    process.env.PATH = binDir;
+    try {
+      const oldCliService = createAitService();
+      await expect(oldCliService.listTrackers({ cwd, limit: 1 })).resolves.toEqual({
+        trackers: [],
+        hiddenCount: 0,
+      });
+    } finally {
+      process.env.PATH = originalPath;
+      rmSync(binDir, { recursive: true, force: true });
+    }
   });
 
   it("creates, shows, and lists an tracker", async () => {

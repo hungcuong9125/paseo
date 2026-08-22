@@ -2292,6 +2292,8 @@ export class Session {
     switch (msg.type) {
       case "project.tracker.list.request":
         return this.trackerSession.handleProjectTrackerListRequest(msg);
+      case "project.tracker.stats.request":
+        return this.trackerSession.handleProjectTrackerStatsRequest(msg);
       case "project.tracker.search.request":
         return this.trackerSession.handleProjectTrackerSearchRequest(msg);
       case "project.tracker.subscribe.request":
