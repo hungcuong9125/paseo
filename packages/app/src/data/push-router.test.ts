@@ -10,7 +10,6 @@ import {
   checkoutDiffPushRoute,
   invalidateServerDataQueriesAfterReconnect,
   mountServerDataPushRouter,
-  trackerPushRoute,
   workspaceTerminalsPushRoute,
 } from "@/data/push-router";
 
@@ -25,19 +24,12 @@ type SubscribeCheckoutDiffResponseMessage = Extract<
 >;
 type StatusMessage = Extract<SessionOutboundMessage, { type: "status" }>;
 type TerminalsChangedMessage = Extract<SessionOutboundMessage, { type: "terminals_changed" }>;
-type TrackerSubscribeResponseMessage = Extract<
-  SessionOutboundMessage,
-  { type: "project.tracker.subscribe.response" }
->;
-type TrackerUpdatedMessage = Extract<SessionOutboundMessage, { type: "project.tracker.updated" }>;
 type RouterMessage =
   | ProvidersSnapshotUpdateMessage
   | CheckoutDiffUpdateMessage
   | SubscribeCheckoutDiffResponseMessage
   | StatusMessage
-  | TerminalsChangedMessage
-  | TrackerSubscribeResponseMessage
-  | TrackerUpdatedMessage;
+  | TerminalsChangedMessage;
 type RouterMessageType = RouterMessage["type"];
 type RouterHandler = (message: RouterMessage) => void;
 type RouterClient = Parameters<typeof mountServerDataPushRouter>[0]["client"];
@@ -64,8 +56,6 @@ function createFakeClient(config: { rejectCheckoutDiffSubscribe?: boolean } = {}
   unsubscribeCheckoutDiffCalls: string[];
   subscribeTerminalCalls: Array<{ cwd: string; workspaceId?: string }>;
   unsubscribeTerminalCalls: Array<{ cwd: string; workspaceId?: string }>;
-  subscribeTrackerCalls: Array<{ projectId: string; all: boolean; subscriptionId: string }>;
-  unsubscribeTrackerCalls: string[];
 } {
   const handlers: Record<RouterMessageType, RouterHandler[]> = {
     providers_snapshot_update: [],
@@ -73,8 +63,6 @@ function createFakeClient(config: { rejectCheckoutDiffSubscribe?: boolean } = {}
     subscribe_checkout_diff_response: [],
     status: [],
     terminals_changed: [],
-    "project.tracker.subscribe.response": [],
-    "project.tracker.updated": [],
   };
   const subscribeCheckoutDiffCalls: Array<{
     cwd: string;
@@ -84,9 +72,6 @@ function createFakeClient(config: { rejectCheckoutDiffSubscribe?: boolean } = {}
   const unsubscribeCheckoutDiffCalls: string[] = [];
   const subscribeTerminalCalls: Array<{ cwd: string; workspaceId?: string }> = [];
   const unsubscribeTerminalCalls: Array<{ cwd: string; workspaceId?: string }> = [];
-  const subscribeTrackerCalls: Array<{ projectId: string; all: boolean; subscriptionId: string }> =
-    [];
-  const unsubscribeTrackerCalls: string[] = [];
 
   function on<K extends RouterMessageType>(
     type: K,
@@ -138,35 +123,12 @@ function createFakeClient(config: { rejectCheckoutDiffSubscribe?: boolean } = {}
       unsubscribeTerminals(subscription) {
         unsubscribeTerminalCalls.push(subscription);
       },
-      async trackerSubscribe(input) {
-        subscribeTrackerCalls.push({
-          projectId: input.projectId,
-          all: input.all,
-          subscriptionId: input.subscriptionId,
-        });
-        return {
-          subscriptionId: input.subscriptionId,
-          projectId: input.projectId,
-          trackers: [],
-          hiddenCount: 0,
-          epoch: 1,
-          generation: 1,
-          error: null,
-          errorCode: null,
-          requestId: input.requestId ?? "tracker-subscribe",
-        };
-      },
-      trackerUnsubscribe(subscriptionId) {
-        unsubscribeTrackerCalls.push(subscriptionId);
-      },
     },
     emit,
     subscribeCheckoutDiffCalls,
     unsubscribeCheckoutDiffCalls,
     subscribeTerminalCalls,
     unsubscribeTerminalCalls,
-    subscribeTrackerCalls,
-    unsubscribeTrackerCalls,
   };
 }
 
@@ -380,9 +342,6 @@ describe("server data push router", () => {
     const checkoutDiffKey = checkoutDiffQueryKey(serverId, cwd, "base", "main", true);
     const checkoutDiffSubscriptionId = `checkoutDiff:${JSON.stringify(checkoutDiffKey)}`;
     const terminalKey = buildTerminalsQueryKey(serverId, cwd, workspaceId);
-    const projectId = "project-a";
-    const trackerKey = ["trackers", serverId, projectId, true] as const;
-    const trackerSubscriptionId = "tracker-subscription-a";
     const checkoutDiffObserver = new QueryObserver(queryClient, {
       queryKey: checkoutDiffKey,
       queryFn: skipToken,
@@ -410,23 +369,8 @@ describe("server data push router", () => {
         workspaceId,
       }),
     });
-    const trackerObserver = new QueryObserver(queryClient, {
-      queryKey: trackerKey,
-      queryFn: skipToken,
-      enabled: true,
-      gcTime: Infinity,
-      staleTime: Infinity,
-      meta: trackerPushRoute({
-        enabled: true,
-        serverId,
-        projectId,
-        all: true,
-        subscriptionId: trackerSubscriptionId,
-      }),
-    });
     const unsubscribeCheckoutDiffObserver = checkoutDiffObserver.subscribe(() => undefined);
     const unsubscribeTerminalObserver = terminalObserver.subscribe(() => undefined);
-    const unsubscribeTrackerObserver = trackerObserver.subscribe(() => undefined);
     const unmount = mountServerDataPushRouter({ client: fake.client, queryClient, serverId });
     const plainCheckoutDiffObserver = new QueryObserver(queryClient, {
       queryKey: checkoutDiffKey,
@@ -465,15 +409,6 @@ describe("server data push router", () => {
       { cwd, workspaceId },
       { cwd, workspaceId },
     ]);
-    // Regression coverage: `resetSubscriptionsAfterReconnect` must clear
-    // `activeTrackerSubscriptions` like it does for checkoutDiff/terminal, or the
-    // second reconcile pass sees the (stale, pre-reconnect) subscriptionId still
-    // marked active and skips resubscribing — leaving the Tracker screen stuck on
-    // its initial loading state forever after any daemon reconnect.
-    expect(fake.subscribeTrackerCalls).toEqual([
-      { projectId, all: true, subscriptionId: trackerSubscriptionId },
-      { projectId, all: true, subscriptionId: trackerSubscriptionId },
-    ]);
 
     fake.emit({
       type: "terminals_changed",
@@ -496,7 +431,6 @@ describe("server data push router", () => {
     unsubscribePlainTerminalObserver();
     unsubscribeCheckoutDiffObserver();
     unsubscribeTerminalObserver();
-    unsubscribeTrackerObserver();
     unmount();
   });
 

@@ -82,9 +82,3 @@ export function buildTrackerHierarchy(trackers: TrackerSummary[]): TrackerHierar
 
   return { trackerMap, childrenOf, descendantStats };
 }
-
-// One-shot convenience for callers that have a flat list and a single parent id
-// and do not want to hold the index: builds the hierarchy and returns its stats.
-export function getDescendantStats(trackers: TrackerSummary[], parentId: string): DescendantStats {
-  return buildTrackerHierarchy(trackers).descendantStats(parentId);
-}

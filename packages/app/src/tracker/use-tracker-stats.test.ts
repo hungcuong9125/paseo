@@ -170,8 +170,7 @@ describe("useTrackerStats", () => {
   it("an offline project contributes neither a count nor a projectErrors entry", async () => {
     installClients({ "host-a": { supportsStats: true, result: makeCounts(5) } });
     // host-b has no entry at all — installClients' getClient returns null for
-    // it, the same "offline" shape fetchTrackerPage/fetchAggregatedTrackers
-    // already tolerate.
+    // it, the same "offline" shape fetchTrackerPage already tolerates.
     const { result } = renderHook(() =>
       useTrackerStats({
         projects: [PROJECT_A, PROJECT_B],

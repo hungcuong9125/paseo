@@ -83,10 +83,9 @@ import {
   type TrackerProjectInput,
 } from "@/tracker/aggregated-trackers";
 import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
-// This screen no longer subscribes to the live-push path (useAggregatedTrackers) —
-// it drives both List and Kanban from useTrackerProjectData's single first-page
-// load per section plus explicit loadMore, and reflects the user's own
-// mutations via local patching.
+// Both List and Kanban read the same first page per section and page further
+// only on an explicit loadMore. The screen never refetches for its own
+// mutations — it patches the loaded rows and the section totals in place.
 import { useTrackerProjectData } from "@/tracker/use-tracker-project-data";
 import { useTrackerStats } from "@/tracker/use-tracker-stats";
 import { useTrackerSearch } from "@/tracker/use-tracker-search";

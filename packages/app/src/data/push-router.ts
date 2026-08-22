@@ -24,11 +24,6 @@ type SubscribeCheckoutDiffResponseMessage = Extract<
   SessionOutboundMessage,
   { type: "subscribe_checkout_diff_response" }
 >;
-type TrackerSubscribeResponseMessage = Extract<
-  SessionOutboundMessage,
-  { type: "project.tracker.subscribe.response" }
->;
-type TrackerUpdatedMessage = Extract<SessionOutboundMessage, { type: "project.tracker.updated" }>;
 type StatusMessage = Extract<SessionOutboundMessage, { type: "status" }>;
 type TerminalsChangedMessage = Extract<SessionOutboundMessage, { type: "terminals_changed" }>;
 type ServerDataEventType =
@@ -64,16 +59,7 @@ interface WorkspaceTerminalsRoute {
   workspaceId?: string;
 }
 
-export interface TrackerRoute {
-  domain: "tracker";
-  enabled: boolean;
-  serverId: string;
-  projectId: string;
-  all: boolean;
-  subscriptionId: string;
-}
-
-type ServerDataRoute = CheckoutDiffRoute | WorkspaceTerminalsRoute | TrackerRoute;
+type ServerDataRoute = CheckoutDiffRoute | WorkspaceTerminalsRoute;
 
 export interface ServerDataQueryMeta extends Record<string, unknown> {
   serverData: ServerDataRoute;
@@ -94,13 +80,6 @@ interface ServerDataPushClient {
   unsubscribeCheckoutDiff(subscriptionId: string): void;
   subscribeTerminals(input: { cwd: string; workspaceId?: string }): void;
   unsubscribeTerminals(input: { cwd: string; workspaceId?: string }): void;
-  trackerSubscribe?(input: {
-    projectId: string;
-    all: boolean;
-    subscriptionId: string;
-    requestId?: string;
-  }): Promise<TrackerSubscribeResponseMessage["payload"]>;
-  trackerUnsubscribe?(subscriptionId: string): void;
 }
 
 interface PushRouterInput {
@@ -112,7 +91,6 @@ interface PushRouterInput {
 interface ActiveServerDataSubscriptions {
   checkoutDiff: Map<string, CheckoutDiffRoute>;
   workspaceTerminals: Map<string, WorkspaceTerminalsRoute>;
-  tracker: Map<string, TrackerRoute>;
 }
 
 interface ReconnectRepairPolicy {
@@ -194,10 +172,6 @@ export function workspaceTerminalsPushRoute(input: {
   };
 }
 
-export function trackerPushRoute(input: Omit<TrackerRoute, "domain">): ServerDataQueryMeta {
-  return { serverData: { domain: "tracker", ...input } };
-}
-
 export function invalidateServerDataQueriesAfterReconnect(input: {
   queryClient: QueryClient;
   serverId: string;
@@ -245,14 +219,12 @@ export function applyProvidersSnapshotUpdate(input: {
 export function mountServerDataPushRouter(input: PushRouterInput): () => void {
   const activeCheckoutDiffSubscriptions = new Map<string, CheckoutDiffRoute>();
   const activeTerminalSubscriptions = new Map<string, WorkspaceTerminalsRoute>();
-  const activeTrackerSubscriptions = new Map<string, TrackerRoute>();
   let disposed = false;
 
   function reconcileSubscriptions(
     fallbackActive: ActiveServerDataSubscriptions = {
       checkoutDiff: activeCheckoutDiffSubscriptions,
       workspaceTerminals: activeTerminalSubscriptions,
-      tracker: activeTrackerSubscriptions,
     },
   ): void {
     if (disposed) {
@@ -261,22 +233,16 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
 
     const desiredCheckoutDiffSubscriptions = new Map<string, CheckoutDiffRoute>();
     const desiredTerminalSubscriptions = new Map<string, WorkspaceTerminalsRoute>();
-    const desiredTrackerSubscriptions = new Map<string, TrackerRoute>();
     for (const query of input.queryClient.getQueryCache().getAll()) {
       const route = getActiveServerDataRoute(query, input.serverId, {
         checkoutDiff: fallbackActive.checkoutDiff,
         workspaceTerminals: fallbackActive.workspaceTerminals,
-        tracker: fallbackActive.tracker,
       });
       if (!route) {
         continue;
       }
       if (route.domain === "checkoutDiff") {
         desiredCheckoutDiffSubscriptions.set(route.subscriptionId, route);
-        continue;
-      }
-      if (route.domain === "tracker") {
-        desiredTrackerSubscriptions.set(route.subscriptionId, route);
         continue;
       }
       desiredTerminalSubscriptions.set(workspaceTerminalSubscriptionKey(route), route);
@@ -293,23 +259,15 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
       client: input.client,
       desired: desiredTerminalSubscriptions,
     });
-    reconcileTrackerSubscriptions({
-      active: activeTrackerSubscriptions,
-      client: input.client,
-      desired: desiredTrackerSubscriptions,
-      serverId: input.serverId,
-    });
   }
 
   function resetSubscriptionsAfterReconnect(): void {
     const fallbackActive = {
       checkoutDiff: new Map(activeCheckoutDiffSubscriptions),
       workspaceTerminals: new Map(activeTerminalSubscriptions),
-      tracker: new Map(activeTrackerSubscriptions),
     };
     activeCheckoutDiffSubscriptions.clear();
     activeTerminalSubscriptions.clear();
-    activeTrackerSubscriptions.clear();
     reconcileSubscriptions(fallbackActive);
   }
 
@@ -318,7 +276,6 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
       !shouldReconcileSubscriptionsForCacheEvent(event, input.serverId, {
         checkoutDiff: activeCheckoutDiffSubscriptions,
         workspaceTerminals: activeTerminalSubscriptions,
-        tracker: activeTrackerSubscriptions,
       })
     ) {
       return;
@@ -363,38 +320,6 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
       message,
     });
   });
-  let unsubscribeTrackerSubscribeResponse = () => {};
-  let unsubscribeTrackerUpdated = () => {};
-  if (input.client.trackerSubscribe && input.client.trackerUnsubscribe) {
-    const trackerClient = input.client as ServerDataPushClient & {
-      on(
-        type: "project.tracker.subscribe.response",
-        handler: (message: TrackerSubscribeResponseMessage) => void,
-      ): () => void;
-      on(
-        type: "project.tracker.updated",
-        handler: (message: TrackerUpdatedMessage) => void,
-      ): () => void;
-    };
-    unsubscribeTrackerSubscribeResponse = trackerClient.on(
-      "project.tracker.subscribe.response",
-      (message) =>
-        applyTrackerSnapshot({
-          queryClient: input.queryClient,
-          serverId: input.serverId,
-          message,
-          active: activeTrackerSubscriptions,
-        }),
-    );
-    unsubscribeTrackerUpdated = trackerClient.on("project.tracker.updated", (message) =>
-      applyTrackerSnapshot({
-        queryClient: input.queryClient,
-        serverId: input.serverId,
-        message,
-        active: activeTrackerSubscriptions,
-      }),
-    );
-  }
   let reconnectSubscriptionRepairs = reconnectSubscriptionRepairsByServerId.get(input.serverId);
   if (!reconnectSubscriptionRepairs) {
     reconnectSubscriptionRepairs = new Set();
@@ -416,8 +341,6 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
     unsubscribeCheckoutDiffUpdate();
     unsubscribeCheckoutDiffResponse();
     unsubscribeTerminalsChanged();
-    unsubscribeTrackerSubscribeResponse();
-    unsubscribeTrackerUpdated();
     for (const subscriptionId of activeCheckoutDiffSubscriptions.keys()) {
       unsubscribeCheckoutDiff(input.client, subscriptionId);
     }
@@ -426,10 +349,6 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
       input.client.unsubscribeTerminals(workspaceTerminalSubscriptionInput(route));
     }
     activeTerminalSubscriptions.clear();
-    for (const subscriptionId of activeTrackerSubscriptions.keys()) {
-      input.client.trackerUnsubscribe?.(subscriptionId);
-    }
-    activeTrackerSubscriptions.clear();
   };
 }
 
@@ -491,66 +410,6 @@ function reconcileTerminalSubscriptions(input: {
     }
     input.active.set(key, desired);
     input.client.subscribeTerminals(workspaceTerminalSubscriptionInput(desired));
-  }
-}
-
-function reconcileTrackerSubscriptions(input: {
-  active: Map<string, TrackerRoute>;
-  client: ServerDataPushClient;
-  desired: Map<string, TrackerRoute>;
-  serverId: string;
-}): void {
-  if (!input.client.trackerSubscribe || !input.client.trackerUnsubscribe) return;
-  for (const [subscriptionId, current] of input.active) {
-    const desired = input.desired.get(subscriptionId);
-    if (desired && areTrackerRoutesEqual(current, desired)) continue;
-    input.client.trackerUnsubscribe(subscriptionId);
-    input.active.delete(subscriptionId);
-  }
-  for (const [subscriptionId, desired] of input.desired) {
-    if (input.active.has(subscriptionId)) continue;
-    input.active.set(subscriptionId, desired);
-    void input.client
-      .trackerSubscribe({
-        projectId: desired.projectId,
-        all: desired.all,
-        subscriptionId,
-        requestId: `push-router:${input.serverId}:${subscriptionId}`,
-      })
-      .catch(() => {
-        if (areTrackerRoutesEqual(input.active.get(subscriptionId), desired)) {
-          input.active.delete(subscriptionId);
-        }
-      });
-  }
-}
-
-function applyTrackerSnapshot(input: {
-  queryClient: QueryClient;
-  serverId: string;
-  message: TrackerSubscribeResponseMessage | TrackerUpdatedMessage;
-  active: Map<string, TrackerRoute>;
-}): void {
-  const payload = input.message.payload;
-  const route = input.active.get(payload.subscriptionId);
-  if (!route || route.serverId !== input.serverId || route.projectId !== payload.projectId) return;
-  for (const query of input.queryClient.getQueryCache().getAll()) {
-    const queryRoute = getServerDataRoute(query);
-    if (
-      !queryRoute ||
-      queryRoute.domain !== "tracker" ||
-      queryRoute.subscriptionId !== payload.subscriptionId
-    )
-      continue;
-    const current = query.state.data as typeof payload | undefined;
-    if (
-      input.message.type === "project.tracker.updated" &&
-      current &&
-      (payload.epoch < current.epoch ||
-        (payload.epoch === current.epoch && payload.generation <= current.generation))
-    )
-      continue;
-    input.queryClient.setQueryData(query.queryKey, payload);
   }
 }
 
@@ -656,7 +515,6 @@ function applyTerminalsChanged(input: {
     const route = getActiveServerDataRoute(query, input.serverId, {
       checkoutDiff: input.activeCheckoutDiffSubscriptions,
       workspaceTerminals: input.activeTerminalSubscriptions,
-      tracker: new Map(),
     });
     if (
       !route ||
@@ -712,28 +570,8 @@ function getActiveRouteForQueryKey(input: {
       active: input.active.checkoutDiff,
       queryKey: input.queryKey,
       serverId: input.serverId,
-    }) ??
-    getActiveTrackerRouteForQueryKey({
-      active: input.active.tracker,
-      queryKey: input.queryKey,
-      serverId: input.serverId,
     })
   );
-}
-
-function getActiveTrackerRouteForQueryKey(input: {
-  active: Map<string, TrackerRoute>;
-  queryKey: QueryKey;
-  serverId: string;
-}): TrackerRoute | null {
-  if (!isQueryForServer(input.queryKey, "trackers", input.serverId)) return null;
-  const projectId = input.queryKey[2];
-  const all = input.queryKey[3];
-  if (typeof projectId !== "string" || typeof all !== "boolean") return null;
-  for (const route of input.active.values()) {
-    if (route.projectId === projectId && route.all === all) return route;
-  }
-  return null;
 }
 
 function getActiveTerminalRouteForQueryKey(input: {
@@ -852,19 +690,6 @@ function readServerDataRoute(value: Record<string, unknown>): ServerDataRoute | 
     };
   }
 
-  if (domain === "tracker") {
-    const projectId = value.projectId;
-    const all = value.all;
-    const subscriptionId = value.subscriptionId;
-    if (
-      typeof projectId !== "string" ||
-      typeof all !== "boolean" ||
-      typeof subscriptionId !== "string"
-    )
-      return null;
-    return { domain, enabled, serverId, projectId, all, subscriptionId };
-  }
-
   return null;
 }
 
@@ -924,15 +749,6 @@ function areWorkspaceTerminalsRoutesEqual(
     left.serverId === right.serverId &&
     left.cwd === right.cwd &&
     left.workspaceId === right.workspaceId
-  );
-}
-
-function areTrackerRoutesEqual(left: TrackerRoute | undefined, right: TrackerRoute): boolean {
-  return (
-    left?.serverId === right.serverId &&
-    left.projectId === right.projectId &&
-    left.all === right.all &&
-    left.subscriptionId === right.subscriptionId
   );
 }
 
