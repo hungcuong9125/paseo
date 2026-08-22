@@ -61,9 +61,77 @@ describe("TrackerSession", () => {
 
     expect(receivedCwd).toBe(CWD);
     const response = findByType(emitted, "project.tracker.list.response");
-    expect(response?.payload.trackers).toEqual([SAMPLE_TRACKER]);
+    expect(response?.payload.trackers).toEqual([
+      { ...SAMPLE_TRACKER, childCount: 0, doneCount: 0 },
+    ]);
     expect(response?.payload.error).toBeNull();
     expect(response?.payload.errorCode).toBeNull();
+  });
+
+  it("threads the priority filter through a tracker list request", async () => {
+    const receivedPriorities: Array<string | undefined> = [];
+    const { session, emitted } = makeSession({
+      listTrackers: async ({ priority }: { priority?: string }) => {
+        receivedPriorities.push(priority);
+        return { trackers: [SAMPLE_TRACKER], hiddenCount: 0 };
+      },
+    });
+
+    await session.handleProjectTrackerListRequest({
+      type: "project.tracker.list.request",
+      requestId: "r-priority",
+      projectId: PROJECT_ID,
+      priority: "P1",
+    });
+
+    expect(receivedPriorities[0]).toBe("P1");
+    expect(findByType(emitted, "project.tracker.list.response")?.payload.error).toBeNull();
+  });
+
+  it("serves stats from the full tracker snapshot", async () => {
+    const trackers = [
+      { ...SAMPLE_TRACKER, id: "open-task", priority: "P0" as const },
+      { ...SAMPLE_TRACKER, id: "closed-task", status: "closed" as const, priority: "P0" as const },
+      {
+        ...SAMPLE_TRACKER,
+        id: "cancelled-epic",
+        type: "epic" as const,
+        status: "cancelled" as const,
+        priority: "P1" as const,
+      },
+    ];
+    let requestedAll: boolean | undefined;
+    const { session, emitted } = makeSession(
+      {},
+      {
+        getSnapshot: async (_projectId: string, all?: boolean) => {
+          requestedAll = all;
+          return {
+            trackers,
+            hiddenCount: 0,
+            epoch: 1,
+            generation: 1,
+            error: null,
+            errorCode: null,
+          };
+        },
+      },
+    );
+
+    await session.handleProjectTrackerStatsRequest({
+      type: "project.tracker.stats.request",
+      requestId: "r-stats",
+      projectId: PROJECT_ID,
+    });
+
+    expect(requestedAll).toBe(true);
+    const response = findByType(emitted, "project.tracker.stats.response");
+    expect(response?.payload.error).toBeNull();
+    expect(response?.payload.counts?.all).toMatchObject({
+      total: 3,
+      byStatus: { open: 1, in_progress: 0, closed: 1, cancelled: 1 },
+      byPriority: { P0: 2, P1: 1, P2: 0, P3: 0, P4: 0 },
+    });
   });
 
   it("emits not_found when the projectId does not resolve", async () => {

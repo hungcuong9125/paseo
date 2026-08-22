@@ -5,7 +5,12 @@ import type {
   FileObserverCallback,
   FileObserverSubscription,
 } from "./file-observer/index.js";
-import { TrackerSyncManager } from "./tracker-sync-manager.js";
+import {
+  getTrackerStatsCounts,
+  TRACKER_ROOT_IDLE_TTL_MS,
+  TrackerSyncManager,
+  withTrackerSubtreeStats,
+} from "./tracker-sync-manager.js";
 
 const PROJECT_ID = "project-1";
 const ROOT = "/tmp/project-1";
@@ -99,6 +104,55 @@ function createHarness() {
 describe("TrackerSyncManager", () => {
   afterEach(() => vi.useRealTimers());
 
+  it("counts every status in the type and priority buckets", () => {
+    const counts = getTrackerStatsCounts([
+      { ...TRACKER, id: "open-p0", priority: "P0", status: "open" },
+      { ...TRACKER, id: "closed-p0", priority: "P0", status: "closed" },
+      { ...TRACKER, id: "cancelled-p1", priority: "P1", status: "cancelled" },
+      {
+        ...TRACKER,
+        id: "initiative-p1",
+        type: "initiative",
+        priority: "P1",
+        status: "in_progress",
+      },
+    ]);
+
+    expect(counts.all).toEqual({
+      total: 4,
+      byStatus: { open: 1, in_progress: 1, closed: 1, cancelled: 1 },
+      byPriority: { P0: 2, P1: 2, P2: 0, P3: 0, P4: 0 },
+    });
+    expect(counts.task.total).toBe(3);
+    expect(counts.initiative.byPriority).toEqual({ P0: 0, P1: 1, P2: 0, P3: 0, P4: 0 });
+  });
+
+  it("guards subtree counts against parent cycles", () => {
+    const cycle = [
+      { ...TRACKER, id: "cycle-a", parentId: "cycle-b" },
+      { ...TRACKER, id: "cycle-b", parentId: "cycle-a", status: "cancelled" as const },
+    ];
+
+    expect(withTrackerSubtreeStats([cycle[0]], cycle)[0]).toMatchObject({
+      childCount: 2,
+      doneCount: 1,
+    });
+  });
+
+  it("stops subtree counts at the shared maximum depth", () => {
+    const chain = Array.from({ length: 34 }, (_, index) => ({
+      ...TRACKER,
+      id: `chain-${index}`,
+      parentId: index === 0 ? null : `chain-${index - 1}`,
+      status: index === 33 ? ("closed" as const) : ("open" as const),
+    }));
+
+    expect(withTrackerSubtreeStats([chain[0]], chain)[0]).toMatchObject({
+      childCount: 32,
+      doneCount: 0,
+    });
+  });
+
   it("shares one initial snapshot and one variant refresh between listeners", async () => {
     const harness = createHarness();
     const updates: string[] = [];
@@ -126,6 +180,57 @@ describe("TrackerSyncManager", () => {
     await harness.manager.unsubscribe("sub-2");
     await harness.manager.close();
     expect(harness.unsubscribeCount).toBe(1);
+  });
+
+  it("returns a warm full snapshot without spawning ait again", async () => {
+    const harness = createHarness();
+    await harness.manager.subscribe({
+      projectId: PROJECT_ID,
+      all: true,
+      subscriptionId: "warm",
+      listener: () => {},
+    });
+
+    const snapshot = await harness.manager.getSnapshot(PROJECT_ID, true);
+
+    expect(snapshot.trackers).toEqual([TRACKER]);
+    expect(harness.listCalls).toBe(1);
+    await harness.manager.close();
+  });
+
+  it("shares consecutive snapshot reads without a listener during the idle TTL", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+
+    await harness.manager.getSnapshot(PROJECT_ID, true);
+    await harness.manager.getSnapshot(PROJECT_ID, true);
+
+    expect(harness.listCalls).toBe(1);
+    await harness.manager.close();
+  });
+
+  it("refreshes an idle snapshot after a file-observer event", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+
+    await harness.manager.getSnapshot(PROJECT_ID, true);
+    harness.emitChange();
+    await vi.advanceTimersByTimeAsync(150);
+    await harness.manager.getSnapshot(PROJECT_ID, true);
+
+    expect(harness.listCalls).toBe(2);
+    await harness.manager.close();
+  });
+
+  it("disposes an idle root when its TTL elapses", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+
+    await harness.manager.getSnapshot(PROJECT_ID, true);
+    await vi.advanceTimersByTimeAsync(TRACKER_ROOT_IDLE_TTL_MS);
+
+    expect(harness.unsubscribeCount).toBe(1);
+    await harness.manager.close();
   });
 
   it("routes all variants through the same root observer", async () => {

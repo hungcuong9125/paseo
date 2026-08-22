@@ -58,11 +58,10 @@ export interface TrackerKanbanBoardProps {
    * everything-open-status-stays-Open rather than crashing.
    */
   readyIds?: ReadonlySet<string>;
-  /** False while the shared project-data sweep still has sections in flight —
-   * lane counts and card child-progress badges can only be undercounts until
-   * then; defaults true so callers that don't pass it (e.g. tests) see the
-   * normal, non-dimmed treatment. */
-  isComplete?: boolean;
+  laneTotals: Partial<Record<TrackerBoardLaneKey, number | null>>;
+  laneHasMore: Partial<Record<TrackerBoardLaneKey, boolean>>;
+  laneLoadingMore: Partial<Record<TrackerBoardLaneKey, boolean>>;
+  onLoadMore: (lane: TrackerBoardLaneKey) => void;
   /**
    * Mutation entry point. The board never mutates `trackers` locally (no optimistic
    * move) — it marks the card pending, awaits this, then clears pending on either
@@ -110,7 +109,10 @@ export function TrackerKanbanBoard({
   isLoading = false,
   filter,
   readyIds = EMPTY_READY_IDS,
-  isComplete = true,
+  laneTotals,
+  laneHasMore,
+  laneLoadingMore,
+  onLoadMore,
   onTransition,
   onTransitionError,
   onEdit,
@@ -215,7 +217,10 @@ export function TrackerKanbanBoard({
       isLoading={isLoading}
       cards={board[lane]}
       hierarchy={hierarchy}
-      isComplete={isComplete}
+      laneTotal={laneTotals?.[lane]}
+      laneHasMore={laneHasMore?.[lane]}
+      laneLoadingMore={laneLoadingMore?.[lane]}
+      onLoadMore={onLoadMore}
       getProjectLabel={getProjectLabel}
       isPending={isPending}
       onTransition={handleTransition}

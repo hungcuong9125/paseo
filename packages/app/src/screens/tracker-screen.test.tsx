@@ -4,9 +4,18 @@
 import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
-import type { AggregatedTracker, TrackerProjectInput } from "@/tracker/aggregated-trackers";
-import type { UseTrackerProjectDataResult } from "@/tracker/use-tracker-project-data";
+import type { TrackerStatsCounts } from "@getpaseo/protocol/tracker/rpc-schemas";
+import type { TrackerStatus, TrackerSummary } from "@getpaseo/protocol/tracker/types";
+import type {
+  AggregatedTracker,
+  TrackerProjectError,
+  TrackerProjectInput,
+} from "@/tracker/aggregated-trackers";
+import type {
+  UseTrackerProjectDataOptions,
+  UseTrackerProjectDataResult,
+} from "@/tracker/use-tracker-project-data";
+import type { UseTrackerStatsResult } from "@/tracker/use-tracker-stats";
 import type { ProjectHostEntry, ProjectSummary } from "@/utils/projects";
 import type { UseProjectsResult } from "@/hooks/use-projects";
 
@@ -15,6 +24,8 @@ const {
   hostsState,
   projectsState,
   projectDataState,
+  statsState,
+  lastProjectDataOptions,
   lastKanbanBoardProps,
   lastListTableProps,
   lastFormSheetProps,
@@ -67,7 +78,10 @@ const {
   projectDataState: {
     current: {
       trackers: [],
-      isComplete: true,
+      sectionTotals: { open: null, in_progress: null, closed: null, cancelled: null },
+      sectionHasMore: { open: false, in_progress: false, closed: false, cancelled: false },
+      sectionLoadingMore: { open: false, in_progress: false, closed: false, cancelled: false },
+      loadMore: vi.fn(),
       isLoading: false,
       projectErrors: [],
       patchTracker: vi.fn(),
@@ -75,17 +89,34 @@ const {
       refetch: vi.fn(),
     } as UseTrackerProjectDataResult,
   },
+  statsState: {
+    current: {
+      counts: null,
+      isLoading: false,
+      projectErrors: [],
+      refetch: vi.fn(),
+    } as UseTrackerStatsResult,
+  },
+  // The mock hook below filters `projectDataState.current.trackers` by
+  // whichever options.type/priority the screen passed in (mirroring what the
+  // real server-side scoping does) — captured here so tests can assert the
+  // screen re-requests with new filter options instead of narrowing in
+  // memory.
+  lastProjectDataOptions: {
+    current: null as UseTrackerProjectDataOptions | null,
+  },
   lastKanbanBoardProps: {
     current: null as {
       trackers: readonly unknown[];
-      isComplete?: boolean;
+      laneTotals?: Partial<Record<string, number | null>>;
       onTransition: (trackerId: string, transition: unknown) => Promise<void>;
     } | null,
   },
   lastListTableProps: {
     current: null as {
       trackers: readonly unknown[];
-      isComplete?: boolean;
+      sectionTotals?: Record<TrackerStatus, number | null>;
+      onLoadMore?: (status: TrackerStatus) => void;
       onTrackerPatched?: (tracker: AggregatedTracker) => void;
       onTrackersRemoved?: (ids: string[]) => void;
       onOpenTracker?: (tracker: AggregatedTracker) => void;
@@ -169,7 +200,42 @@ vi.mock("@/hooks/use-projects", () => ({
 }));
 
 vi.mock("@/tracker/use-tracker-project-data", () => ({
-  useTrackerProjectData: () => projectDataState.current,
+  useTrackerProjectData: (options: UseTrackerProjectDataOptions) => {
+    // The screen makes two calls: the primary one (this suite's pageSize
+    // stub, 50) and the header bell's second, unscoped call at a fixed
+    // pageSize of 1 — only the primary call's options are relevant here.
+    if (options.pageSize !== 1) {
+      lastProjectDataOptions.current = options;
+    }
+    const state = projectDataState.current;
+    // Mirrors the real hook's server-side type/priority scoping: the
+    // fixture's full tracker set narrows here, based on whatever options the
+    // screen actually passed in — proof the screen no longer filters
+    // in-memory itself.
+    const trackers = state.trackers.filter(
+      (candidate) =>
+        (options.type === undefined || candidate.type === options.type) &&
+        (options.priority === undefined || candidate.priority === options.priority),
+    );
+    return { ...state, trackers };
+  },
+}));
+
+vi.mock("@/tracker/use-tracker-stats", () => ({
+  // The screen calls this twice: the primary (picker-scoped) call and the
+  // header bell's second, always-unscoped call. `statsState.current` holds
+  // the full, unscoped fixture; scoping down to one project (mirroring the
+  // real hook's own relevantProjects filter) happens here so both call sites
+  // fall naturally out of the same fixture instead of needing to be told
+  // apart.
+  useTrackerStats: (options: { selectedProjectId: string | null }) => {
+    const state = statsState.current;
+    const projectErrors =
+      options.selectedProjectId === null
+        ? state.projectErrors
+        : state.projectErrors.filter((error) => error.projectId === options.selectedProjectId);
+    return { ...state, projectErrors };
+  },
 }));
 
 vi.mock("@/tracker/use-tracker-search", () => ({
@@ -236,7 +302,8 @@ vi.mock("@/components/tracker/tracker-edit-sheet", () => ({
 vi.mock("@/components/tracker/tracker-table", () => ({
   TrackerTable: (props: {
     trackers: readonly unknown[];
-    isComplete?: boolean;
+    sectionTotals?: Record<TrackerStatus, number | null>;
+    onLoadMore?: (status: TrackerStatus) => void;
     onTrackerPatched?: (tracker: AggregatedTracker) => void;
     onTrackersRemoved?: (ids: string[]) => void;
     onOpenTracker?: (tracker: AggregatedTracker) => void;
@@ -250,7 +317,7 @@ vi.mock("@/components/tracker/tracker-table", () => ({
 vi.mock("@/components/tracker/tracker-kanban-board", () => ({
   TrackerKanbanBoard: (props: {
     trackers: readonly unknown[];
-    isComplete?: boolean;
+    laneTotals?: Partial<Record<string, number | null>>;
     onTransition: (trackerId: string, transition: unknown) => Promise<void>;
   }) => {
     lastKanbanBoardProps.current = props;
@@ -283,8 +350,20 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
     ),
   DropdownMenuContent: ({ children }: { children?: React.ReactNode }) =>
     React.createElement("div", null, children),
-  DropdownMenuItem: ({ children }: { children?: React.ReactNode }) =>
-    React.createElement("div", null, children),
+  DropdownMenuItem: ({
+    children,
+    onSelect,
+    testID,
+  }: {
+    children?: React.ReactNode;
+    onSelect?: () => void;
+    testID?: string;
+  }) =>
+    React.createElement(
+      "div",
+      { "data-testid": testID, role: "button", onClick: onSelect },
+      children,
+    ),
   DropdownMenuSeparator: () => null,
 }));
 
@@ -426,13 +505,34 @@ function setProjectsState(overrides: Partial<UseProjectsResult>) {
 function setProjectDataState(overrides: Partial<UseTrackerProjectDataResult>) {
   projectDataState.current = {
     trackers: [],
-    isComplete: true,
+    sectionTotals: { open: null, in_progress: null, closed: null, cancelled: null },
+    sectionHasMore: { open: false, in_progress: false, closed: false, cancelled: false },
+    sectionLoadingMore: { open: false, in_progress: false, closed: false, cancelled: false },
+    loadMore: vi.fn(),
     isLoading: false,
     projectErrors: [],
     patchTracker: vi.fn(),
     removeTrackers: vi.fn(),
     refetch: vi.fn(),
     ...overrides,
+  };
+}
+
+function setStatsState(overrides: Partial<UseTrackerStatsResult>) {
+  statsState.current = {
+    counts: null,
+    isLoading: false,
+    projectErrors: [],
+    refetch: vi.fn(),
+    ...overrides,
+  };
+}
+
+function makeStatsBucket(total: number): TrackerStatsCounts["all"] {
+  return {
+    total,
+    byStatus: { open: total, in_progress: 0, closed: 0, cancelled: 0 },
+    byPriority: { P0: 0, P1: 0, P2: total, P3: 0, P4: 0 },
   };
 }
 
@@ -547,6 +647,34 @@ describe("TrackerScreen kanban type filter", () => {
     expect(lastKanbanBoardProps.current?.trackers).toHaveLength(3);
   });
 
+  it("changing the type filter re-requests the shared hook with the new type instead of narrowing the loaded set in memory", () => {
+    render();
+    switchToKanban();
+
+    // Default is "task" — passed straight through to the hook's options, not
+    // applied as a client-side .filter() over an unfiltered fetch.
+    expect(lastProjectDataOptions.current?.type).toBe("task");
+
+    const epicOption = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-type-filter-epic"]',
+    );
+    if (!epicOption) throw new Error("Expected the Epics filter option to render");
+    act(() => {
+      epicOption.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+    expect(lastProjectDataOptions.current?.type).toBe("epic");
+
+    const allOption = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-type-filter-all"]',
+    );
+    if (!allOption) throw new Error("Expected the All filter option to render");
+    act(() => {
+      allOption.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+    // "all" means no type constraint at all — undefined, not the string "all".
+    expect(lastProjectDataOptions.current?.type).toBeUndefined();
+  });
+
   it("type filter applies to the List view's tracker set", () => {
     render();
     switchToList();
@@ -642,13 +770,67 @@ describe("TrackerScreen mutation patching", () => {
     });
   }
 
-  it("threads isComplete from the shared hook down to both the table and the board", () => {
-    setProjectDataState({ trackers: [taskA], isComplete: false });
+  it("Show more calls the shared hook's loadMore instead of revealing already-loaded rows", () => {
+    setProjectDataState({ trackers: [taskA] });
     render();
     switchToList();
-    expect(lastListTableProps.current?.isComplete).toBe(false);
+
+    const onLoadMore = lastListTableProps.current?.onLoadMore;
+    if (!onLoadMore) throw new Error("Expected TrackerTable to receive onLoadMore");
+    act(() => {
+      onLoadMore("open");
+    });
+
+    expect(projectDataState.current.loadMore).toHaveBeenCalledWith("open");
+  });
+
+  it("sums closed and cancelled into the Kanban Done lane's total", () => {
+    setProjectDataState({
+      trackers: [taskA],
+      sectionTotals: { open: 4, in_progress: 1, closed: 3, cancelled: 2 },
+    });
+    render();
     switchToKanban();
-    expect(lastKanbanBoardProps.current?.isComplete).toBe(false);
+
+    expect(lastKanbanBoardProps.current?.laneTotals?.done).toBe(5);
+    expect(lastKanbanBoardProps.current?.laneTotals?.in_progress).toBe(1);
+    expect(lastKanbanBoardProps.current?.laneTotals?.cancelled).toBe(2);
+  });
+
+  it("falls back the ready and open lanes to their loaded count instead of a status total", () => {
+    // sectionTotals.open counts every open-status tracker (ready + blocked
+    // together) — neither lane alone can be expressed from it, so both must
+    // report null and let the column fall back to cards.length.
+    setProjectDataState({
+      trackers: [taskA],
+      sectionTotals: { open: 9, in_progress: 0, closed: 0, cancelled: 0 },
+    });
+    render();
+    switchToKanban();
+
+    expect(lastKanbanBoardProps.current?.laneTotals?.ready).toBe(null);
+    expect(lastKanbanBoardProps.current?.laneTotals?.open).toBe(null);
+  });
+
+  it("reads the toolbar stat pills from useTrackerStats and refreshes them after a mutation", async () => {
+    setStatsState({
+      counts: {
+        all: makeStatsBucket(7),
+        task: makeStatsBucket(7),
+        epic: makeStatsBucket(0),
+        initiative: makeStatsBucket(0),
+      },
+    });
+    render();
+    switchToKanban();
+
+    const onTransition = lastKanbanBoardProps.current?.onTransition;
+    if (!onTransition) throw new Error("Expected TrackerKanbanBoard to receive onTransition");
+    await act(async () => {
+      await onTransition("task-1", { kind: "close" });
+    });
+
+    expect(statsState.current.refetch).toHaveBeenCalled();
   });
 
   it("patches the shared hook with the transition's own response after a Kanban transition succeeds", async () => {
@@ -710,5 +892,46 @@ describe("TrackerScreen mutation patching", () => {
     expect(projectDataState.current.patchTracker).toHaveBeenCalledWith(
       expect.objectContaining({ id: "task-1", status: "in_progress" }),
     );
+  });
+
+  it("the bell reports an errored project's ait-init failure while a different project is selected in the toolbar", () => {
+    const errorOnProjectB: TrackerProjectError = {
+      serverId: "host-a",
+      serverName: "alpha",
+      projectId: "prj-b",
+      projectName: "Project B",
+      message: "No ait database",
+      code: "uninitialised",
+    };
+    setProjectsState({
+      projects: [
+        project({ hosts: [hostEntry({ projectId: "prj-a", projectName: "Project A" })] }),
+        project({
+          viewKey: "remote:github.com/acme/other",
+          projectName: "acme/other",
+          hosts: [hostEntry({ projectId: "prj-b", projectName: "Project B" })],
+        }),
+      ],
+    });
+    // statsState.current.projectErrors is the full, unscoped fixture — the
+    // mock scopes it down per useTrackerStats call the same way the real
+    // hook does (see the mock above).
+    setStatsState({ projectErrors: [errorOnProjectB] });
+    render();
+
+    const projectAOption = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-project-picker-prj-a"]',
+    );
+    if (!projectAOption) throw new Error("Expected the Project A picker option to render");
+    act(() => {
+      projectAOption.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+
+    // The main (picker-scoped) stats call now only covers prj-a, so it
+    // reports no errors of its own — but the bell's separate, always-unscoped
+    // call still surfaces prj-b's failure.
+    expect(
+      container?.querySelector('[data-testid="trackers-project-errors-copy-host-a:prj-b"]'),
+    ).not.toBeNull();
   });
 });

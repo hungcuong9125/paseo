@@ -4,7 +4,6 @@ import {
   MAX_TREE_DEPTH,
   buildTrackerHierarchy,
   compareTrackers,
-  getDescendantStats,
   isDone,
 } from "./tracker-hierarchy";
 
@@ -93,18 +92,6 @@ describe("buildTrackerHierarchy", () => {
     const stats = hierarchy.descendantStats("deep0");
     // Capped at MAX_TREE_DEPTH descendants, not the full chain.
     expect(stats.childCount).toBe(MAX_TREE_DEPTH);
-  });
-});
-
-describe("getDescendantStats", () => {
-  it("returns stats for a single parent id without holding an index", () => {
-    const trackers: TrackerSummary[] = [
-      tracker({ id: "p" }),
-      tracker({ id: "c1", parentId: "p", status: "closed" }),
-      tracker({ id: "c2", parentId: "p" }),
-    ];
-    expect(getDescendantStats(trackers, "p")).toEqual({ childCount: 2, doneCount: 1 });
-    expect(getDescendantStats(trackers, "missing")).toEqual({ childCount: 0, doneCount: 0 });
   });
 });
 

@@ -41,6 +41,9 @@ export const TrackerPageRequestSchema = z.object({
 export const TrackerPageInfoSchema = z.object({
   nextCursor: z.string().nullable(),
   hasMore: z.boolean(),
+  // Rows matching the request's filters, from `ait list --limit`'s
+  // `total_count`. Absent when the CLI binary predates pagination.
+  totalCount: z.number().int().nonnegative().optional(),
 });
 export type TrackerPageInfo = z.infer<typeof TrackerPageInfoSchema>;
 
@@ -53,6 +56,7 @@ export const ProjectTrackerListRequestSchema = z.object({
   // ProjectTrackerCreateRequestSchema's `trackerType` instead.
   status: TrackerStatusSchema.optional(),
   trackerType: TrackerTypeSchema.optional(),
+  priority: TrackerPrioritySchema.optional(),
   page: TrackerPageRequestSchema.optional(),
 });
 
@@ -302,6 +306,52 @@ export const ProjectTrackerReadyResponseSchema = z.object({
     requestId: z.string(),
     projectId: z.string(),
     readyIds: z.array(z.string()),
+    error: z.string().nullable(),
+    errorCode: TrackerErrorCodeSchema.nullable(),
+  }),
+});
+
+const TrackerStatusCountsSchema = z.object({
+  open: z.number().int().nonnegative(),
+  in_progress: z.number().int().nonnegative(),
+  closed: z.number().int().nonnegative(),
+  cancelled: z.number().int().nonnegative(),
+});
+
+const TrackerPriorityCountsSchema = z.object({
+  P0: z.number().int().nonnegative(),
+  P1: z.number().int().nonnegative(),
+  P2: z.number().int().nonnegative(),
+  P3: z.number().int().nonnegative(),
+  P4: z.number().int().nonnegative(),
+});
+
+const TrackerStatsBucketSchema = z.object({
+  total: z.number().int().nonnegative(),
+  byStatus: TrackerStatusCountsSchema,
+  byPriority: TrackerPriorityCountsSchema,
+});
+
+export const TrackerStatsCountsSchema = z.object({
+  all: TrackerStatsBucketSchema,
+  task: TrackerStatsBucketSchema,
+  epic: TrackerStatsBucketSchema,
+  initiative: TrackerStatsBucketSchema,
+});
+export type TrackerStatsCounts = z.infer<typeof TrackerStatsCountsSchema>;
+
+export const ProjectTrackerStatsRequestSchema = z.object({
+  type: z.literal("project.tracker.stats.request"),
+  requestId: z.string(),
+  projectId: z.string(),
+});
+
+export const ProjectTrackerStatsResponseSchema = z.object({
+  type: z.literal("project.tracker.stats.response"),
+  payload: z.object({
+    requestId: z.string(),
+    projectId: z.string(),
+    counts: TrackerStatsCountsSchema.nullable(),
     error: z.string().nullable(),
     errorCode: TrackerErrorCodeSchema.nullable(),
   }),

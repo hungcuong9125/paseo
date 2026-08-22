@@ -1,8 +1,4 @@
-import type {
-  AggregateLoadState,
-  AggregatedTracker,
-  TrackerProjectError,
-} from "@/tracker/use-aggregated-trackers";
+import type { TrackerProjectError } from "@/tracker/aggregated-trackers";
 
 export type TrackerScreenBodyState =
   | { kind: "no-projects" }
@@ -20,7 +16,9 @@ export interface ResolveTrackerScreenBodyStateInput {
    * of every cold load, and the screen shows a call-to-action it then replaces
    * with the whole tracker. */
   isProjectListLoading: boolean;
-  loadState: AggregateLoadState<AggregatedTracker>;
+  /** The shared project-data hook's own `isLoading` (or `false` while a List
+   * search is in flight — search has its own loading indicator). */
+  isLoading: boolean;
   selectedProjectId: string | "all";
   projectErrors: TrackerProjectError[];
   visibleTrackersCount: number;
@@ -39,7 +37,7 @@ export function resolveTrackerScreenBodyState(
   if (!input.hasAnyProject) {
     return input.isProjectListLoading ? { kind: "loading" } : { kind: "no-projects" };
   }
-  if (input.loadState.status === "connecting" || input.loadState.status === "loading") {
+  if (input.isLoading) {
     return { kind: "loading" };
   }
   if (input.selectedProjectId !== "all") {

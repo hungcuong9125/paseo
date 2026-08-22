@@ -6,7 +6,7 @@ Keep tracker data current when an agent or another process changes a project's A
 
 AIT remains the source of truth. Paseo does not open `.ait/ait.db` directly and does not maintain a second durable issue database. The daemon watches the AIT directory only to know when it must run the authoritative `ait` CLI again.
 
-The Tracker screen (`packages/app/src/screens/tracker-screen.tsx`) does not subscribe to this path. It loads through `useTrackerProjectData`'s progressive per-status background sweep and reflects the user's own mutations by patching that hook's local state directly from each mutation's response — no live snapshot, no cache invalidation round-trip. External `ait` changes (another client, or `ait` run from a terminal) only show up on the screen's own manual refresh. `useAggregatedTrackers` and the manager described below still exist as a general-purpose live-fetch path other RPCs or future callers can use.
+The Tracker screen does not subscribe. Live sync is not wired up on the client: an external `ait` change — another client, or `ait` run from a terminal — reaches the screen only on manual refresh. The client-side subscription path (`useAggregatedTrackers`, the `tracker` domain of `packages/app/src/data/push-router.ts`) was removed, so do not build on it. How the screen loads and counts today is in [docs/tracker-data.md](tracker-data.md).
 
 ## Current path
 
@@ -24,7 +24,7 @@ app projectId
 
 The daemon already resolves the project root in `packages/server/src/server/session/tracker/tracker-session.ts` and runs the CLI in `packages/server/src/services/ait-cli-service.ts`. Keep this behavior for legacy clients.
 
-The current app uses one aggregate query for all projects. A project-specific push cannot update that cache safely, so live sync changes the data layer to one query per `(serverId, projectId, all)` and aggregates those results in memory.
+A project-specific push cannot safely update a cache keyed by the whole project set, so live sync needs one query per `(serverId, projectId, all)`, aggregated in memory.
 
 ## Target architecture
 
@@ -212,7 +212,7 @@ Old clients never send `project.tracker.subscribe.request`, so the daemon must n
 
 ## App data model
 
-Replace the aggregate fetch entry with per-project entries:
+Unbuilt — this is what a live-sync client would need, not what the app does. Replace the aggregate fetch entry with per-project entries:
 
 ```text
 ["trackers", serverId, projectId, all]

@@ -3,7 +3,12 @@ import type { TrackerErrorCode } from "@getpaseo/protocol/tracker/rpc-schemas";
 import type { SessionInboundMessage, SessionOutboundMessage } from "../../messages.js";
 import { AitCliError, type AitService } from "../../../services/ait-cli-service.js";
 import type { ProjectRegistry } from "../../workspace-registry.js";
-import type { TrackerSyncManager } from "../../tracker-sync-manager.js";
+import {
+  getTrackerStatsCounts,
+  type TrackerSyncManager,
+  withTrackerSubtreeStats,
+} from "../../tracker-sync-manager.js";
+import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 
 export interface TrackerSessionHost {
   emit(msg: SessionOutboundMessage): void;
@@ -62,14 +67,26 @@ export class TrackerSession {
     this.logger.warn({ err: error, requestType }, "Trackers request failed");
   }
 
+  private async readFullTrackers(projectId: string, cwd: string): Promise<TrackerSummary[]> {
+    if (this.trackerSyncManager) {
+      const snapshot = await this.trackerSyncManager.getSnapshot(projectId, true);
+      if (snapshot.error) {
+        throw new AitCliError(snapshot.errorCode ?? "unknown", snapshot.error);
+      }
+      return snapshot.trackers;
+    }
+    const result = await this.aitService.listTrackers({ cwd, all: true });
+    return result.trackers;
+  }
+
   async handleProjectTrackerListRequest(
     request: Extract<SessionInboundMessage, { type: "project.tracker.list.request" }>,
   ): Promise<void> {
-    // Paginated or filtered requests bypass TrackerSyncManager entirely: the
-    // manager only ever serves full-project snapshots (no windowing), so a
-    // page-bounded read has to hit aitService directly. Kanban's requests never
-    // carry these fields and keep taking the unchanged legacy path below.
-    if (request.page || request.status || request.trackerType) {
+    // Paginated or filtered requests hit aitService for the visible page. The
+    // manager still supplies the full snapshot used for daemon-side subtree
+    // counts. Kanban's requests never carry these fields and keep taking the
+    // unchanged legacy path below.
+    if (request.page || request.status || request.trackerType || request.priority) {
       await this.handlePaginatedListRequest(request);
       return;
     }
@@ -81,14 +98,16 @@ export class TrackerSession {
       if (snapshot?.error) {
         throw new AitCliError(snapshot.errorCode ?? "unknown", snapshot.error);
       }
-      const { trackers, hiddenCount } =
+      const { trackers: resultTrackers, hiddenCount } =
         snapshot ?? (await this.aitService.listTrackers({ cwd, all: request.all }));
+      const fullTrackers =
+        request.all === true ? resultTrackers : await this.readFullTrackers(request.projectId, cwd);
       this.host.emit({
         type: "project.tracker.list.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
-          trackers,
+          trackers: withTrackerSubtreeStats(resultTrackers, fullTrackers),
           hiddenCount,
           error: null,
           errorCode: null,
@@ -123,15 +142,17 @@ export class TrackerSession {
         all: request.all,
         status: request.status,
         type: request.trackerType,
+        priority: request.priority,
         limit: request.page?.limit,
         offset,
       });
+      const fullTrackers = await this.readFullTrackers(request.projectId, cwd);
       this.host.emit({
         type: "project.tracker.list.response",
         payload: {
           requestId: request.requestId,
           projectId: request.projectId,
-          trackers: result.trackers,
+          trackers: withTrackerSubtreeStats(result.trackers, fullTrackers),
           hiddenCount: result.hiddenCount,
           // Omitted entirely when the service fell back to an unpaginated old
           // CLI binary — absence means "complete result", not "no more pages".
@@ -149,6 +170,36 @@ export class TrackerSession {
           projectId: request.projectId,
           trackers: [],
           hiddenCount: 0,
+          ...this.toErrorTuple(error),
+        },
+      });
+    }
+  }
+
+  async handleProjectTrackerStatsRequest(
+    request: Extract<SessionInboundMessage, { type: "project.tracker.stats.request" }>,
+  ): Promise<void> {
+    try {
+      const cwd = await this.resolveCwd(request.projectId);
+      const trackers = await this.readFullTrackers(request.projectId, cwd);
+      this.host.emit({
+        type: "project.tracker.stats.response",
+        payload: {
+          requestId: request.requestId,
+          projectId: request.projectId,
+          counts: getTrackerStatsCounts(trackers),
+          error: null,
+          errorCode: null,
+        },
+      });
+    } catch (error) {
+      this.logFailure(request.type, error);
+      this.host.emit({
+        type: "project.tracker.stats.response",
+        payload: {
+          requestId: request.requestId,
+          projectId: request.projectId,
+          counts: null,
           ...this.toErrorTuple(error),
         },
       });

@@ -1,7 +1,6 @@
 import {
   memo,
   useCallback,
-  useState,
   type PropsWithChildren,
   type ReactElement,
   type ReactNode,
@@ -14,10 +13,11 @@ import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 import { TrackerKanbanCard } from "@/components/tracker/tracker-kanban-card";
 import { TrackerKanbanCardMenu } from "@/components/tracker/tracker-kanban-move-menu";
 import { TrackerKanbanLaneSkeleton } from "@/components/tracker/tracker-skeletons";
+import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { SkeletonPulse, useSkeletonPulse } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { isNative } from "@/constants/platform";
-import { useIsCompactFormFactor } from "@/constants/layout";
+import { useTrackerPageStep } from "@/components/tracker/tracker-table";
 import type { TrackerBoardCard, TrackerBoardLaneKey } from "@/tracker/tracker-board-model";
 import type { TrackerHierarchy } from "@/tracker/tracker-hierarchy";
 import type { TrackerLane, TrackerTransition } from "@/tracker/tracker-transitions";
@@ -37,15 +37,6 @@ function transitionLaneFor(lane: TrackerBoardLaneKey): TrackerLane {
   return lane === "ready" ? "open" : lane;
 }
 
-// Doc: "Done lane: incremental reveal — render at most 50 cards with a 'Show N
-// more' footer." Open/In progress lanes are bounded by active work and render
-// in full; Done and Cancelled are the two terminal lanes that accumulate
-// without limit, so both get the reveal cap. Compact/mobile gets a smaller
-// step — 50 cards at once is a lot of scrolling on a phone-width column.
-const REVEAL_STEP_DESKTOP = 50;
-const REVEAL_STEP_COMPACT = 20;
-const REVEALED_LANES = new Set<TrackerBoardLaneKey>(["done", "cancelled"]);
-
 interface TrackerKanbanCardPressableProps {
   trackerId: string;
   pending: boolean;
@@ -56,7 +47,7 @@ interface TrackerKanbanCardPressableProps {
 // Web only. On native, TrackerKanbanCardMenu wraps the card body in ContextMenuTrigger
 // (a Pressable with onLongPress for the move menu) — nesting a second Pressable in there
 // for tap-to-open would leave two Pressables racing over the same touch responder, so
-// native forwards onCardPress into TrackerKanbanCardMenu's own onPress instead (see its
+// native forwards onCardPress into TrackerKanbanCardMenu's own onPress (see its
 // docstring). Web's TrackerKanbanCardMenu renders `children` with no outer Pressable at
 // all, so this wrapper is the only one covering the card there — no conflict.
 //
@@ -73,10 +64,9 @@ const TrackerKanbanCardPressable = memo(function TrackerKanbanCardPressable({
   const handlePress = useCallback(() => onCardPress(trackerId), [onCardPress, trackerId]);
   return (
     <Pressable
-      style={[styles.cardWrapper, pending && styles.cardPending]}
-      onPress={handlePress}
       disabled={pending}
-      accessibilityRole="button"
+      onPress={handlePress}
+      style={[styles.cardWrapper, pending && styles.cardPending]}
       testID={testID}
     >
       {children}
@@ -88,10 +78,10 @@ export interface TrackerKanbanColumnProps {
   lane: TrackerBoardLaneKey;
   cards: readonly TrackerBoardCard[];
   hierarchy: TrackerHierarchy;
-  /** False while the shared project-data sweep still has sections in flight —
-   * this lane's count and every card's child-progress badge can only be
-   * undercounts until then. */
-  isComplete: boolean;
+  laneTotal?: number | null;
+  laneHasMore?: boolean;
+  laneLoadingMore?: boolean;
+  onLoadMore?: (lane: TrackerBoardLaneKey) => void;
   getProjectLabel?: (tracker: TrackerSummary) => string | null;
   isPending: (trackerId: string) => boolean;
   onTransition: (trackerId: string, transition: TrackerTransition) => void;
@@ -119,7 +109,10 @@ export function TrackerKanbanColumn({
   lane,
   cards,
   hierarchy,
-  isComplete,
+  laneTotal,
+  laneHasMore = false,
+  laneLoadingMore = false,
+  onLoadMore,
   getProjectLabel,
   isPending,
   onTransition,
@@ -132,20 +125,13 @@ export function TrackerKanbanColumn({
   style,
 }: TrackerKanbanColumnProps): ReactElement {
   const { t } = useTranslation();
-  const isCompact = useIsCompactFormFactor();
   const pulse = useSkeletonPulse(isLoading);
-  const revealStep = isCompact ? REVEAL_STEP_COMPACT : REVEAL_STEP_DESKTOP;
-  const [revealCount, setRevealCount] = useState(revealStep);
+  const revealStep = useTrackerPageStep();
   const transitionLane = transitionLaneFor(lane);
-  const isRevealed = REVEALED_LANES.has(lane);
 
-  const visibleCards = isRevealed ? cards.slice(0, revealCount) : cards;
-  const remaining = isRevealed ? Math.max(0, cards.length - revealCount) : 0;
-
-  const handleShowMore = useCallback(
-    () => setRevealCount((count) => count + revealStep),
-    [revealStep],
-  );
+  const handleLoadMore = useCallback(() => {
+    onLoadMore?.(lane);
+  }, [onLoadMore, lane]);
 
   // Assigned rather than nested in JSX: three-way branches read as nested
   // ternaries there, which the lint rules reject outright.
@@ -157,9 +143,24 @@ export function TrackerKanbanColumn({
       <Text style={styles.emptyText}>{t(`tracker.kanban.empty.${laneTranslationKey(lane)}`)}</Text>
     );
   } else {
-    laneBody = visibleCards.map((card) => {
+    laneBody = cards.map((card) => {
       const tracker = card.tracker;
-      const stats = hierarchy.descendantStats(tracker.id);
+      let childCount = tracker.childCount;
+      if (childCount === undefined) {
+        childCount = hierarchy.descendantStats(tracker.id).childCount;
+      }
+      let doneCount = tracker.doneCount;
+      if (doneCount === undefined) {
+        doneCount = hierarchy.descendantStats(tracker.id).doneCount;
+      }
+      let hasChildren = false;
+      if (getHasChildren != null) {
+        hasChildren = getHasChildren(tracker.id);
+      } else if (tracker.childCount !== undefined) {
+        hasChildren = tracker.childCount > 0;
+      } else {
+        hasChildren = hierarchy.descendantStats(tracker.id).childCount > 0;
+      }
       const pending = isPending(tracker.id);
       const cardTestID = `tracker-kanban-card-${tracker.id}`;
       const cardBody = (
@@ -169,9 +170,8 @@ export function TrackerKanbanColumn({
           priority={tracker.priority}
           status={tracker.status}
           projectLabel={getProjectLabel?.(tracker) ?? null}
-          childCount={stats.childCount}
-          doneCount={stats.doneCount}
-          isComplete={isComplete}
+          childCount={childCount}
+          doneCount={doneCount}
           createdAt={tracker.createdAt ?? null}
           testID={cardTestID}
         />
@@ -188,8 +188,8 @@ export function TrackerKanbanColumn({
           isPending={pending}
           onTransition={onTransition}
           onEdit={onEdit}
-          hasChildren={getHasChildren ? getHasChildren(tracker.id) : stats.childCount > 0}
-          deleteDisabled={!isComplete}
+          hasChildren={hasChildren}
+          deleteDisabled={tracker.childCount === undefined}
           onDelete={onDelete}
           onCardPress={isNative ? onCardPress : undefined}
           testID={`${cardTestID}-move`}
@@ -211,6 +211,10 @@ export function TrackerKanbanColumn({
     });
   }
 
+  const badgeCount = laneTotal ?? cards.length;
+  const showCount =
+    laneTotal != null ? Math.max(0, Math.min(revealStep, laneTotal - cards.length)) : revealStep;
+
   return (
     <View style={[styles.column, style]} testID={`tracker-kanban-column-${lane}`}>
       <View style={styles.header}>
@@ -220,7 +224,7 @@ export function TrackerKanbanColumn({
         {isLoading ? (
           <SkeletonPulse pulse={pulse} style={styles.headerCountSkeleton} />
         ) : (
-          <StatusBadge label={`${cards.length}${isComplete ? "" : "+"}`} variant="muted" />
+          <StatusBadge label={String(badgeCount)} variant="muted" />
         )}
       </View>
       <ScrollView
@@ -229,16 +233,20 @@ export function TrackerKanbanColumn({
         showsVerticalScrollIndicator={false}
       >
         {laneBody}
-        {remaining > 0 ? (
+        {laneHasMore && onLoadMore ? (
           <Pressable
             style={styles.showMore}
-            onPress={handleShowMore}
+            onPress={handleLoadMore}
             accessibilityRole="button"
             testID={`tracker-kanban-column-${lane}-show-more`}
           >
-            <Text style={styles.showMoreText}>
-              {t("tracker.kanban.showMore", { count: Math.min(revealStep, remaining) })}
-            </Text>
+            {laneLoadingMore ? (
+              <LoadingSpinner size="small" color={styles.showMoreText.color} />
+            ) : (
+              <Text style={styles.showMoreText}>
+                {t("tracker.kanban.showMore", { count: showCount })}
+              </Text>
+            )}
           </Pressable>
         ) : null}
       </ScrollView>

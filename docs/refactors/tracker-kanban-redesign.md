@@ -235,7 +235,7 @@ One transition matrix, shared by drag-and-drop and the compact action sheet. Nei
 | Snapshot arrives while a mutation is in flight                            | Snapshot wins and replaces board state. The pending flag is keyed by tracker id and survives replacement.                                                                                                                                                                                      |
 | Stale drag — the item's status changed externally since the last snapshot | The RPC is sent as issued. `ait` is the authority on whether it succeeds. On success the following snapshot shows the real result, which may differ from what the user expected; on failure the error surfaces. The UI does not pre-validate against a snapshot it already knows may be stale. |
 
-This ordering rule is why optimistic movement is deferred: with live sync landing separately, an optimistic card and an incoming snapshot would race, and the snapshot must always win.
+This ordering rule is why optimistic movement is deferred: an optimistic card and an authoritative board update would race, and the authoritative update must always win.
 
 ### Platform split
 

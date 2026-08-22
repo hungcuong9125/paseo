@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type {
-  AggregateLoadState,
-  AggregatedTracker,
-  TrackerProjectError,
-} from "@/tracker/use-aggregated-trackers";
+import type { TrackerProjectError } from "@/tracker/aggregated-trackers";
 import { resolveTrackerScreenBodyState } from "./tracker-screen-state";
-
-const LOADED_EMPTY: AggregateLoadState<AggregatedTracker> = { status: "loaded", data: [] };
 
 function projectError(overrides: Partial<TrackerProjectError> = {}): TrackerProjectError {
   return {
@@ -26,7 +20,7 @@ describe("resolveTrackerScreenBodyState", () => {
       resolveTrackerScreenBodyState({
         hasAnyProject: false,
         isProjectListLoading: false,
-        loadState: LOADED_EMPTY,
+        isLoading: false,
         selectedProjectId: "all",
         projectErrors: [],
         visibleTrackersCount: 0,
@@ -39,7 +33,7 @@ describe("resolveTrackerScreenBodyState", () => {
       resolveTrackerScreenBodyState({
         hasAnyProject: false,
         isProjectListLoading: true,
-        loadState: LOADED_EMPTY,
+        isLoading: false,
         selectedProjectId: "all",
         projectErrors: [],
         visibleTrackersCount: 0,
@@ -47,12 +41,12 @@ describe("resolveTrackerScreenBodyState", () => {
     ).toEqual({ kind: "loading" });
   });
 
-  it.each(["connecting", "loading"] as const)("shows loading while %s", (status) => {
+  it("shows loading while the shared project-data hook is still loading", () => {
     expect(
       resolveTrackerScreenBodyState({
         hasAnyProject: true,
         isProjectListLoading: false,
-        loadState: { status },
+        isLoading: true,
         selectedProjectId: "all",
         projectErrors: [],
         visibleTrackersCount: 0,
@@ -65,7 +59,7 @@ describe("resolveTrackerScreenBodyState", () => {
       resolveTrackerScreenBodyState({
         hasAnyProject: true,
         isProjectListLoading: false,
-        loadState: LOADED_EMPTY,
+        isLoading: false,
         selectedProjectId: "prj1",
         projectErrors: [projectError({ code: "cli_missing" })],
         visibleTrackersCount: 0,
@@ -78,7 +72,7 @@ describe("resolveTrackerScreenBodyState", () => {
       resolveTrackerScreenBodyState({
         hasAnyProject: true,
         isProjectListLoading: false,
-        loadState: LOADED_EMPTY,
+        isLoading: false,
         selectedProjectId: "prj1",
         projectErrors: [projectError({ code: "uninitialised" })],
         visibleTrackersCount: 0,
@@ -91,7 +85,7 @@ describe("resolveTrackerScreenBodyState", () => {
       resolveTrackerScreenBodyState({
         hasAnyProject: true,
         isProjectListLoading: false,
-        loadState: LOADED_EMPTY,
+        isLoading: false,
         selectedProjectId: "prj1",
         projectErrors: [projectError({ code: "unknown", message: "something else broke" })],
         visibleTrackersCount: 0,
@@ -104,7 +98,7 @@ describe("resolveTrackerScreenBodyState", () => {
       resolveTrackerScreenBodyState({
         hasAnyProject: true,
         isProjectListLoading: false,
-        loadState: LOADED_EMPTY,
+        isLoading: false,
         selectedProjectId: "prj1",
         projectErrors: [projectError({ projectId: "some-other-project", code: "cli_missing" })],
         visibleTrackersCount: 0,
@@ -117,7 +111,7 @@ describe("resolveTrackerScreenBodyState", () => {
       resolveTrackerScreenBodyState({
         hasAnyProject: true,
         isProjectListLoading: false,
-        loadState: LOADED_EMPTY,
+        isLoading: false,
         selectedProjectId: "all",
         projectErrors: [projectError({ code: "cli_missing" })],
         visibleTrackersCount: 0,
@@ -130,7 +124,7 @@ describe("resolveTrackerScreenBodyState", () => {
       resolveTrackerScreenBodyState({
         hasAnyProject: true,
         isProjectListLoading: false,
-        loadState: LOADED_EMPTY,
+        isLoading: false,
         selectedProjectId: "all",
         projectErrors: [],
         visibleTrackersCount: 0,
@@ -143,7 +137,7 @@ describe("resolveTrackerScreenBodyState", () => {
       resolveTrackerScreenBodyState({
         hasAnyProject: true,
         isProjectListLoading: false,
-        loadState: LOADED_EMPTY,
+        isLoading: false,
         selectedProjectId: "all",
         projectErrors: [],
         visibleTrackersCount: 1,
