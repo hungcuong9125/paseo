@@ -224,6 +224,13 @@ onLoadMore: (status: TrackerStatus) => void;
   their current names and signatures — other modules import them.
 - Row `hasChildren` comes from `tracker.childCount`, falling back to the
   passed `hierarchy` when it is undefined.
+- The four props above are required on the sections variant and absent from
+  the flat variant. Model that as a discriminated union on `variant` rather
+  than four optional props — optional pagination wiring lets a caller drop
+  `onLoadMore` and get a table whose "Show more" silently never appears.
+- The "Show N more" label counts what is actually left:
+  `Math.min(revealStep, total - loaded)` when the total is known, `revealStep`
+  when it is not.
 
 `TrackerKanbanColumn` / `TrackerKanbanBoard` gain, per lane:
 
@@ -236,7 +243,18 @@ onLoadMore: () => void;
 
 Lane badge renders `laneTotal ?? cards.length`, with no `+` suffix. The Done
 lane's total is `closed + cancelled` — the screen does that summing, the
-column just renders what it is handed.
+column just renders what it is handed. Same required-not-optional rule as the
+table, and the same `Math.min(revealStep, total - loaded)` label.
+
+Card child progress reads `tracker.childCount` / `tracker.doneCount` and only
+falls back to `hierarchy.descendantStats` when they are undefined. Without
+this the Kanban board regresses: the sweep used to make the local hierarchy
+complete, and nothing does after this batch.
+
+Delete-tree in the card menu is offered only when `tracker.childCount` is
+defined — `deleteDisabled={tracker.childCount === undefined}`. It used to be
+gated on `isComplete` for the same reason: cascading a delete over a subtree
+you have undercounted is the one destructive action here.
 
 `TrackerKanbanCard` drops `isComplete` and renders `childCount`/`doneCount`
 with no suffix.
