@@ -2513,8 +2513,8 @@ export const ja: TranslationResources = {
       },
       showMore: "他 {{count}} 件を表示",
       moveMenu: {
-        trigger: "{{title}} を移動",
-        title: "移動先…",
+        trigger: "{{title}} の操作",
+        title: "操作",
       },
       moveTo: {
         open: "未着手へ移動",

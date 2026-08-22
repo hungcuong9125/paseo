@@ -18,8 +18,8 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, options?: Record<string, unknown>) => {
       const templates: Record<string, string> = {
-        "tracker.kanban.moveMenu.trigger": "Move {{title}}",
-        "tracker.kanban.moveMenu.title": "Move to…",
+        "tracker.kanban.moveMenu.trigger": "Actions for {{title}}",
+        "tracker.kanban.moveMenu.title": "Actions",
         "tracker.kanban.moveTo.open": "Move to Open",
         "tracker.kanban.moveTo.inProgress": "Move to In progress",
         "tracker.kanban.moveTo.done": "Move to Done",

@@ -2551,8 +2551,8 @@ export const fr: TranslationResources = {
       },
       showMore: "Afficher {{count}} de plus",
       moveMenu: {
-        trigger: "Déplacer {{title}}",
-        title: "Déplacer vers…",
+        trigger: "Actions pour {{title}}",
+        title: "Actions",
       },
       moveTo: {
         open: "Déplacer vers Ouvert",

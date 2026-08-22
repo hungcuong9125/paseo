@@ -272,10 +272,11 @@ describe("TrackerTable status grouping", () => {
     expect(c.querySelector('[data-testid="tracker-table-section-cancelled"]')).toBeNull();
   });
 
-  it("renders every row it's given for a section with no client-side slicing", () => {
-    // TrackerTable renders exactly what the shared project-data hook has
-    // loaded so far — growing this list further is that hook's background
-    // sweep, not a client-side reveal step inside the table.
+  it("caps a large section at the reveal step and offers Show more, even though every row is already loaded", () => {
+    // The shared project-data hook's background sweep still loads the full
+    // set for hierarchy accuracy — this cap is purely about what the table
+    // *renders* at once, so a big backlog doesn't dump hundreds of rows into
+    // the DOM in one go.
     const many = Array.from({ length: 51 }, (_, i) =>
       tracker({ id: `open-${i}`, status: "open", title: `Open ${i}` }),
     );
@@ -284,6 +285,14 @@ describe("TrackerTable status grouping", () => {
 
     const openSection = c.querySelector('[data-testid="tracker-table-section-open"]');
     expect(openSection?.textContent).toContain("51");
+    expect(openSection?.querySelectorAll('[data-testid^="row-"]')).toHaveLength(50);
+    const showMore = c.querySelector('[data-testid="tracker-table-section-open-show-more"]');
+    expect(showMore).not.toBeNull();
+
+    act(() => {
+      showMore?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+
     expect(openSection?.querySelectorAll('[data-testid^="row-"]')).toHaveLength(51);
     expect(c.querySelector('[data-testid="tracker-table-section-open-show-more"]')).toBeNull();
   });

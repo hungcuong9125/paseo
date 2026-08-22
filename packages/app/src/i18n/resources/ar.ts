@@ -2488,8 +2488,8 @@ export const ar: TranslationResources = {
       },
       showMore: "عرض {{count}} المزيد",
       moveMenu: {
-        trigger: "نقل {{title}}",
-        title: "نقل إلى…",
+        trigger: "إجراءات {{title}}",
+        title: "الإجراءات",
       },
       moveTo: {
         open: "نقل إلى مفتوح",

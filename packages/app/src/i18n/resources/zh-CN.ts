@@ -2459,8 +2459,8 @@ export const zhCN: TranslationResources = {
       },
       showMore: "显示另外 {{count}} 项",
       moveMenu: {
-        trigger: "移动 {{title}}",
-        title: "移动到…",
+        trigger: "{{title}} 的操作",
+        title: "操作",
       },
       moveTo: {
         open: "移动到待处理",

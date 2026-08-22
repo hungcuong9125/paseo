@@ -476,6 +476,16 @@ describe("TrackerScreen kanban type filter", () => {
     });
   }
 
+  // The screen now defaults to Kanban — tests that exercise List-specific
+  // rendering (TrackerTable props) must switch to it explicitly first.
+  function switchToList() {
+    const listToggle = container?.querySelector<HTMLElement>('[data-testid="trackers-view-list"]');
+    if (!listToggle) throw new Error("Expected the List view toggle to render");
+    act(() => {
+      listToggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+  }
+
   it("renders the type filter control in List mode", () => {
     render();
 
@@ -527,6 +537,7 @@ describe("TrackerScreen kanban type filter", () => {
 
   it("type filter applies to the List view's tracker set", () => {
     render();
+    switchToList();
 
     const allOption = container?.querySelector<HTMLElement>(
       '[data-testid="trackers-type-filter-all"]',
@@ -609,9 +620,20 @@ describe("TrackerScreen mutation patching", () => {
     });
   }
 
+  // The screen now defaults to Kanban — tests that exercise List-specific
+  // rendering (TrackerTable props) must switch to it explicitly first.
+  function switchToList() {
+    const listToggle = container?.querySelector<HTMLElement>('[data-testid="trackers-view-list"]');
+    if (!listToggle) throw new Error("Expected the List view toggle to render");
+    act(() => {
+      listToggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+  }
+
   it("threads isComplete from the shared hook down to both the table and the board", () => {
     setProjectDataState({ trackers: [taskA], isComplete: false });
     render();
+    switchToList();
     expect(lastListTableProps.current?.isComplete).toBe(false);
     switchToKanban();
     expect(lastKanbanBoardProps.current?.isComplete).toBe(false);
@@ -659,6 +681,7 @@ describe("TrackerScreen mutation patching", () => {
 
   it("patches the shared hook when the detail sheet reports a mutation", () => {
     render();
+    switchToList();
 
     const onOpenTracker = lastListTableProps.current?.onOpenTracker;
     if (!onOpenTracker) throw new Error("Expected TrackerTable to receive onOpenTracker");

@@ -2505,8 +2505,8 @@ export const ko: TranslationResources = {
       },
       showMore: "{{count}}개 더 보기",
       moveMenu: {
-        trigger: "{{title}} 이동",
-        title: "이동…",
+        trigger: "{{title}} 작업",
+        title: "작업",
       },
       moveTo: {
         open: "열림으로 이동",

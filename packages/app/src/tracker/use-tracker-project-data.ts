@@ -190,7 +190,17 @@ export function useTrackerProjectData(
           if (seq !== loadSeqRef.current) {
             return;
           }
-          setProjectErrors((current) => [...current, toTrackerProjectError(project, error)]);
+          setProjectErrors((current) => {
+            // Dedup — same project can fail in more than one status sweep concurrently.
+            if (
+              current.some(
+                (e) => e.serverId === project.serverId && e.projectId === project.projectId,
+              )
+            ) {
+              return current;
+            }
+            return [...current, toTrackerProjectError(project, error)];
+          });
           setSections((current) => ({
             ...current,
             [status]: {
@@ -251,10 +261,15 @@ export function useTrackerProjectData(
     if (seq !== loadSeqRef.current) {
       return;
     }
+    const seenErrorProjects = new Set<string>();
     for (const page of firstPages) {
       const projectKey = projectKeyOf(page.project);
       if (page.error) {
-        errors.push(toTrackerProjectError(page.project, page.error));
+        // Dedup — each status section fetches independently and fails the same way.
+        if (!seenErrorProjects.has(projectKey)) {
+          seenErrorProjects.add(projectKey);
+          errors.push(toTrackerProjectError(page.project, page.error));
+        }
         nextSections[page.status].cursors[projectKey] = { cursor: null, hasMore: false };
         continue;
       }

@@ -139,6 +139,7 @@ export function TrackerKanbanBoard({
             }))}
             value={effectiveLane}
             onValueChange={setSelectedLane}
+            size="sm"
             testID={`${testID}-lane-selector`}
           />
         </ScrollView>
@@ -169,7 +170,6 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     minHeight: 0,
     gap: theme.spacing[2],
-    paddingTop: theme.spacing[2],
   },
   // flexGrow/flexShrink: 0 keeps this ScrollView pinned to its content height —
   // as a flex child of `board` (a column flex:1 container) it would otherwise

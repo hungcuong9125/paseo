@@ -2502,8 +2502,8 @@ export const en = {
       },
       showMore: "Show {{count}} more",
       moveMenu: {
-        trigger: "Move {{title}}",
-        title: "Move to…",
+        trigger: "Actions for {{title}}",
+        title: "Actions",
       },
       moveTo: {
         open: "Move to Open",

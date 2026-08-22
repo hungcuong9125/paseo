@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactElement } from "react";
+import { memo, useCallback, useMemo, useState, type ReactElement } from "react";
 import { Pressable, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
@@ -56,6 +56,10 @@ const LIST_SECTIONS: ReadonlyArray<{ status: TrackerStatus; labelKey: string }> 
   { status: "cancelled", labelKey: "tracker.list.section.cancelled" },
 ];
 
+// Every section caps at revealStep with a "Show N more" footer — the shared
+// data hook still loads everything, this only bounds what's rendered.
+const REVEALED_STATUSES = new Set<TrackerStatus>(["open", "in_progress", "closed", "cancelled"]);
+
 // Page size for the server-side pagination hooks that feed this table — the
 // same sizing convention the old client-side reveal used (50 desktop / 20
 // compact), now applied at the RPC boundary instead of as an in-memory slice.
@@ -96,6 +100,16 @@ export function TrackerTable({
   isLoadingMoreAll = false,
 }: TrackerTableProps): ReactElement {
   const { t } = useTranslation();
+  const revealStep = useTrackerPageStep();
+  const [revealCounts, setRevealCounts] = useState<Partial<Record<TrackerStatus, number>>>({});
+  const handleRevealMore = useCallback(
+    (status: TrackerStatus) =>
+      setRevealCounts((current) => ({
+        ...current,
+        [status]: (current[status] ?? revealStep) + revealStep,
+      })),
+    [revealStep],
+  );
 
   const sortedTrackers = useMemo(
     () =>
@@ -173,6 +187,10 @@ export function TrackerTable({
         if (items.length === 0) {
           return null;
         }
+        const isRevealed = REVEALED_STATUSES.has(section.status);
+        const revealCount = revealCounts[section.status] ?? revealStep;
+        const visibleItems = isRevealed ? items.slice(0, revealCount) : items;
+        const remaining = isRevealed ? Math.max(0, items.length - revealCount) : 0;
         return (
           <View
             key={section.status}
@@ -184,7 +202,7 @@ export function TrackerTable({
               <Text style={styles.sectionCount}>{items.length}</Text>
             </View>
             <View style={settingsStyles.card}>
-              {items.map((tracker, index) => (
+              {visibleItems.map((tracker, index) => (
                 <TrackerTableRow
                   key={`${tracker.serverId}:${tracker.projectId}:${tracker.id}`}
                   tracker={tracker}
@@ -199,12 +217,41 @@ export function TrackerTable({
                 />
               ))}
             </View>
+            {remaining > 0 ? (
+              <TrackerTableShowMore
+                status={section.status}
+                label={t("tracker.list.showMore", { count: Math.min(revealStep, remaining) })}
+                onReveal={handleRevealMore}
+              />
+            ) : null}
           </View>
         );
       })}
     </View>
   );
 }
+
+const TrackerTableShowMore = memo(function TrackerTableShowMore({
+  status,
+  label,
+  onReveal,
+}: {
+  status: TrackerStatus;
+  label: string;
+  onReveal: (status: TrackerStatus) => void;
+}): ReactElement {
+  const handlePress = useCallback(() => onReveal(status), [onReveal, status]);
+  return (
+    <Pressable
+      style={styles.showMore}
+      onPress={handlePress}
+      accessibilityRole="button"
+      testID={`tracker-table-section-${status}-show-more`}
+    >
+      <Text style={styles.showMoreText}>{label}</Text>
+    </Pressable>
+  );
+});
 
 const NO_PENDING: TrackerRowPending = {};
 

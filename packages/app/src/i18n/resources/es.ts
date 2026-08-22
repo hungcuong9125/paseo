@@ -2544,8 +2544,8 @@ export const es: TranslationResources = {
       },
       showMore: "Mostrar {{count}} más",
       moveMenu: {
-        trigger: "Mover {{title}}",
-        title: "Mover a…",
+        trigger: "Acciones para {{title}}",
+        title: "Acciones",
       },
       moveTo: {
         open: "Mover a Abierto",
