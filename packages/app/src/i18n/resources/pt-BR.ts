@@ -2528,8 +2528,8 @@ export const ptBR: TranslationResources = {
       },
       showMore: "Mostrar mais {{count}}",
       moveMenu: {
-        trigger: "Mover {{title}}",
-        title: "Mover para…",
+        trigger: "Ações para {{title}}",
+        title: "Ações",
       },
       moveTo: {
         open: "Mover para Aberto",

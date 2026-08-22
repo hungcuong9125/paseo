@@ -2533,8 +2533,8 @@ export const ru: TranslationResources = {
       },
       showMore: "Показать ещё {{count}}",
       moveMenu: {
-        trigger: "Переместить {{title}}",
-        title: "Переместить в…",
+        trigger: "Действия для {{title}}",
+        title: "Действия",
       },
       moveTo: {
         open: "Переместить в «Открыто»",

@@ -2,16 +2,21 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type Ref,
   type ReactElement,
+  type ReactNode,
 } from "react";
 import {
   Pressable,
   ScrollView,
   Text,
   View,
+  type Animated,
+  type LayoutChangeEvent,
   type PressableStateCallbackType,
   type StyleProp,
   type TextStyle,
@@ -28,6 +33,7 @@ import {
   ListChecks,
   ListFilter,
   Plus,
+  X,
 } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
@@ -37,6 +43,7 @@ import { TrackerDetailSheet } from "@/components/tracker/tracker-detail-sheet";
 import { TrackerEditSheet } from "@/components/tracker/tracker-edit-sheet";
 import { TrackerFormSheet } from "@/components/tracker/tracker-form-sheet";
 import { TrackerKanbanBoard } from "@/components/tracker/tracker-kanban-board";
+import { TrackerListSkeleton } from "@/components/tracker/tracker-skeletons";
 import { TrackerTable, useTrackerPageStep } from "@/components/tracker/tracker-table";
 import {
   DropdownMenu,
@@ -48,6 +55,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { SkeletonPulse, useSkeletonPulse } from "@/components/ui/skeleton";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 import { SearchField } from "@/components/ui/search-field";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -59,7 +67,8 @@ import { useOpenAddProject } from "@/hooks/use-open-add-project";
 import { useProjects } from "@/hooks/use-projects";
 import { useToast } from "@/contexts/toast-context";
 import { useFetchQuery } from "@/data/query";
-import { getHostRuntimeStore } from "@/runtime/host-runtime";
+import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
+import { useHydratedWorkspaceServerIds } from "@/stores/session-store-hooks";
 import {
   fetchTrackerReadyIds,
   trackerQueryBaseKey,
@@ -103,12 +112,59 @@ const TYPE_FILTER_DEFS: ReadonlyArray<{ value: TypeFilter; labelKey: string }> =
   { value: "all", labelKey: "tracker.kanban.type.all" },
 ];
 
+// sessionStorage, not the persisted app store: this remembers the choice for
+// "reload this tab", not across app restarts or other tabs — closer to how a
+// scroll position survives a reload than to a saved setting. Desktop/tablet
+// only; compact always mounts on List regardless of what's stored (see the
+// `isCompact` guards on both read and write below), so a phone session can
+// never override the desktop tab's remembered view and vice versa.
+const TRACKER_VIEW_MODE_STORAGE_KEY = "paseo:tracker:view-mode";
+
+function readStoredViewMode(): ViewMode | null {
+  if (!isWeb) {
+    return null;
+  }
+  try {
+    const stored = window.sessionStorage.getItem(TRACKER_VIEW_MODE_STORAGE_KEY);
+    return stored === "list" || stored === "kanban" ? stored : null;
+  } catch {
+    // Private-browsing storage lockouts and similar — the in-memory state
+    // still works for the rest of the session, it just won't survive reload.
+    return null;
+  }
+}
+
+function writeStoredViewMode(mode: ViewMode): void {
+  if (!isWeb) {
+    return;
+  }
+  try {
+    window.sessionStorage.setItem(TRACKER_VIEW_MODE_STORAGE_KEY, mode);
+  } catch {
+    // See readStoredViewMode.
+  }
+}
+
 // Mirrors sessions-screen.tsx's own search field/debounce — List-only (see
 // the `viewMode === "list"` gate in TrackerSearchRow): Kanban's board already
 // finds an item by scanning its column, and title+id substring search over a
 // swimlane grouping is a different feature this doesn't attempt.
 const TRACKER_SEARCH_DEBOUNCE_MS = 200;
 const TRACKER_SEARCH_MIN_LENGTH = 3;
+
+// Toolbar width, not a breakpoint: opening the sidebar takes ~320px off this
+// row without changing the window breakpoint, so a breakpoint cannot tell
+// whether the three toolbar groups fit on one line. Measured natural widths at
+// the widest content (Kanban's six priority pills): project picker + pills 923,
+// type filter + New item 381, plus the 12 gap and the row's 24 inset each side
+// — 1364. Rounded up to leave the pills a little slack before they start
+// scrolling.
+const TOOLBAR_SINGLE_ROW_MIN_WIDTH = 1440;
+
+// Width of a loading pill's count skeleton — the real count has no reserved
+// column (it sizes to its own digits), but the placeholder has no digits to
+// size to, so it needs an explicit width standing in for a plausible one.
+const STAT_COUNT_WIDTH = 24;
 
 // Below TRACKER_SEARCH_MIN_LENGTH, every keystroke would re-filter the full
 // tracker set for a query too short to narrow anything useful — treat it as
@@ -187,6 +243,7 @@ const ThemedListFilter = withUnistyles(ListFilter);
 const ThemedBell = withUnistyles(Bell);
 const ThemedCopy = withUnistyles(Copy);
 const ThemedCheck = withUnistyles(Check);
+const ThemedX = withUnistyles(X);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 // Red on hover in light mode reads as an alert; on dark it would nearly
 // vanish against a near-black surface, so dark hover goes to plain
@@ -291,6 +348,55 @@ function useTrackerListView(options: {
   return { isListSearch, searchState, listViewTrackers };
 }
 
+interface ContentWidth {
+  ref: Ref<View>;
+  /** Null only on native's very first frame; see the hook's docstring. */
+  value: number | null;
+  onLayout: (event: LayoutChangeEvent) => void;
+}
+
+/**
+ * Width of the tracker screen's own content box, measured on the screen root
+ * so it survives the List/Kanban switch (which re-parents and remounts the
+ * toolbar) and so the Kanban board — which mounts later, once data lands —
+ * never has to measure anything itself.
+ *
+ * It has to be measured rather than derived from a breakpoint: opening the
+ * agent sidebar takes its width straight off this box without changing the
+ * window breakpoint at all, so no media query can tell whether the toolbar's
+ * three groups fit on one line.
+ *
+ * Two sources, deliberately. `onLayout` is the durable one — it also fires
+ * when the sidebar is dragged or the window resized — but it lands one frame
+ * after mount, so the first painted frame would see `null`, render the
+ * stacked arrangement and then visibly snap to the single-row one. The layout
+ * effect closes that gap on web: it runs after the DOM exists but before the
+ * browser paints, so the first frame the user ever sees is already correct.
+ * Native has no pre-paint measurement and needs none — every native form
+ * factor is compact, where the arrangement is the same at any width.
+ */
+function useContentWidth(): ContentWidth {
+  const ref = useRef<View>(null);
+  const [value, setValue] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    if (!isWeb) {
+      return;
+    }
+    const node = ref.current as unknown as HTMLElement | null;
+    const measured = node?.getBoundingClientRect?.().width;
+    if (typeof measured === "number" && measured > 0) {
+      setValue(measured);
+    }
+  }, []);
+
+  const onLayout = useCallback((event: LayoutChangeEvent) => {
+    setValue(event.nativeEvent.layout.width);
+  }, []);
+
+  return { ref, value, onLayout };
+}
+
 export function TrackerScreen(): ReactElement {
   const isFocused = useIsFocused();
 
@@ -303,6 +409,20 @@ export function TrackerScreen(): ReactElement {
 
 function TrackerScreenContent(): ReactElement {
   const { projects: projectSummaries } = useProjects();
+  // "No projects" is a call to action, not a loading state, so it must not be
+  // shown until every host has actually delivered its project list.
+  // useProjects()'s own isLoading tracks the *agent* directory, which lands
+  // before the workspace/project one — reading it here flashed "Open a project"
+  // over the whole screen for a few hundred milliseconds on every cold load.
+  //
+  // An empty host list counts as loading too, not as "no projects": startup
+  // routing sends a genuinely host-less app to the welcome route (see
+  // resolveHostRuntimeBootstrapDecision), so this screen only ever sees it
+  // while the registry is still filling in.
+  const hosts = useHosts();
+  const hostIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
+  const hydratedHostIds = useHydratedWorkspaceServerIds(hostIds);
+  const isProjectListLoading = hostIds.length === 0 || hydratedHostIds.length < hostIds.length;
   const projectInputs = useMemo<TrackerProjectInput[]>(
     () =>
       projectSummaries.flatMap((project) =>
@@ -327,7 +447,23 @@ function TrackerScreenContent(): ReactElement {
   // Shared by BOTH views: which tracker granularities are included. Defaults to
   // "task" (preserves the board's original default; the List view inherits it).
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("task");
-  const [viewMode, setViewMode] = useState<ViewMode>("kanban");
+  // Desktop/tablet defaults to Kanban and remembers the last choice across a
+  // reload (sessionStorage — see readStoredViewMode); compact always mounts on
+  // List and never reads or writes that memory, so switching view on a phone
+  // can't clobber what a desktop tab remembers, or vice versa.
+  const isCompact = useIsCompactFormFactor();
+  const [viewMode, setViewModeState] = useState<ViewMode>(() =>
+    isCompact ? "list" : (readStoredViewMode() ?? "kanban"),
+  );
+  const setViewMode = useCallback(
+    (next: ViewMode) => {
+      setViewModeState(next);
+      if (!isCompact) {
+        writeStoredViewMode(next);
+      }
+    },
+    [isCompact],
+  );
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedTracker, setSelectedTracker] = useState<AggregatedTracker | null>(null);
   // One shared edit target for BOTH views — the List row kebab and the Kanban
@@ -357,6 +493,29 @@ function TrackerScreenContent(): ReactElement {
     enabled: hasAnyProject,
     pageSize: pageStep,
   });
+
+  // The header bell reports "which projects in this workspace need `ait
+  // init`" — a workspace-wide fact, unrelated to which project the toolbar
+  // picker has narrowed the List/Kanban data to. `projectData.projectErrors`
+  // above is scoped to that picker (by design, so a wrong project doesn't pay
+  // for fetching data nobody's viewing), so it goes silent on every project
+  // except whichever one is currently selected. This second sweep is
+  // unscoped and exists purely to keep the bell honest; `pageSize: 1` because
+  // nothing here reads `.trackers` — the sweep only needs to run long enough
+  // to surface the per-project error, not to fetch real pages. Only enabled
+  // while a project is actually selected — with "All projects" active it
+  // would just be an identical, wasted duplicate of the sweep above.
+  const isProjectFiltered = selectedProjectId !== null;
+  const bellProjectData = useTrackerProjectData({
+    projects: projectInputs,
+    selectedProjectId: null,
+    all: true,
+    enabled: hasAnyProject && isProjectFiltered,
+    pageSize: 1,
+  });
+  const bellProjectErrors = isProjectFiltered
+    ? bellProjectData.projectErrors
+    : projectData.projectErrors;
 
   // Built from the full (unfiltered) project set project data returns — the
   // List row's delete action needs to know the *real* child count (any type,
@@ -393,14 +552,15 @@ function TrackerScreenContent(): ReactElement {
     () => (viewMode === "kanban" ? kanbanTrackers.length : listViewTrackers.length),
     [viewMode, kanbanTrackers, listViewTrackers],
   );
-  // List search follows the search hook's own loading state; everything else
-  // (browse List and Kanban) follows the shared project-data sweep.
+  // Search's own loading routes through isSearchLoading below, not here — it
+  // would otherwise unmount the search row on every keystroke.
   const effectiveLoadState = useMemo(
-    () => resolveEffectiveLoadState(isListSearch ? searchState.isLoading : projectData.isLoading),
-    [isListSearch, searchState.isLoading, projectData.isLoading],
+    () => resolveEffectiveLoadState(isListSearch ? false : projectData.isLoading),
+    [isListSearch, projectData.isLoading],
   );
   const bodyState = resolveTrackerScreenBodyState({
     hasAnyProject,
+    isProjectListLoading,
     loadState: effectiveLoadState,
     selectedProjectId: selectedProjectId ?? "all",
     projectErrors: projectData.projectErrors,
@@ -536,6 +696,7 @@ function TrackerScreenContent(): ReactElement {
     },
     [selectedTracker, projectData],
   );
+  const contentWidth = useContentWidth();
   // Same patch mechanism as the row/detail mutation paths — merges the fresh
   // summary into the aggregated instance already in the shared data hook.
   const handleEditUpdated = useCallback(
@@ -552,9 +713,7 @@ function TrackerScreenContent(): ReactElement {
   const headerRightContent = useMemo(
     () => (
       <>
-        {projectData.projectErrors.length > 0 ? (
-          <TrackerErrorsButton errors={projectData.projectErrors} />
-        ) : null}
+        <TrackerErrorsButton errors={bellProjectErrors} />
         <SegmentedControl
           options={viewModeOptions}
           value={viewMode}
@@ -565,13 +724,14 @@ function TrackerScreenContent(): ReactElement {
         />
       </>
     ),
-    [projectData.projectErrors, viewMode],
+    [bellProjectErrors, viewMode, setViewMode],
   );
 
   return (
-    <View style={styles.container}>
+    <View style={styles.container} ref={contentWidth.ref} onLayout={contentWidth.onLayout}>
       <MenuHeader title="Tracker" rightContent={headerRightContent} />
       <TrackerScreenBody
+        contentWidth={contentWidth.value}
         bodyState={bodyState}
         trackers={listViewTrackers}
         trackerHierarchy={trackerHierarchy}
@@ -586,6 +746,7 @@ function TrackerScreenContent(): ReactElement {
         onLoadMoreAll={searchState.loadMore}
         hasMoreAll={searchState.hasMore}
         isLoadingMoreAll={searchState.isLoadingMore}
+        isSearchLoading={isListSearch && searchState.isLoading}
         showProjectLabel={selectedProjectId === null}
         projects={projectInputs}
         selectedProjectId={selectedProjectId}
@@ -772,14 +933,16 @@ function PriorityFilterDropdown({
   counts,
   statFilter,
   onStatFilterChange,
+  pulse,
 }: {
-  counts: TrackerStatCounts;
+  counts: TrackerStatCounts | null;
   statFilter: StatFilter;
   onStatFilterChange: (value: StatFilter) => void;
+  pulse: Animated.Value;
 }): ReactElement {
   const selectedLevel = PRIORITY_HELP_LEVELS.find((level) => level.filter === statFilter) ?? null;
   const [isHovered, setIsHovered] = useState(false);
-  const priorityTotal = counts.p0 + counts.p1 + counts.p2 + counts.p3 + counts.p4;
+  const priorityTotal = counts ? counts.p0 + counts.p1 + counts.p2 + counts.p3 + counts.p4 : null;
   const handleSelectAll = useCallback(() => onStatFilterChange("all"), [onStatFilterChange]);
   const handleSelectLevel = useCallback(
     (filter: PriorityStatFilter) => onStatFilterChange(filter),
@@ -807,20 +970,24 @@ function PriorityFilterDropdown({
       >
         {selectedLevel != null ? (
           <>
-            <Text style={[styles.priorityFilterCount, styles.priorityFilterCountActive]}>
-              {counts[selectedLevel.filter]}
-            </Text>
+            <StatCount
+              count={counts ? counts[selectedLevel.filter] : null}
+              active
+              pulse={pulse}
+              style={[styles.priorityFilterCount, styles.priorityFilterCountActive]}
+            />
             <Text style={[styles.priorityFilterText, styles.priorityFilterTextActive]}>
               {` ${selectedLevel.id}`}
             </Text>
           </>
         ) : (
           <>
-            <Text
+            <StatCount
+              count={priorityTotal}
+              active={false}
+              pulse={pulse}
               style={[styles.priorityFilterCount, isHovered && styles.priorityFilterCountHovered]}
-            >
-              {priorityTotal}
-            </Text>
+            />
             <Text style={styles.priorityFilterText}>{" PRIORITY"}</Text>
           </>
         )}
@@ -944,7 +1111,9 @@ function TrackerFilterMenu({
 // Errors move into a header popover instead of an inline content banner —
 // most projects don't run `ait`, so a permanent "no ait database" strip in
 // the content area would be the common case, not the exception. The trigger
-// only renders when there is something to show (see headerRightContent).
+// itself always renders, error or not — it doubles as the discovery path for
+// `ait` on a project that has never used it (see TrackerErrorsButton). Only
+// the count badge is conditional (see TrackerErrorsBellIcon).
 // ait-cli-service's raw message is "no ait database at <dir>/.ait/ait.db —
 // run 'ait init' first" — the full absolute path is noise the user doesn't
 // need to read, but it is the only place the project's directory shows up,
@@ -958,9 +1127,9 @@ function handleOpenAitRepo(): void {
 
 // A row (not a nested Text) — Text only reliably accepts Text/Image children
 // cross-platform, and hover props (onHoverIn/onHoverOut) only exist on
-// Pressable, not Text. Default colour matches the surrounding sentence (not
-// accent-tinted at rest); only hover picks up the accent colour + underline,
-// so it reads as a highlighted word rather than a conspicuous button.
+// Pressable, not Text. Underlined at rest so it reads as a link inside the
+// sentence rather than plain emphasis; only the colour is hover-only, picking
+// up the accent tint.
 function TrackerAitRepoLink(): ReactElement {
   const [isHovered, setIsHovered] = useState(false);
   const handleHoverIn = useCallback(() => setIsHovered(true), []);
@@ -1050,9 +1219,11 @@ function TrackerErrorsBellIcon({
   return (
     <>
       <ThemedBell size={20} uniProps={bellColorMapping} />
-      <View style={styles.errorsBadge}>
-        <Text style={styles.errorsBadgeText}>{count}</Text>
-      </View>
+      {count > 0 ? (
+        <View style={styles.errorsBadge}>
+          <Text style={styles.errorsBadgeText}>{count}</Text>
+        </View>
+      ) : null}
     </>
   );
 }
@@ -1073,6 +1244,7 @@ function TrackerErrorsButton({ errors }: { errors: TrackerProjectError[] }): Rea
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const triggerBoxRef = useRef<View>(null);
   const wasInsideRef = useRef(false);
+  const isCompact = useIsCompactFormFactor();
 
   const clearTimers = useCallback(() => {
     if (openTimer.current) clearTimeout(openTimer.current);
@@ -1098,15 +1270,10 @@ function TrackerErrorsButton({ errors }: { errors: TrackerProjectError[] }): Rea
     }, 260);
   }, [cancelHoverClose]);
 
-  // The trigger's own color changes when the menu opens (the bell "activates"),
-  // which on some renders swaps which DOM node sits under the cursor — plain
-  // onPointerEnter/onPointerLeave on the trigger then fire a spurious
-  // leave+enter pair with the pointer never having moved, flapping the menu
-  // open/closed in a loop. Tracking real pointer coordinates against the
-  // trigger's own rect side-steps that: it only cares where the cursor is,
-  // never which element the browser currently thinks is topmost.
+  // Tracks pointer coords against the trigger's rect instead of
+  // onPointerEnter/Leave, which flap on the bell's active-color repaint.
   useEffect(() => {
-    if (!isWeb) return;
+    if (!isWeb || isCompact) return;
     function handlePointerMove(event: PointerEvent): void {
       const node = triggerBoxRef.current as unknown as Element | null;
       const rect = node?.getBoundingClientRect?.();
@@ -1127,14 +1294,15 @@ function TrackerErrorsButton({ errors }: { errors: TrackerProjectError[] }): Rea
     }
     document.addEventListener("pointermove", handlePointerMove);
     return () => document.removeEventListener("pointermove", handlePointerMove);
-  }, [clearTimers, scheduleHoverClose]);
+  }, [isCompact, clearTimers, scheduleHoverClose]);
 
   const renderTrigger = useCallback(
     (state: DropdownMenuTriggerState) => renderErrorsTrigger(state, errors.length),
     [errors.length],
   );
+  const handleClose = useCallback(() => setOpen(false), []);
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
+    <DropdownMenu open={open} onOpenChange={setOpen} compactMode="sheet">
       <View ref={triggerBoxRef}>
         <DropdownMenuTrigger
           style={styles.errorsButtonTrigger}
@@ -1146,25 +1314,48 @@ function TrackerErrorsButton({ errors }: { errors: TrackerProjectError[] }): Rea
       <DropdownMenuContent
         align="end"
         width={360}
+        scrollable
         onPointerEnter={cancelHoverClose}
         onPointerLeave={scheduleHoverClose}
       >
         <View style={styles.errorsMenuList} testID="trackers-project-errors">
-          <View style={styles.errorsMenuTitleRow}>
-            <Text style={styles.errorsMenuTitle}>{"Track your projects with "}</Text>
-            <TrackerAitRepoLink />
+          <View style={styles.errorsMenuHeaderRow}>
+            <View style={styles.errorsMenuTitleRow}>
+              <Text style={styles.errorsMenuTitle}>{"Track your projects with "}</Text>
+              <TrackerAitRepoLink />
+            </View>
+            {isCompact ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+                hitSlop={8}
+                style={styles.errorsCloseButton}
+                onPress={handleClose}
+                testID="trackers-project-errors-close"
+              >
+                <ThemedX size={18} uniProps={mutedColorMapping} />
+              </Pressable>
+            ) : null}
           </View>
-          <Text style={styles.errorsMenuDescription}>
-            These projects don&apos;t have one set up yet. Run{" "}
-            <Text style={styles.errorsRowEmphasis}>ait init</Text> in each to enable it.
-          </Text>
-          <View style={styles.errorsMenuDescriptionDivider} />
-          {errors.map((error, index) => (
-            <Fragment key={`${error.serverId}:${error.projectId}`}>
-              {index > 0 ? <View style={styles.errorsMenuDivider} /> : null}
-              <TrackerErrorRow error={error} />
-            </Fragment>
-          ))}
+          {errors.length > 0 ? (
+            <>
+              <Text style={styles.errorsMenuDescription}>
+                These projects don&apos;t have one set up yet. Run{" "}
+                <Text style={styles.errorsRowEmphasis}>ait init</Text> in each to enable it.
+              </Text>
+              <View style={styles.errorsMenuDescriptionDivider} />
+              {errors.map((error, index) => (
+                <Fragment key={`${error.serverId}:${error.projectId}`}>
+                  {index > 0 ? <View style={styles.errorsMenuDivider} /> : null}
+                  <TrackerErrorRow error={error} />
+                </Fragment>
+              ))}
+            </>
+          ) : (
+            <Text style={styles.errorsMenuDescription}>
+              Every project here already has one set up.
+            </Text>
+          )}
         </View>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -1172,6 +1363,7 @@ function TrackerErrorsButton({ errors }: { errors: TrackerProjectError[] }): Rea
 }
 
 function TrackerScreenBody({
+  contentWidth,
   bodyState,
   trackers,
   trackerHierarchy,
@@ -1186,6 +1378,7 @@ function TrackerScreenBody({
   onLoadMoreAll,
   hasMoreAll,
   isLoadingMoreAll,
+  isSearchLoading,
   showProjectLabel,
   projects,
   selectedProjectId,
@@ -1209,6 +1402,10 @@ function TrackerScreenBody({
   isInitialising,
   onRetry,
 }: {
+  /** Width available to the toolbar and the Kanban board, measured on the
+   * screen container. Null only for the very first frame after mount, which
+   * is long before either of them renders anything width-dependent. */
+  contentWidth: number | null;
   bodyState: TrackerScreenBodyState;
   trackers: AggregatedTracker[];
   trackerHierarchy: TrackerHierarchy;
@@ -1226,6 +1423,10 @@ function TrackerScreenBody({
   onLoadMoreAll: () => void;
   hasMoreAll: boolean;
   isLoadingMoreAll: boolean;
+  /** True while a search query is in flight — gates the "No results" copy in
+   * the "empty" body state so a still-loading search doesn't flash a wrong
+   * answer before its own results land. */
+  isSearchLoading: boolean;
   showProjectLabel: boolean;
   projects: TrackerProjectInput[];
   selectedProjectId: string | null;
@@ -1259,180 +1460,243 @@ function TrackerScreenBody({
     [showProjectLabel],
   );
 
-  switch (bodyState.kind) {
-    case "no-projects":
-      return (
-        <View style={styles.centered}>
-          <Text style={styles.message}>Open a project to see its tracker</Text>
-          <Button variant="outline" onPress={onOpenProject} testID="trackers-open-project">
-            Open project
-          </Button>
-        </View>
-      );
-    case "loading":
-      return (
-        <View style={styles.centered}>
-          <LoadingSpinner size="large" color={styles.spinner.color} />
-        </View>
-      );
-    case "cli-missing":
-      return (
-        <View style={styles.centered}>
-          <Text style={styles.message}>Install the ait CLI on this host to track work here</Text>
-        </View>
-      );
-    case "uninitialised":
-      return (
-        <View style={styles.centered}>
-          <Text style={styles.message}>This project doesn&apos;t have a tracker yet</Text>
-          <Button
-            variant="outline"
-            onPress={onInitialise}
-            loading={isInitialising}
-            testID="trackers-initialise"
-          >
-            Initialize tracker
-          </Button>
-        </View>
-      );
-    case "load-error":
-      return (
-        <View style={styles.centered}>
-          <Text style={styles.message}>{bodyState.message}</Text>
-          <Button variant="ghost" onPress={onRetry} testID="trackers-retry">
-            Try again
-          </Button>
-        </View>
-      );
-    case "empty":
-      return (
-        // Same contentContainerStyle/stickyHeaderIndices as the "content" list
-        // case below — the search input lives at the same child index in both,
-        // and a structural mismatch here (e.g. sticky-wrapping only one of the
-        // two) makes react-native-web remount the subtree instead of patching
-        // it, which drops keyboard focus from the field mid-search.
-        <ScrollView
-          ref={listScrollRef}
-          style={styles.scroll}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          stickyHeaderIndices={[0]}
-        >
-          <TrackersToolbar
-            statsTrackers={statsTrackers}
-            projects={projects}
-            selectedProjectId={selectedProjectId}
-            onSelectProject={onSelectProject}
-            statFilter={statFilter}
-            onStatFilterChange={onStatFilterChange}
-            viewMode={viewMode}
-            typeFilter={typeFilter}
-            onTypeFilterChange={onTypeFilterChange}
-            onCreate={onCreate}
-          />
-          <TrackerSearchRow
-            viewMode={viewMode}
-            value={searchInput}
-            onChangeText={onSearchInputChange}
-          />
-          {activeSearch.length > 0 ? (
-            <View style={styles.centered} testID="trackers-empty">
-              <ListChecks size={styles.emptyIcon.width} color={styles.emptyIcon.color} />
-              <Text style={styles.emptyTitle}>No results for &quot;{activeSearch}&quot;</Text>
-            </View>
-          ) : (
-            <View style={styles.centered} testID="trackers-empty">
-              <ListChecks size={styles.emptyIcon.width} color={styles.emptyIcon.color} />
-              <Text style={styles.emptyTitle}>Nothing tracked yet</Text>
-              <Button
-                variant="outline"
-                leftIcon={Plus}
-                onPress={onCreate}
-                testID="trackers-empty-new"
-              >
-                New item
-              </Button>
-            </View>
-          )}
-        </ScrollView>
-      );
-    case "content": {
-      const toolbar = (
-        <TrackersToolbar
-          statsTrackers={statsTrackers}
-          projects={projects}
-          selectedProjectId={selectedProjectId}
-          onSelectProject={onSelectProject}
-          statFilter={statFilter}
-          onStatFilterChange={onStatFilterChange}
-          viewMode={viewMode}
-          typeFilter={typeFilter}
-          onTypeFilterChange={onTypeFilterChange}
-          onCreate={onCreate}
-        />
-      );
-
-      if (viewMode === "kanban") {
-        // Not nested in the outer vertical ScrollView: each TrackerKanbanColumn owns
-        // its own vertical ScrollView and needs a bounded-height parent (flex: 1),
-        // which a ScrollView's content container can't give a child.
-        return (
-          <View style={styles.kanbanContainer} testID="trackers-kanban">
-            {toolbar}
-            <TrackerKanbanBoard
-              trackers={kanbanTrackers}
-              filter={statFilter}
-              readyIds={kanbanReadyIds}
-              isComplete={isComplete}
-              onTransition={onKanbanTransition}
-              onTransitionError={onKanbanTransitionError}
-              onEdit={onKanbanEdit}
-              getProjectLabel={getKanbanProjectLabel}
-              onCardPress={onKanbanCardPress}
-            />
-          </View>
-        );
-      }
-
-      return (
-        <ScrollView
-          ref={listScrollRef}
-          style={styles.scroll}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          stickyHeaderIndices={[0]}
-          testID="trackers-list"
-        >
-          {toolbar}
-          <TrackerSearchRow
-            viewMode={viewMode}
-            value={searchInput}
-            onChangeText={onSearchInputChange}
-          />
-          <TrackerTable
-            trackers={trackers}
-            showProjectLabel={showProjectLabel}
-            onOpenTracker={onOpenTracker}
-            hierarchy={trackerHierarchy}
-            isComplete={isComplete}
-            onTrackerPatched={onTrackerPatched}
-            onEditTracker={onEditTracker}
-            onTrackersRemoved={onTrackersRemoved}
-            variant={listVariant}
-            onLoadMoreAll={onLoadMoreAll}
-            hasMoreAll={hasMoreAll}
-            isLoadingMoreAll={isLoadingMoreAll}
-          />
-        </ScrollView>
-      );
-    }
+  // The frame is not part of the data state machine. The toolbar, the search
+  // field and — in Kanban — the lanes themselves are chrome: their size and
+  // position follow from the view mode and the measured width, never from what
+  // the server returned. They render on the first frame and stay put; only the
+  // data region below swaps between skeleton, message and content. Mount any of
+  // them behind a load state instead and the entire screen re-lays-out the
+  // moment data lands, which is what a spinner-then-everything screen does.
+  if (bodyState.kind === "no-projects") {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.message}>Open a project to see its tracker</Text>
+        <Button variant="outline" onPress={onOpenProject} testID="trackers-open-project">
+          Open project
+        </Button>
+      </View>
+    );
   }
+
+  const isLoading = bodyState.kind === "loading";
+
+  const toolbar = (
+    <TrackersToolbar
+      contentWidth={contentWidth}
+      isLoading={isLoading}
+      statsTrackers={statsTrackers}
+      projects={projects}
+      selectedProjectId={selectedProjectId}
+      onSelectProject={onSelectProject}
+      statFilter={statFilter}
+      onStatFilterChange={onStatFilterChange}
+      viewMode={viewMode}
+      typeFilter={typeFilter}
+      onTypeFilterChange={onTypeFilterChange}
+      onCreate={onCreate}
+    />
+  );
+
+  // Selecting one project surfaces its own failure in place of the data region
+  // rather than in place of the screen — the toolbar above stays usable, so the
+  // project picker is still there to switch away with.
+  let blocked: ReactNode = null;
+  if (bodyState.kind === "cli-missing") {
+    blocked = (
+      <View style={styles.centered}>
+        <Text style={styles.message}>Install the ait CLI on this host to track work here</Text>
+      </View>
+    );
+  } else if (bodyState.kind === "uninitialised") {
+    blocked = (
+      <View style={styles.centered}>
+        <Text style={styles.message}>This project doesn&apos;t have a tracker yet</Text>
+        <Button
+          variant="outline"
+          onPress={onInitialise}
+          loading={isInitialising}
+          testID="trackers-initialise"
+        >
+          Initialize tracker
+        </Button>
+      </View>
+    );
+  } else if (bodyState.kind === "load-error") {
+    blocked = (
+      <View style={styles.centered}>
+        <Text style={styles.message}>{bodyState.message}</Text>
+        <Button variant="ghost" onPress={onRetry} testID="trackers-retry">
+          Try again
+        </Button>
+      </View>
+    );
+  }
+
+  if (viewMode === "kanban") {
+    // Not nested in the outer vertical ScrollView: each TrackerKanbanColumn owns
+    // its own vertical ScrollView and needs a bounded-height parent (flex: 1),
+    // which a ScrollView's content container can't give a child.
+    //
+    // No "empty" branch here on purpose — a board with nothing in it is five
+    // empty lanes, not a replacement screen, and swapping the lanes out for a
+    // centred message would move the toolbar every time a filter matched
+    // nothing.
+    return (
+      <View style={styles.kanbanContainer} testID="trackers-kanban">
+        {toolbar}
+        {blocked ?? (
+          <TrackerKanbanBoard
+            availableWidth={contentWidth}
+            isLoading={isLoading}
+            trackers={kanbanTrackers}
+            filter={statFilter}
+            readyIds={kanbanReadyIds}
+            isComplete={isComplete}
+            onTransition={onKanbanTransition}
+            onTransitionError={onKanbanTransitionError}
+            onEdit={onKanbanEdit}
+            getProjectLabel={getKanbanProjectLabel}
+            onCardPress={onKanbanCardPress}
+          />
+        )}
+      </View>
+    );
+  }
+
+  let listBody: ReactNode;
+  if (blocked) {
+    listBody = blocked;
+  } else if (isLoading) {
+    listBody = <TrackerListSkeleton />;
+  } else if (bodyState.kind === "empty") {
+    listBody = (
+      <TrackerListEmptyState
+        activeSearch={activeSearch}
+        isSearchLoading={isSearchLoading}
+        onCreate={onCreate}
+      />
+    );
+  } else {
+    listBody = (
+      <TrackerTable
+        trackers={trackers}
+        showProjectLabel={showProjectLabel}
+        onOpenTracker={onOpenTracker}
+        hierarchy={trackerHierarchy}
+        isComplete={isComplete}
+        onTrackerPatched={onTrackerPatched}
+        onEditTracker={onEditTracker}
+        onTrackersRemoved={onTrackersRemoved}
+        variant={listVariant}
+        onLoadMoreAll={onLoadMoreAll}
+        hasMoreAll={hasMoreAll}
+        isLoadingMoreAll={isLoadingMoreAll}
+      />
+    );
+  }
+
+  // One ScrollView for every list state, with the toolbar and the search field
+  // always at child index 0 and 1. That is not a style choice: swapping which
+  // subtree wraps the search field makes react-native-web remount it instead of
+  // patching it, and the field loses keyboard focus mid-search. Keep the data
+  // region as the only thing that varies here.
+  return (
+    <ScrollView
+      ref={listScrollRef}
+      style={styles.scroll}
+      contentContainerStyle={styles.scrollContent}
+      showsVerticalScrollIndicator={false}
+      stickyHeaderIndices={[0]}
+      testID="trackers-list"
+    >
+      {toolbar}
+      <TrackerSearchRow
+        viewMode={viewMode}
+        value={searchInput}
+        onChangeText={onSearchInputChange}
+      />
+      {listBody}
+    </ScrollView>
+  );
+}
+
+function TrackerListEmptyState({
+  activeSearch,
+  isSearchLoading,
+  onCreate,
+}: {
+  activeSearch: string;
+  isSearchLoading: boolean;
+  onCreate: () => void;
+}): ReactElement {
+  if (activeSearch.length > 0) {
+    return (
+      <View style={styles.centered} testID="trackers-empty">
+        {isSearchLoading ? (
+          <LoadingSpinner size="large" color={styles.spinner.color} />
+        ) : (
+          <>
+            <ListChecks size={styles.emptyIcon.width} color={styles.emptyIcon.color} />
+            <Text style={styles.emptyTitle}>No results for &quot;{activeSearch}&quot;</Text>
+          </>
+        )}
+      </View>
+    );
+  }
+  return (
+    <View style={styles.centered} testID="trackers-empty">
+      <ListChecks size={styles.emptyIcon.width} color={styles.emptyIcon.color} />
+      <Text style={styles.emptyTitle}>Nothing tracked yet</Text>
+      <Button variant="outline" leftIcon={Plus} onPress={onCreate} testID="trackers-empty-new">
+        New item
+      </Button>
+    </View>
+  );
 }
 
 interface StatFilterPillDef {
   value: StatFilter;
   label: string;
-  count: number;
+  /** Which total this pill shows. The definition is static — only the number
+   * it resolves to has to wait for data. */
+  countKey: keyof TrackerStatCounts;
+}
+
+const LIST_STAT_PILLS: readonly StatFilterPillDef[] = [
+  { value: "open", label: "Open", countKey: "open" },
+  { value: "in_progress", label: "In Progress", countKey: "inProgress" },
+  { value: "done", label: "Done", countKey: "done" },
+  { value: "all", label: "All", countKey: "all" },
+];
+
+/**
+ * The count half of a filter pill. Reserves a fixed, right-aligned column so
+ * the label beside it never moves: these numbers arrive late, keep climbing
+ * through the background sweep, and sit in a row that is centred on tablet —
+ * every digit that changed the pill's width would shift the whole row.
+ */
+function StatCount({
+  count,
+  active,
+  pulse,
+  style,
+}: {
+  count: number | null;
+  /** The pill is filled solid, so the placeholder needs the inverse fill to
+   * stay visible on it. */
+  active: boolean;
+  pulse: Animated.Value;
+  style: StyleProp<TextStyle>;
+}): ReactElement {
+  if (count === null) {
+    return (
+      <SkeletonPulse
+        pulse={pulse}
+        style={[styles.statNumberSkeleton, active && styles.statNumberSkeletonActive]}
+      />
+    );
+  }
+  return <Text style={style}>{count}</Text>;
 }
 
 // Hover/active colours for the count, locked to the same status palette used by
@@ -1479,12 +1743,16 @@ function priorityHelpColorStyle(id: string): StyleProp<TextStyle> {
 
 function StatFilterPillView({
   def,
+  count,
   active,
   onSelect,
+  pulse,
 }: {
   def: StatFilterPillDef;
+  count: number | null;
   active: boolean;
   onSelect: (value: StatFilter) => void;
+  pulse: Animated.Value;
 }): ReactElement {
   const [isHovered, setIsHovered] = useState(false);
   const handlePress = useCallback(() => onSelect(def.value), [onSelect, def.value]);
@@ -1516,14 +1784,15 @@ function StatFilterPillView({
       accessibilityLabel={`Filter: ${def.label}`}
       testID={`trackers-stat-${def.value}`}
     >
-      <Text
+      <StatCount
+        count={count}
+        active={active}
+        pulse={pulse}
         style={[
           styles.statNumber,
           active ? styles.statNumberActive : showSemanticColor && statNumberColorStyle(def.value),
         ]}
-      >
-        {def.count}
-      </Text>
+      />
       <Text style={[styles.statLabel, active && styles.statLabelActive]}>{def.label}</Text>
     </Pressable>
   );
@@ -1553,11 +1822,13 @@ function KanbanPriorityFilterButton({
   count,
   active,
   onSelect,
+  pulse,
 }: {
   def: KanbanPriorityButtonDef;
-  count: number;
+  count: number | null;
   active: boolean;
   onSelect: (value: StatFilter) => void;
+  pulse: Animated.Value;
 }): ReactElement {
   const [isHovered, setIsHovered] = useState(false);
   const handlePress = useCallback(() => onSelect(def.filter), [onSelect, def.filter]);
@@ -1583,33 +1854,44 @@ function KanbanPriorityFilterButton({
       accessibilityLabel={`Filter: ${def.label}`}
       testID={`trackers-kanban-priority-${def.filter}`}
     >
-      <Text style={[styles.statNumber, active && styles.statNumberActive]}>{count}</Text>
+      <StatCount
+        count={count}
+        active={active}
+        pulse={pulse}
+        style={[styles.statNumber, active && styles.statNumberActive]}
+      />
       <Text style={[styles.statLabel, active && styles.statLabelActive]}>{def.label}</Text>
     </Pressable>
   );
 }
 
+// No wrapper row of its own — StatFilterRow's inner row already is one, and
+// nesting a second identical flex row inside it only left a container whose
+// gap did nothing.
 function KanbanPriorityFilterRow({
   counts,
   statFilter,
   onStatFilterChange,
+  pulse,
 }: {
-  counts: TrackerStatCounts;
+  counts: TrackerStatCounts | null;
   statFilter: StatFilter;
   onStatFilterChange: (value: StatFilter) => void;
+  pulse: Animated.Value;
 }): ReactElement {
   return (
-    <View style={styles.kanbanPriorityRow}>
+    <>
       {KANBAN_PRIORITY_BUTTONS.map((def) => (
         <KanbanPriorityFilterButton
           key={def.filter}
           def={def}
-          count={counts[def.filter]}
+          count={counts ? counts[def.filter] : null}
           active={statFilter === def.filter}
           onSelect={onStatFilterChange}
+          pulse={pulse}
         />
       ))}
-    </View>
+    </>
   );
 }
 
@@ -1625,67 +1907,99 @@ function KanbanPriorityFilterRow({
 // (buildTrackerBoard's isDimmed) instead of hiding lanes.
 function StatFilterRow({
   trackers,
+  isLoading,
   statFilter,
   onStatFilterChange,
   viewMode,
   isCompact,
+  placement,
+  centered,
 }: {
   trackers: AggregatedTracker[];
+  /** Renders every count as a placeholder. The labels are static and never
+   * wait for data — only the numbers do. */
+  isLoading: boolean;
   statFilter: StatFilter;
   onStatFilterChange: (value: StatFilter) => void;
   viewMode: ViewMode;
   isCompact: boolean;
+  /** "inline" sits inside a toolbar row that already applies the horizontal
+   * inset and the vertical rhythm; "stacked" is a full-bleed row of its own
+   * and supplies both itself. */
+  placement: "inline" | "stacked";
+  /** Centers the pills within the row when they don't fill it. */
+  centered: boolean;
 }): ReactElement | null {
-  const counts = getTrackerStatCounts(trackers);
+  const pulse = useSkeletonPulse(isLoading);
+  const counts = isLoading ? null : getTrackerStatCounts(trackers);
+  const isStacked = placement === "stacked";
+  // The stacked row's own margins live here rather than on a wrapper View —
+  // this component already renders a ScrollView, and it returns null in the
+  // compact Kanban case, where a wrapper would have left its margins behind as
+  // an empty gap.
+  const scrollStyle = [styles.statsRowScroll, isStacked && styles.statsRowStacked];
+  // Inset on the content container rather than the ScrollView so the pills can
+  // scroll all the way to the screen edge instead of stopping at the inset.
+  const contentStyle = [styles.statsRowScrollContent, isStacked && styles.statsRowContentInset];
+  // Centering is `margin: auto` on an inner row, not justifyContent on the
+  // scroll content: auto margins collapse to 0 once the content overflows,
+  // whereas centered justification would push the first pill past the
+  // scroller's left edge where it can't be scrolled back into view.
+  const innerStyle = [styles.statsRowInner, centered && styles.statsRowInnerCentered];
 
   // Compact width folds the priority filter into TrackerFilterMenu (the
   // toolbar's overflow trigger) instead of rendering it inline — Kanban's
   // priority-buttons row is the whole of this component in that mode, so
   // there's nothing left to show here at all.
-  if (viewMode === "kanban") {
-    return isCompact ? null : (
+  if (viewMode === "kanban" && isCompact) {
+    return null;
+  }
+
+  const body =
+    viewMode === "kanban" ? (
       <KanbanPriorityFilterRow
         counts={counts}
         statFilter={statFilter}
         onStatFilterChange={onStatFilterChange}
+        pulse={pulse}
       />
-    );
-  }
-
-  const defs: StatFilterPillDef[] = [
-    { value: "open", label: "Open", count: counts.open },
-    { value: "in_progress", label: "In Progress", count: counts.inProgress },
-    { value: "done", label: "Done", count: counts.done },
-    { value: "all", label: "All", count: counts.all },
-  ];
-
-  return (
-    <View style={styles.statsRow}>
-      {defs.map((def, index) => (
+    ) : (
+      LIST_STAT_PILLS.map((def, index) => (
         <Fragment key={def.value}>
-          {index > 0 ? <View style={styles.statDivider} /> : null}
           <StatFilterPillView
             def={def}
+            count={counts ? counts[def.countKey] : null}
             active={statFilter === def.value}
             onSelect={onStatFilterChange}
+            pulse={pulse}
           />
           {index === 2 && !isCompact ? (
-            <>
-              <View style={styles.statDivider} />
-              <PriorityFilterDropdown
-                counts={counts}
-                statFilter={statFilter}
-                onStatFilterChange={onStatFilterChange}
-              />
-            </>
+            <PriorityFilterDropdown
+              counts={counts}
+              statFilter={statFilter}
+              onStatFilterChange={onStatFilterChange}
+              pulse={pulse}
+            />
           ) : null}
         </Fragment>
-      ))}
-    </View>
+      ))
+    );
+
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={scrollStyle}
+      contentContainerStyle={contentStyle}
+    >
+      <View style={innerStyle}>{body}</View>
+    </ScrollView>
   );
 }
 
 function TrackersToolbar({
+  contentWidth,
+  isLoading,
   statsTrackers,
   projects,
   selectedProjectId,
@@ -1697,6 +2011,11 @@ function TrackersToolbar({
   onTypeFilterChange,
   onCreate,
 }: {
+  /** Measured content width; see `useContentWidth`. Null only on native's
+   * first frame, where every form factor is compact and lands on the stacked
+   * arrangement anyway. */
+  contentWidth: number | null;
+  isLoading: boolean;
   statsTrackers: AggregatedTracker[];
   projects: TrackerProjectInput[];
   selectedProjectId: string | null;
@@ -1719,51 +2038,91 @@ function TrackersToolbar({
       })),
     [t],
   );
-  return (
-    <View style={styles.toolbar}>
-      <View style={styles.toolbarMain}>
-        {projects.length > 1 ? (
-          <ProjectPicker
-            projects={projects}
-            selectedProjectId={selectedProjectId}
-            onSelectProject={onSelectProject}
-          />
-        ) : null}
-        <StatFilterRow
-          trackers={statsTrackers}
+
+  // Three groups, built once and independently of where they end up. Each
+  // arrangement below only places them — nothing about a group's own content
+  // depends on the arrangement, which is what stops a fix for one form factor
+  // from rearranging another.
+  //
+  // Group 1: which project.
+  const projectGroup =
+    projects.length > 1 ? (
+      <ProjectPicker
+        projects={projects}
+        selectedProjectId={selectedProjectId}
+        onSelectProject={onSelectProject}
+      />
+    ) : null;
+
+  // Group 2: which granularity, plus the create action. Compact folds the
+  // granularity toggle (and the priority filter) into one overflow menu.
+  const typeGroup = (
+    <>
+      {isCompact ? (
+        <TrackerFilterMenu
+          typeFilter={typeFilter}
+          onTypeFilterChange={onTypeFilterChange}
           statFilter={statFilter}
           onStatFilterChange={onStatFilterChange}
-          viewMode={viewMode}
-          isCompact={isCompact}
         />
-      </View>
-      <View style={styles.toolbarActions}>
-        {isCompact ? (
-          <TrackerFilterMenu
-            typeFilter={typeFilter}
-            onTypeFilterChange={onTypeFilterChange}
-            statFilter={statFilter}
-            onStatFilterChange={onStatFilterChange}
-          />
-        ) : (
-          <SegmentedControl
-            options={typeFilterOptions}
-            value={typeFilter}
-            onValueChange={onTypeFilterChange}
-            size="sm"
-            testID="trackers-type-filter"
-          />
-        )}
-        <Button
-          variant="outline"
-          leftIcon={Plus}
-          onPress={onCreate}
+      ) : (
+        <SegmentedControl
+          options={typeFilterOptions}
+          value={typeFilter}
+          onValueChange={onTypeFilterChange}
           size="sm"
-          testID="trackers-new"
-        >
-          New item
-        </Button>
+          testID="trackers-type-filter"
+        />
+      )}
+      <Button variant="outline" leftIcon={Plus} onPress={onCreate} size="sm" testID="trackers-new">
+        New item
+      </Button>
+    </>
+  );
+
+  // Group 3: which status or priority.
+  const isSingleRow = contentWidth != null && contentWidth >= TOOLBAR_SINGLE_ROW_MIN_WIDTH;
+  const statsGroup = (
+    <StatFilterRow
+      trackers={statsTrackers}
+      isLoading={isLoading}
+      statFilter={statFilter}
+      onStatFilterChange={onStatFilterChange}
+      viewMode={viewMode}
+      isCompact={isCompact}
+      placement={isSingleRow ? "inline" : "stacked"}
+      centered={!isSingleRow && !isCompact}
+    />
+  );
+
+  // Desktop, one row: groups 1 and 3 left, group 2 right.
+  if (isSingleRow) {
+    return (
+      <View style={[styles.toolbar, styles.toolbarBordered]}>
+        <View style={[styles.toolbarRow, styles.toolbarRowSingle]}>
+          <View style={styles.rowLeft}>
+            {projectGroup}
+            {statsGroup}
+          </View>
+          <View style={styles.rowTrailing}>{typeGroup}</View>
+        </View>
       </View>
+    );
+  }
+
+  // Tablet and mobile, two rows: group 1 left and group 2 right on the first,
+  // group 3 full-bleed on its own below. The two differ only in what the
+  // groups render (dropdown vs. segmented control, keyed off isCompact inside
+  // typeGroup) and in the bottom border, which mobile drops — at that width it
+  // lands directly on the search field or the Kanban lane pills and reads as a
+  // stray line rather than a section break.
+  return (
+    <View style={[styles.toolbar, !isCompact && styles.toolbarBordered]}>
+      <View style={styles.toolbarRow}>
+        {projectGroup}
+        <View style={styles.rowTrailing}>{typeGroup}</View>
+      </View>
+      {statsGroup}
     </View>
   );
 }
@@ -1818,68 +2177,110 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[2],
     paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
-    paddingTop: theme.spacing[4],
+    paddingTop: { xs: 0, sm: 0, md: theme.spacing[4] },
     paddingBottom: theme.spacing[2],
   },
-  // Sticky header (List view's ScrollView passes stickyHeaderIndices={[0]}) —
-  // needs its own opaque background and bottom border so scrolled rows don't
-  // show through or blend into it once it's pinned to the top.
-  toolbar: {
+  // No flexWrap: a group that doesn't fit scrolls or shrinks in place. Wrapping
+  // would silently move a group to a line the layout never asked for, which is
+  // how this toolbar previously ended up rearranging itself at widths nobody
+  // tested.
+  toolbarRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    flexWrap: "wrap",
     gap: theme.spacing[3],
     paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
     paddingTop: theme.spacing[4],
-    paddingBottom: theme.spacing[3],
+  },
+  // Desktop has no second row to supply the bottom spacing.
+  toolbarRowSingle: {
+    paddingBottom: theme.spacing[4],
+  },
+  // Wraps every row of the toolbar as one opaque block, border on the outside
+  // so it sits after the last row. List's ScrollView passes
+  // stickyHeaderIndices={[0]}, so this doubles as the sticky block's own
+  // boundary there; Kanban isn't in a ScrollView (the board owns its own
+  // scrolling) but still wants the same visual break before its lane
+  // headers/columns — `kanbanContainer`'s gap keeps the border off them.
+  toolbar: {
     backgroundColor: theme.colors.surface0,
+  },
+  // Tablet/desktop only — on mobile this sits right above the Kanban
+  // lane-selector pills (or a search field) with barely any room, reading as
+  // a stray line instead of a real section break.
+  toolbarBordered: {
     borderBottomWidth: theme.borderWidth[1],
     borderBottomColor: theme.colors.border,
   },
-  toolbarMain: {
+  // The single-row arrangement's left slot: the project picker plus the stat
+  // pills. It is the only slot allowed to shrink, because the pills are a
+  // horizontal ScrollView and can give width back by scrolling — minWidth: 0
+  // is what permits shrinking below content width at all. A slot whose own
+  // children can't shrink (React Native defaults flexShrink to 0) would
+  // overflow its box and overlap the next slot instead.
+  rowLeft: {
     flexDirection: "row",
     alignItems: "center",
-    flexWrap: "wrap",
-    gap: theme.spacing[3],
+    gap: theme.spacing[4],
     flexShrink: 1,
+    minWidth: 0,
   },
-  toolbarActions: {
+  // Pinned right by its own auto margin rather than by the row's
+  // justifyContent: with a single project there is no left slot at all, and
+  // space-between would leave this group stranded on the left.
+  rowTrailing: {
     flexDirection: "row",
     alignItems: "center",
+    gap: theme.spacing[4],
     flexShrink: 0,
-    gap: theme.spacing[2],
+    marginLeft: "auto",
   },
-  statsRow: {
+  // flexGrow: 0 keeps it pinned to its content height as a column flex child;
+  // flexShrink/minWidth let it give up width and scroll when it's a row child.
+  statsRowScroll: {
+    flexGrow: 0,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  // Vertical rhythm for the stacked placement, where this row is a sibling of
+  // `toolbarRow` rather than a child of it.
+  statsRowStacked: {
+    marginTop: theme.spacing[4],
+    marginBottom: theme.spacing[4],
+  },
+  // flexGrow: 1 gives the content container the scroller's full width when the
+  // pills are narrower than it, which is what the inner row's auto margins
+  // need in order to have any free space to centre within.
+  statsRowScrollContent: {
+    flexGrow: 1,
     flexDirection: "row",
-    flexWrap: "wrap",
     alignItems: "center",
-    gap: theme.spacing[1],
   },
-  // Wider than statsRow's gap — with no dividers between these buttons (unlike
-  // the List pills), they need more breathing room to read as separate buttons.
-  kanbanPriorityRow: {
+  // Matches `toolbarRow`'s inset, for the stacked placement where this row is
+  // full-bleed instead of nested inside that padded row.
+  statsRowContentInset: {
+    paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
+  },
+  // Same gap for List and Kanban — the pills read as one group either way.
+  // 10 doesn't land on the spacing scale (6 or 12 are the neighbours); a
+  // plain literal, same as STAT_COUNT_WIDTH above.
+  statsRowInner: {
     flexDirection: "row",
-    flexWrap: "wrap",
     alignItems: "center",
-    gap: theme.spacing[3],
+    gap: 10,
   },
-  statDivider: {
-    width: 1,
-    height: 15,
-    backgroundColor: theme.colors.border,
-    opacity: theme.opacity[50],
-    marginHorizontal: theme.spacing[1],
+  statsRowInnerCentered: {
+    marginHorizontal: "auto",
   },
   // Same pill geometry as the Tasks/Epics/Initiatives SegmentedControl
   // (full-radius, surface2 hover, solid foreground when active — see
   // segmented-control.tsx's segment/segmentHover/segmentSelected).
   statCard: {
     flexDirection: "row",
-    alignItems: "baseline",
+    alignItems: "center",
     gap: theme.spacing[1.5],
-    paddingVertical: theme.spacing[1],
-    paddingHorizontal: theme.spacing[2],
+    minHeight: 28,
+    paddingVertical: 0,
+    paddingHorizontal: theme.spacing[3],
     borderRadius: theme.borderRadius.full,
   },
   statCardHovered: {
@@ -1890,8 +2291,19 @@ const styles = StyleSheet.create((theme) => ({
   },
   statNumber: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
+    // Matches segmentedLabelSm's fontSize.sm — same reasoning as statCard's
+    // minHeight above.
+    fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.medium,
+  },
+  statNumberSkeleton: {
+    width: STAT_COUNT_WIDTH,
+    height: 12,
+    borderRadius: theme.borderRadius.sm,
+    backgroundColor: theme.colors.surface3,
+  },
+  statNumberSkeletonActive: {
+    backgroundColor: theme.colors.surface0,
   },
   // Inverse text on the solid active pill — matches SegmentedControl's
   // labelSelected (theme.colors.surface0), overriding the per-status hue.
@@ -1938,9 +2350,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   priorityFilterText: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
+    fontSize: theme.fontSize.sm,
   },
   priorityFilterTextActive: {
     color: theme.colors.surface0,
@@ -1963,7 +2373,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   priorityFilterCount: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
+    fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.medium,
   },
   priorityFilterCountHovered: {
@@ -1980,9 +2390,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   statLabel: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
+    fontSize: theme.fontSize.sm,
   },
   statLabelActive: {
     color: theme.colors.surface0,
@@ -2013,6 +2421,7 @@ const styles = StyleSheet.create((theme) => ({
   kanbanContainer: {
     flex: 1,
     minHeight: 0,
+    gap: theme.spacing[4],
   },
   scrollContent: {
     flexGrow: 1,
@@ -2021,7 +2430,6 @@ const styles = StyleSheet.create((theme) => ({
   errorsButtonTrigger: {
     position: "relative",
     padding: theme.spacing[1.5],
-    marginRight: theme.spacing[2],
     borderRadius: theme.borderRadius.full,
   },
   // Small count badge pinned to the trigger's top-right corner — a fixed
@@ -2067,7 +2475,18 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.border,
     marginVertical: theme.spacing[3],
   },
+  errorsMenuHeaderRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: theme.spacing[2],
+  },
+  errorsCloseButton: {
+    padding: theme.spacing[1],
+    borderRadius: theme.borderRadius.base,
+  },
   errorsMenuTitleRow: {
+    flex: 1,
     flexDirection: "row",
     flexWrap: "wrap",
     alignItems: "baseline",
@@ -2085,6 +2504,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.medium,
     lineHeight: 20,
+    textDecorationLine: "underline",
   },
   errorsMenuLinkHovered: {
     color: theme.colors.accent,

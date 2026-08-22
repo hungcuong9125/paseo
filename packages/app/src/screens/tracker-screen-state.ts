@@ -15,6 +15,11 @@ export type TrackerScreenBodyState =
 
 export interface ResolveTrackerScreenBodyStateInput {
   hasAnyProject: boolean;
+  /** True while the host's project list is still being fetched. Without it an
+   * empty list reads as "this user has no projects" during the first seconds
+   * of every cold load, and the screen shows a call-to-action it then replaces
+   * with the whole tracker. */
+  isProjectListLoading: boolean;
   loadState: AggregateLoadState<AggregatedTracker>;
   selectedProjectId: string | "all";
   projectErrors: TrackerProjectError[];
@@ -32,7 +37,7 @@ export function resolveTrackerScreenBodyState(
   input: ResolveTrackerScreenBodyStateInput,
 ): TrackerScreenBodyState {
   if (!input.hasAnyProject) {
-    return { kind: "no-projects" };
+    return input.isProjectListLoading ? { kind: "loading" } : { kind: "no-projects" };
   }
   if (input.loadState.status === "connecting" || input.loadState.status === "loading") {
     return { kind: "loading" };

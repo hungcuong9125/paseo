@@ -25,6 +25,7 @@ describe("resolveTrackerScreenBodyState", () => {
     expect(
       resolveTrackerScreenBodyState({
         hasAnyProject: false,
+        isProjectListLoading: false,
         loadState: LOADED_EMPTY,
         selectedProjectId: "all",
         projectErrors: [],
@@ -33,10 +34,24 @@ describe("resolveTrackerScreenBodyState", () => {
     ).toEqual({ kind: "no-projects" });
   });
 
+  it("shows loading, not no-projects, while the project list is still being fetched", () => {
+    expect(
+      resolveTrackerScreenBodyState({
+        hasAnyProject: false,
+        isProjectListLoading: true,
+        loadState: LOADED_EMPTY,
+        selectedProjectId: "all",
+        projectErrors: [],
+        visibleTrackersCount: 0,
+      }),
+    ).toEqual({ kind: "loading" });
+  });
+
   it.each(["connecting", "loading"] as const)("shows loading while %s", (status) => {
     expect(
       resolveTrackerScreenBodyState({
         hasAnyProject: true,
+        isProjectListLoading: false,
         loadState: { status },
         selectedProjectId: "all",
         projectErrors: [],
@@ -49,6 +64,7 @@ describe("resolveTrackerScreenBodyState", () => {
     expect(
       resolveTrackerScreenBodyState({
         hasAnyProject: true,
+        isProjectListLoading: false,
         loadState: LOADED_EMPTY,
         selectedProjectId: "prj1",
         projectErrors: [projectError({ code: "cli_missing" })],
@@ -61,6 +77,7 @@ describe("resolveTrackerScreenBodyState", () => {
     expect(
       resolveTrackerScreenBodyState({
         hasAnyProject: true,
+        isProjectListLoading: false,
         loadState: LOADED_EMPTY,
         selectedProjectId: "prj1",
         projectErrors: [projectError({ code: "uninitialised" })],
@@ -73,6 +90,7 @@ describe("resolveTrackerScreenBodyState", () => {
     expect(
       resolveTrackerScreenBodyState({
         hasAnyProject: true,
+        isProjectListLoading: false,
         loadState: LOADED_EMPTY,
         selectedProjectId: "prj1",
         projectErrors: [projectError({ code: "unknown", message: "something else broke" })],
@@ -85,6 +103,7 @@ describe("resolveTrackerScreenBodyState", () => {
     expect(
       resolveTrackerScreenBodyState({
         hasAnyProject: true,
+        isProjectListLoading: false,
         loadState: LOADED_EMPTY,
         selectedProjectId: "prj1",
         projectErrors: [projectError({ projectId: "some-other-project", code: "cli_missing" })],
@@ -97,6 +116,7 @@ describe("resolveTrackerScreenBodyState", () => {
     expect(
       resolveTrackerScreenBodyState({
         hasAnyProject: true,
+        isProjectListLoading: false,
         loadState: LOADED_EMPTY,
         selectedProjectId: "all",
         projectErrors: [projectError({ code: "cli_missing" })],
@@ -109,6 +129,7 @@ describe("resolveTrackerScreenBodyState", () => {
     expect(
       resolveTrackerScreenBodyState({
         hasAnyProject: true,
+        isProjectListLoading: false,
         loadState: LOADED_EMPTY,
         selectedProjectId: "all",
         projectErrors: [],
@@ -121,6 +142,7 @@ describe("resolveTrackerScreenBodyState", () => {
     expect(
       resolveTrackerScreenBodyState({
         hasAnyProject: true,
+        isProjectListLoading: false,
         loadState: LOADED_EMPTY,
         selectedProjectId: "all",
         projectErrors: [],

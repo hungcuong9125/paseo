@@ -12,6 +12,7 @@ import type { UseProjectsResult } from "@/hooks/use-projects";
 
 const {
   theme,
+  hostsState,
   projectsState,
   projectDataState,
   lastKanbanBoardProps,
@@ -50,6 +51,9 @@ const {
     borderWidth: { 1: 1 },
     opacity: { 50: 0.5 },
     iconSize: { sm: 14, md: 20, lg: 32 },
+  },
+  hostsState: {
+    current: [{ serverId: "srv1", label: "Local" }],
   },
   projectsState: {
     current: {
@@ -150,6 +154,14 @@ vi.mock("@/runtime/host-runtime", () => ({
     getClient: () => null,
     getSnapshot: () => null,
   }),
+  useHosts: () => hostsState.current,
+}));
+
+// One host, already hydrated: the screen reads these two to tell "no projects
+// yet" apart from "this user has no projects", and every case in this suite is
+// about a settled project list.
+vi.mock("@/stores/session-store-hooks", () => ({
+  useHydratedWorkspaceServerIds: (serverIds: readonly string[]) => [...serverIds],
 }));
 
 vi.mock("@/hooks/use-projects", () => ({
@@ -476,6 +488,16 @@ describe("TrackerScreen kanban type filter", () => {
     });
   }
 
+  // The screen now defaults to Kanban — tests that exercise List-specific
+  // rendering (TrackerTable props) must switch to it explicitly first.
+  function switchToList() {
+    const listToggle = container?.querySelector<HTMLElement>('[data-testid="trackers-view-list"]');
+    if (!listToggle) throw new Error("Expected the List view toggle to render");
+    act(() => {
+      listToggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+  }
+
   it("renders the type filter control in List mode", () => {
     render();
 
@@ -527,6 +549,7 @@ describe("TrackerScreen kanban type filter", () => {
 
   it("type filter applies to the List view's tracker set", () => {
     render();
+    switchToList();
 
     const allOption = container?.querySelector<HTMLElement>(
       '[data-testid="trackers-type-filter-all"]',
@@ -609,9 +632,20 @@ describe("TrackerScreen mutation patching", () => {
     });
   }
 
+  // The screen now defaults to Kanban — tests that exercise List-specific
+  // rendering (TrackerTable props) must switch to it explicitly first.
+  function switchToList() {
+    const listToggle = container?.querySelector<HTMLElement>('[data-testid="trackers-view-list"]');
+    if (!listToggle) throw new Error("Expected the List view toggle to render");
+    act(() => {
+      listToggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+  }
+
   it("threads isComplete from the shared hook down to both the table and the board", () => {
     setProjectDataState({ trackers: [taskA], isComplete: false });
     render();
+    switchToList();
     expect(lastListTableProps.current?.isComplete).toBe(false);
     switchToKanban();
     expect(lastKanbanBoardProps.current?.isComplete).toBe(false);
@@ -659,6 +693,7 @@ describe("TrackerScreen mutation patching", () => {
 
   it("patches the shared hook when the detail sheet reports a mutation", () => {
     render();
+    switchToList();
 
     const onOpenTracker = lastListTableProps.current?.onOpenTracker;
     if (!onOpenTracker) throw new Error("Expected TrackerTable to receive onOpenTracker");

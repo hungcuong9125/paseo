@@ -5,14 +5,17 @@ import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import { Field, FormTextInput } from "@/components/ui/form-field";
+import { useIsCompactFormFactor } from "@/constants/layout";
 import { useHostRuntimeClient } from "@/runtime/host-runtime";
 import type { AggregatedTracker } from "@/tracker/aggregated-trackers";
 import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
 import { toErrorMessage } from "@/utils/error-messages";
 
-// Plain literal, not a unistyles `StyleSheet.create` entry — see the usage
+// Plain literals, not unistyles `StyleSheet.create` entries — see the usage
 // site's comment for why.
-const DESCRIPTION_INPUT_STYLE = { minHeight: 420 };
+const DESCRIPTION_INPUT_STYLE_DESKTOP = { minHeight: 420 };
+const DESCRIPTION_INPUT_STYLE_COMPACT = { minHeight: 160 };
+const EDIT_SHEET_SNAP_POINTS_COMPACT = ["50%", "80%"];
 
 export interface TrackerEditSheetProps {
   tracker: AggregatedTracker | null;
@@ -92,13 +95,10 @@ function OpenTrackerEditSheet({
   onDismiss: () => void;
 }): ReactElement {
   const client = useHostRuntimeClient(tracker.serverId);
+  const isCompact = useIsCompactFormFactor();
   const [title, setTitle] = useState(tracker.title);
   const [description, setDescription] = useState("");
-  // `AdaptiveTextInput` is intentionally uncontrolled (see its own docstring) —
-  // it renders `initialValue`/`defaultValue` once and ignores later `value`
-  // changes, remounting only when `resetKey` changes. The description arrives
-  // asynchronously after mount, so its field needs a resetKey flip once the
-  // fetch resolves; the title needs none since it's known synchronously.
+  // AdaptiveTextInput is uncontrolled — flips resetKey to pick up the description once it loads.
   const [descriptionLoadState, setDescriptionLoadState] = useState<"loading" | "loaded">("loading");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -107,10 +107,7 @@ function OpenTrackerEditSheet({
     projectId: tracker.projectId,
   });
 
-  // Summaries don't carry `description` — fetch the full record once to prefill
-  // the field. Title prefills synchronously above. A failed prefill only shows
-  // a notice; an untouched description submits as omitted, which leaves the
-  // stored value unchanged rather than wiping it.
+  // Summaries don't carry `description` — fetch the full record to prefill it.
   useEffect(() => {
     let cancelled = false;
     async function loadDescription(): Promise<void> {
@@ -196,6 +193,7 @@ function OpenTrackerEditSheet({
       onDismiss={onDismiss}
       footer={footer}
       desktopMaxWidth={640}
+      snapPoints={isCompact ? EDIT_SHEET_SNAP_POINTS_COMPACT : undefined}
       testID="tracker-edit-sheet"
     >
       <Field label="Title" testID="tracker-edit-title">
@@ -214,13 +212,8 @@ function OpenTrackerEditSheet({
           placeholder="Optional details"
           multiline
           textAlignVertical="top"
-          // Plain inline object, not a `styles.create(...)` (unistyles) entry:
-          // `FormTextInput` flattens the caller's `style` prop internally to
-          // split text-only properties from the chrome wrapper's, and
-          // flattening a unistyles style loses its `unistyles_*` metadata
-          // (see docs/unistyles.md's "do not flatten a caller-provided style"
-          // note) — a themeless literal here sidesteps that entirely.
-          style={DESCRIPTION_INPUT_STYLE}
+          // Plain object, not unistyles — FormTextInput flattens `style` internally (docs/unistyles.md).
+          style={isCompact ? DESCRIPTION_INPUT_STYLE_COMPACT : DESCRIPTION_INPUT_STYLE_DESKTOP}
         />
       </Field>
       {loadError ? (

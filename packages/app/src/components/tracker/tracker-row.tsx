@@ -1,12 +1,4 @@
-import {
-  CheckCircle2,
-  MoreVertical,
-  Pencil,
-  PlayCircle,
-  RotateCcw,
-  Trash2,
-  XCircle,
-} from "lucide-react-native";
+import { MoreVertical } from "lucide-react-native";
 import { useCallback, useState, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
@@ -26,17 +18,10 @@ import { settingsStyles } from "@/styles/settings";
 import type { Theme } from "@/styles/theme";
 import { formatTimeAgo } from "@/utils/time";
 
-const ThemedPlayCircle = withUnistyles(PlayCircle);
-const ThemedCheckCircle2 = withUnistyles(CheckCircle2);
-const ThemedRotateCcw = withUnistyles(RotateCcw);
-const ThemedXCircle = withUnistyles(XCircle);
-const ThemedTrash2 = withUnistyles(Trash2);
-const ThemedPencil = withUnistyles(Pencil);
 const ThemedKebab = withUnistyles(MoreVertical);
 
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
-const destructiveColorMapping = (theme: Theme) => ({ color: theme.colors.destructive });
 
 const MENU_ICON_SIZE = 14;
 
@@ -214,13 +199,6 @@ export function TrackerRow({
   );
 }
 
-const startLeading = <ThemedPlayCircle size={MENU_ICON_SIZE} uniProps={mutedColorMapping} />;
-const closeLeading = <ThemedCheckCircle2 size={MENU_ICON_SIZE} uniProps={mutedColorMapping} />;
-const reopenLeading = <ThemedRotateCcw size={MENU_ICON_SIZE} uniProps={mutedColorMapping} />;
-const editLeading = <ThemedPencil size={MENU_ICON_SIZE} uniProps={mutedColorMapping} />;
-const cancelLeading = <ThemedXCircle size={MENU_ICON_SIZE} uniProps={destructiveColorMapping} />;
-const deleteLeading = <ThemedTrash2 size={MENU_ICON_SIZE} uniProps={destructiveColorMapping} />;
-
 function renderKebabTriggerIcon({ hovered }: { hovered?: boolean }): ReactElement {
   return (
     <ThemedKebab
@@ -261,7 +239,7 @@ function TrackerKebabMenu({
   // (task or empty epic/initiative) gets.
   const deleteLabel = hasChildren ? "Delete tree" : "Remove";
   return (
-    <DropdownMenu>
+    <DropdownMenu compactMode="sheet">
       <DropdownMenuTrigger
         hitSlop={8}
         style={kebabTriggerStyle}
@@ -271,17 +249,13 @@ function TrackerKebabMenu({
       >
         {renderKebabTriggerIcon}
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" width={200}>
-        <DropdownMenuItem
-          leading={editLeading}
-          onSelect={onEdit}
-          testID={`tracker-menu-edit-${tracker.id}`}
-        >
+      <DropdownMenuContent align="end" width={200} sheetTitle="Actions">
+        <DropdownMenuItem onSelect={onEdit} testID={`tracker-menu-edit-${tracker.id}`}>
           Edit
         </DropdownMenuItem>
+        <DropdownMenuSeparator />
         {tracker.status === "open" ? (
           <DropdownMenuItem
-            leading={startLeading}
             status={pending?.start ? "pending" : "idle"}
             pendingLabel="Starting..."
             onSelect={onStart}
@@ -292,7 +266,6 @@ function TrackerKebabMenu({
         ) : null}
         {isOpenOrInProgress ? (
           <DropdownMenuItem
-            leading={closeLeading}
             status={pending?.close ? "pending" : "idle"}
             pendingLabel="Closing..."
             onSelect={onClose}
@@ -303,7 +276,6 @@ function TrackerKebabMenu({
         ) : null}
         {!isOpenOrInProgress ? (
           <DropdownMenuItem
-            leading={reopenLeading}
             status={pending?.reopen ? "pending" : "idle"}
             pendingLabel="Reopening..."
             onSelect={onReopen}
@@ -315,7 +287,6 @@ function TrackerKebabMenu({
         <DropdownMenuSeparator />
         {isOpenOrInProgress ? (
           <DropdownMenuItem
-            leading={cancelLeading}
             destructive
             status={pending?.cancel ? "pending" : "idle"}
             pendingLabel="Cancelling..."
@@ -326,7 +297,6 @@ function TrackerKebabMenu({
           </DropdownMenuItem>
         ) : null}
         <DropdownMenuItem
-          leading={deleteLeading}
           destructive
           disabled={deleteDisabled}
           status={pending?.delete ? "pending" : "idle"}
