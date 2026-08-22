@@ -1,21 +1,56 @@
 /**
  * @vitest-environment jsdom
  */
+import { useEffect, useReducer } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { TrackerStatsCounts } from "@getpaseo/protocol/tracker/rpc-schemas";
 import type { TrackerProjectInput } from "@/tracker/aggregated-trackers";
 
-const { runtimeState } = vi.hoisted(() => ({
+const { runtimeState, sessionStoreState } = vi.hoisted(() => ({
   runtimeState: {
     getClient: vi.fn(),
     getSnapshot: vi.fn(() => ({ connectionStatus: "online" as const })),
+  },
+  sessionStoreState: {
+    sessions: {} as Record<string, { serverInfo?: { features?: Record<string, boolean> } }>,
+    listeners: new Set<() => void>(),
   },
 }));
 
 vi.mock("@/runtime/host-runtime", () => ({
   getHostRuntimeStore: () => runtimeState,
 }));
+
+// Minimal reactive stand-in for the real Zustand useSessionStore — re-renders
+// the calling component whenever setSessionFeatureSupport below fires, the
+// same reactivity the real store gives useTrackerStats' featureSupportKey
+// selector (pas-2KY5X.1's fix).
+vi.mock("@/stores/session-store", () => ({
+  useSessionStore: (
+    selector: (state: { sessions: typeof sessionStoreState.sessions }) => unknown,
+  ) => {
+    const [, forceRender] = useReducer((c: number) => c + 1, 0);
+    useEffect(() => {
+      const listener = () => forceRender();
+      sessionStoreState.listeners.add(listener);
+      return () => {
+        sessionStoreState.listeners.delete(listener);
+      };
+    }, []);
+    return selector({ sessions: sessionStoreState.sessions });
+  },
+}));
+
+function setSessionFeatureSupport(serverId: string, aitTrackerStats: boolean): void {
+  sessionStoreState.sessions = {
+    ...sessionStoreState.sessions,
+    [serverId]: { serverInfo: { features: { aitTrackerStats } } },
+  };
+  for (const listener of sessionStoreState.listeners) {
+    listener();
+  }
+}
 
 import { useTrackerStats } from "./use-tracker-stats";
 
@@ -262,5 +297,44 @@ describe("useTrackerStats", () => {
     });
     // The stale prj-a-scoped resolution must not overwrite prj-b's counts.
     expect(result.current.counts?.all.total).toBe(3);
+  });
+
+  it("a host that reports aitTrackerStats only after mount still produces counts (pas-2KY5X.1)", async () => {
+    // host-a's server_info hasn't landed yet at mount — same shape as a host
+    // still finishing its handshake, or a false read that arrived before
+    // server_info did.
+    setSessionFeatureSupport("host-a", false);
+    runtimeState.getClient.mockImplementation((serverId: string) => {
+      if (serverId !== "host-a") {
+        return null;
+      }
+      return {
+        // Reads the reactive fixture at call time — mirrors how the real
+        // DaemonClient's cached server_info and the Zustand session store
+        // are two views onto the same underlying fact.
+        getLastServerInfoMessage: () => ({
+          features: {
+            aitTrackerStats:
+              sessionStoreState.sessions["host-a"]?.serverInfo?.features?.aitTrackerStats === true,
+          },
+        }),
+        trackerStats: async () => ({ counts: makeCounts(5), error: null, errorCode: null }),
+      };
+    });
+
+    const { result } = renderHook(() =>
+      useTrackerStats({ projects: [PROJECT_A], selectedProjectId: null, enabled: true }),
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // Too early to read the feature — degrades exactly like an old daemon,
+    // not stuck: a later flag flip must still recover.
+    expect(result.current.counts).toBeNull();
+
+    act(() => {
+      setSessionFeatureSupport("host-a", true);
+    });
+
+    await waitFor(() => expect(result.current.counts).not.toBeNull());
+    expect(result.current.counts?.all.total).toBe(5);
   });
 });

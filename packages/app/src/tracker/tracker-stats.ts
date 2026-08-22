@@ -51,14 +51,17 @@ export function matchesTrackerStatFilter(
 
 // Which real statuses the List view's toolbar filter surfaces, applied to
 // whichever type granularity (Tasks/Epics/Initiatives/All) is currently
-// selected — unlike Kanban's lane projection (visibleLanesForFilter in
-// tracker-board-model.ts), which deliberately keeps cancelled grouped with
-// closed under "Done" (a swimlane board), List's flat sections split them:
-// "done" here means closed only, so selecting it never surfaces a Cancelled
-// section. Priority filters span every status instead of only open/in_progress
-// — List is a lookup table, not a live triage board, so a P2 item that's
-// already Done is still worth finding by priority.
-function listVisibleStatusesForFilter(filter: TrackerStatFilter): readonly TrackerStatus[] {
+// selected — unlike Kanban's lane projection (laneForTracker in
+// tracker-board-model.ts), which keeps cancelled as its own lane separate
+// from Done, List's flat sections split them the same way: "done" here means
+// closed only, so selecting it never surfaces a Cancelled section. Priority
+// filters span every status instead of only open/in_progress — List is a
+// lookup table, not a live triage board, so a P2 item that's already Done is
+// still worth finding by priority. Exported so useTrackerProjectData's
+// caller can derive exactly which sections a status filter needs fetched
+// (pas-2KY5X.4) from the same source matchesListStatFilter uses, instead of
+// a second, driftable copy of this mapping.
+export function listVisibleStatusesForFilter(filter: TrackerStatFilter): readonly TrackerStatus[] {
   switch (filter) {
     case "open":
       return ["open"];

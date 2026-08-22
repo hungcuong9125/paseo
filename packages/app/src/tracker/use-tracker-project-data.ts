@@ -106,18 +106,33 @@ export interface UseTrackerProjectDataOptions {
   /** List only — Kanban's stat filter projects lanes, it does not filter the
    * fetched dataset. */
   priority?: TrackerPriority;
+  /** Which status sections to keep loaded. Omitted means all four —
+   * Kanban's requirement (it renders all five lanes from this one shared
+   * fetch) and List's own default when no status-shaped filter narrows the
+   * view. List narrows this to exactly the one section a status filter
+   * needs (`listVisibleStatusesForFilter` in tracker-stats.ts — a priority
+   * filter still spans every status, so it leaves this unset). Growing the
+   * set fetches only the newly-added sections against the current scope; a
+   * section dropped from the set is left loaded rather than purged, since
+   * switching back to it should not re-pay for data already in hand. Only a
+   * change to the project/type/priority/enabled scope invalidates
+   * already-loaded sections. */
+  sections?: readonly TrackerStatus[];
 }
 
 export interface UseTrackerProjectDataResult {
   /** Only the pages actually loaded, already narrowed by `options.type` /
    * `options.priority` — feeds both TrackerTable (bucketed by status) and
    * TrackerKanbanBoard (partitioned by buildTrackerBoard) from the exact
-   * same data. */
+   * same data. May include sections outside `options.sections`' current
+   * value if they were loaded under an earlier value (left in place, not
+   * purged — see that option's docstring). */
   trackers: AggregatedTracker[];
   /** Summed `pageInfo.totalCount` across the in-scope projects, per status.
    * `null` when any in-scope project did not report one (old CLI binary, an
-   * offline host, or a fetch error) — the screen falls back to
-   * loaded-so-far counts (`trackers.length`) in that case. */
+   * offline host, a fetch error, or the section was never requested) — the
+   * screen falls back to loaded-so-far counts (`trackers.length`) in that
+   * case. */
   sectionTotals: Record<TrackerStatus, number | null>;
   /** True while any in-scope project still has more pages for that status. */
   sectionHasMore: Record<TrackerStatus, boolean>;
@@ -126,7 +141,8 @@ export interface UseTrackerProjectDataResult {
   /** Fetches exactly one more page per in-scope project for that status —
    * no automatic follow-up, the caller decides when to page again. */
   loadMore: (status: TrackerStatus) => void;
-  /** True only until the first page of every section/project has landed. */
+  /** True while any status currently in `options.sections` (or all four,
+   * if omitted) is still waiting on its first page for the current scope. */
   isLoading: boolean;
   projectErrors: TrackerProjectError[];
   /** Replaces the tracker by id wherever it currently lives (any section, any
@@ -136,7 +152,8 @@ export interface UseTrackerProjectDataResult {
   patchTracker: (updated: AggregatedTracker) => void;
   /** Removes trackers by id from wherever they live, across every section. */
   removeTrackers: (ids: string[]) => void;
-  /** Restarts pagination from scratch for the current scope. */
+  /** Restarts pagination from scratch for the current scope, re-fetching
+   * whatever `options.sections` currently asks for. */
   refetch: () => void;
 }
 
@@ -165,10 +182,23 @@ export function useTrackerProjectData(
     [options.projects, options.selectedProjectId],
   );
 
-  // Everything that defines "which dataset is loaded". Any change bumps
-  // loadSeqRef, which is how every in-flight fetch (initial or loadMore)
-  // recognizes it has gone stale and must discard its result instead of
-  // merging it into the current (new-scope) state.
+  const desiredSections = useMemo(
+    () => (options.sections ? [...options.sections] : [...LIST_SECTION_STATUSES]),
+    [options.sections],
+  );
+  // Stable primitive proxy for desiredSections' contents — a fresh array
+  // reference from the caller every render must not by itself re-trigger the
+  // sync effect below.
+  const desiredSectionsKey = useMemo(
+    () => [...desiredSections].sort().join(","),
+    [desiredSections],
+  );
+
+  // Everything that defines "which dataset is loaded" — deliberately NOT
+  // including which sections are currently desired. Growing or shrinking
+  // that set (below) fetches or leaves-in-place sections without discarding
+  // the rest; only a change here invalidates already-loaded data and forces
+  // a full reset.
   const scopeKey = useMemo(
     () =>
       [
@@ -192,12 +222,29 @@ export function useTrackerProjectData(
   );
 
   const [sections, setSections] = useState<SectionsState>(createEmptySections);
-  const [isLoading, setIsLoading] = useState(true);
+  // Statuses whose first page (for the current scope) is still in flight —
+  // exists purely to derive isLoading reactively. requestedStatusesRef below
+  // is the actual "don't fetch this status again" guard.
+  const [pendingStatuses, setPendingStatuses] = useState<ReadonlySet<TrackerStatus>>(
+    () => new Set(desiredSections),
+  );
+  const isLoading = useMemo(
+    () => desiredSections.some((status) => pendingStatuses.has(status)),
+    [desiredSections, pendingStatuses],
+  );
   const [sectionLoadingMore, setSectionLoadingMore] = useState<Record<TrackerStatus, boolean>>(() =>
     createEmptyStatusRecord(false),
   );
   const [projectErrors, setProjectErrors] = useState<TrackerProjectError[]>([]);
   const loadSeqRef = useRef(0);
+  // The scopeKey last seen by syncSections — lets it detect "this is a new
+  // scope" imperatively without needing scopeKey in a dependency array that
+  // would also fire on every desiredSections change.
+  const lastScopeKeyRef = useRef<string | null>(null);
+  // Statuses whose first page has been requested (in flight or resolved) for
+  // the current scope — checked before firing a new fetch so growing
+  // desiredSections only ever fetches what's actually new.
+  const requestedStatusesRef = useRef<Set<TrackerStatus>>(new Set());
   // Guards loadMore against being fired again for a status while its fetch is
   // still in flight — sectionLoadingMore state exists for the same purpose
   // but is not readable synchronously inside the same tick loadMore is called.
@@ -240,79 +287,131 @@ export function useTrackerProjectData(
     [],
   );
 
-  const loadFirstPages = useCallback(async (): Promise<void> => {
-    const seq = ++loadSeqRef.current;
-    // A fresh load supersedes any loadMore in flight for the old scope —
-    // reset immediately so no "Show more" spinner strands on the new scope
-    // while that stale fetch's own cleanup is still pending.
-    loadingMoreRef.current.clear();
-    setSectionLoadingMore(createEmptyStatusRecord(false));
-    if (!options.enabled || relevantProjects.length === 0) {
-      setSections(createEmptySections());
-      setProjectErrors([]);
-      setIsLoading(false);
-      return;
-    }
-    setIsLoading(true);
-    setProjectErrors([]);
-    const nextSections = createEmptySections();
-    const errors: TrackerProjectError[] = [];
-    const firstPages = await Promise.all(
-      relevantProjects.flatMap((project) =>
-        LIST_SECTION_STATUSES.map(async (status) => {
-          try {
-            const result = await fetchTrackerPage({
-              project,
-              runtime,
-              status,
-              all: options.all,
-              limit: options.pageSize,
-              type: options.type,
-              priority: options.priority,
-            });
-            return { project, status, result, error: null as unknown };
-          } catch (error) {
-            return { project, status, result: null, error };
-          }
-        }),
-      ),
-    );
-    if (seq !== loadSeqRef.current) {
-      return;
-    }
-    const seenErrorProjects = new Set<string>();
-    for (const page of firstPages) {
-      const projectKey = projectKeyOf(page.project);
-      if (page.error) {
-        // Dedup — each status section fetches independently and fails the same way.
-        if (!seenErrorProjects.has(projectKey)) {
-          seenErrorProjects.add(projectKey);
-          errors.push(toTrackerProjectError(page.project, page.error));
-        }
-        nextSections[page.status].cursors[projectKey] = ERRORED_CURSOR;
-        continue;
+  // Ensures the first page of every (project, status) pair in `statuses` has
+  // been requested for the current scope, merging results into whatever is
+  // already loaded rather than replacing it. A scope change (scopeKey)
+  // resets everything first — every already-loaded status is invalidated and
+  // has to be re-requested, exactly like a fresh mount; a `statuses` change
+  // alone (same scope) only fetches whichever of them haven't been requested
+  // yet.
+  const syncSections = useCallback(
+    async (statuses: readonly TrackerStatus[]): Promise<void> => {
+      const isNewScope = lastScopeKeyRef.current !== scopeKey;
+      lastScopeKeyRef.current = scopeKey;
+      let seq = loadSeqRef.current;
+      const willFetch = options.enabled && relevantProjects.length > 0;
+      if (isNewScope) {
+        seq = ++loadSeqRef.current;
+        loadingMoreRef.current.clear();
+        requestedStatusesRef.current = new Set();
+        setSections(createEmptySections());
+        setSectionLoadingMore(createEmptyStatusRecord(false));
+        setProjectErrors([]);
+        setPendingStatuses(willFetch ? new Set(statuses) : new Set());
       }
-      const result = page.result!;
-      nextSections[page.status].trackers.push(...result.trackers);
-      nextSections[page.status].cursors[projectKey] = {
-        cursor: result.pageInfo?.nextCursor ?? null,
-        hasMore: result.pageInfo?.hasMore ?? false,
-        totalCount: result.pageInfo?.totalCount ?? null,
-      };
-    }
-    for (const status of LIST_SECTION_STATUSES) {
-      sortMerged(nextSections[status].trackers);
-    }
-    setSections(nextSections);
-    setProjectErrors(errors);
-    setIsLoading(false);
-    // scopeKey covers every option this closure reads.
+      if (!willFetch) {
+        return;
+      }
+      const toFetch = statuses.filter((status) => !requestedStatusesRef.current.has(status));
+      if (toFetch.length === 0) {
+        return;
+      }
+      for (const status of toFetch) {
+        requestedStatusesRef.current.add(status);
+      }
+      if (!isNewScope) {
+        setPendingStatuses((current) => new Set([...current, ...toFetch]));
+      }
+      const pages = await Promise.all(
+        relevantProjects.flatMap((project) =>
+          toFetch.map(async (status) => {
+            try {
+              const result = await fetchTrackerPage({
+                project,
+                runtime,
+                status,
+                all: options.all,
+                limit: options.pageSize,
+                type: options.type,
+                priority: options.priority,
+              });
+              return { project, status, result, error: null as unknown };
+            } catch (error) {
+              return { project, status, result: null, error };
+            }
+          }),
+        ),
+      );
+      if (seq !== loadSeqRef.current) {
+        // Stale — a newer scope reset already reseeded pendingStatuses and
+        // sections for the current scope; this batch belongs to an abandoned
+        // one and must not touch either.
+        return;
+      }
+      setPendingStatuses((current) => {
+        if (current.size === 0) {
+          return current;
+        }
+        const next = new Set(current);
+        for (const status of toFetch) {
+          next.delete(status);
+        }
+        return next;
+      });
+      const seenErrorProjects = new Set<string>();
+      const errors: TrackerProjectError[] = [];
+      setSections((current) => {
+        const next = { ...current };
+        for (const status of toFetch) {
+          next[status] = {
+            trackers: [...current[status].trackers],
+            cursors: { ...current[status].cursors },
+          };
+        }
+        for (const page of pages) {
+          const projectKey = projectKeyOf(page.project);
+          if (page.error) {
+            // Dedup — each status fetches independently and fails the same way.
+            if (!seenErrorProjects.has(projectKey)) {
+              seenErrorProjects.add(projectKey);
+              errors.push(toTrackerProjectError(page.project, page.error));
+            }
+            next[page.status].cursors[projectKey] = ERRORED_CURSOR;
+            continue;
+          }
+          const result = page.result!;
+          next[page.status].trackers.push(...result.trackers);
+          next[page.status].cursors[projectKey] = {
+            cursor: result.pageInfo?.nextCursor ?? null,
+            hasMore: result.pageInfo?.hasMore ?? false,
+            totalCount: result.pageInfo?.totalCount ?? null,
+          };
+        }
+        for (const status of toFetch) {
+          sortMerged(next[status].trackers);
+        }
+        return next;
+      });
+      if (errors.length > 0) {
+        setProjectErrors((current) => {
+          const additions = errors.filter((error) => !hasErrorForProject(current, error));
+          return additions.length > 0 ? [...current, ...additions] : current;
+        });
+      }
+    },
+    // scopeKey covers every project/type/priority/enabled option this
+    // closure reads.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scopeKey, runtime]);
+    [scopeKey, runtime],
+  );
 
   useEffect(() => {
-    void loadFirstPages();
-  }, [loadFirstPages]);
+    void syncSections(desiredSections);
+    // desiredSectionsKey is the stable proxy for desiredSections' contents —
+    // scopeKey changes are picked up imperatively inside syncSections via
+    // lastScopeKeyRef, not through this dependency array.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncSections, desiredSectionsKey]);
 
   // Fetches exactly one more page per in-scope project that still has more
   // for `status` — no follow-up beyond this one page, unlike the deleted
@@ -358,7 +457,7 @@ export function useTrackerProjectData(
         loadingMoreRef.current.delete(status);
         // Clear the in-flight flag unconditionally, before the staleness
         // bail — otherwise a scope change mid-fetch strands this status's
-        // spinner on forever, since loadFirstPages resets it once up front
+        // spinner on forever, since the scope reset resets it once up front
         // but nothing clears it again once this branch returns early.
         setSectionLoadingMore((current) => ({ ...current, [status]: false }));
         if (seq !== loadSeqRef.current) {
@@ -490,8 +589,11 @@ export function useTrackerProjectData(
   }, []);
 
   const refetch = useCallback(() => {
-    void loadFirstPages();
-  }, [loadFirstPages]);
+    // Forces the next syncSections call to treat this as a fresh scope even
+    // though scopeKey itself hasn't changed.
+    lastScopeKeyRef.current = null;
+    void syncSections(desiredSections);
+  }, [syncSections, desiredSections]);
 
   return {
     trackers,

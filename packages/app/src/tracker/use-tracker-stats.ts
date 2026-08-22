@@ -8,6 +8,7 @@ import {
   type TrackerStatsRuntime,
 } from "@/tracker/aggregated-trackers";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
+import { useSessionStore } from "@/stores/session-store";
 
 type TrackerStatsBucket = TrackerStatsCounts["all"];
 
@@ -111,6 +112,24 @@ export function useTrackerStats(options: UseTrackerStatsOptions): UseTrackerStat
     [options.enabled, options.selectedProjectId, relevantProjects],
   );
 
+  // `client.getLastServerInfoMessage()` below is an imperative snapshot — safe
+  // to read only inside a callback that itself re-runs when the thing it
+  // reads changes. This selector is that trigger: `useSessionStore` is
+  // reactive, so a project whose host connects (or whose `server_info`
+  // arrives) after mount changes this string and re-runs `runFetch`, instead
+  // of freezing `counts` at whatever the very first, possibly-too-early read
+  // saw.
+  const featureSupportKey = useSessionStore((state) =>
+    relevantProjects
+      .map(
+        (project) =>
+          `${project.serverId}:${
+            state.sessions[project.serverId]?.serverInfo?.features?.aitTrackerStats === true
+          }`,
+      )
+      .join("|"),
+  );
+
   const [counts, setCounts] = useState<TrackerStatsCounts | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [projectErrors, setProjectErrors] = useState<TrackerProjectError[]>([]);
@@ -165,9 +184,11 @@ export function useTrackerStats(options: UseTrackerStatsOptions): UseTrackerStat
         .map((entry) => toTrackerProjectError(entry.project, entry.error)),
     );
     setIsLoading(false);
-    // scopeKey covers every option this closure reads.
+    // scopeKey covers every option this closure reads; featureSupportKey is
+    // the reactive trigger for the imperative getLastServerInfoMessage()
+    // reads inside the Promise.all above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scopeKey, runtime]);
+  }, [scopeKey, featureSupportKey, runtime]);
 
   useEffect(() => {
     void runFetch();

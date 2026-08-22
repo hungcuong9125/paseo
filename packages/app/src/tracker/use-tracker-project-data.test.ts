@@ -507,4 +507,75 @@ describe("useTrackerProjectData", () => {
       expect(args.page?.cursor).toBeUndefined();
     }
   });
+
+  it("options.sections narrows which statuses are fetched, leaving the rest unfetched (pas-2KY5X.4)", async () => {
+    const trackerList = installClient({
+      "prj-a:open:start": {
+        trackers: [makeTracker("a-open-1")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount: 1 },
+      },
+    });
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 50,
+        sections: ["open"],
+      }),
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.trackers.map((t) => t.id)).toEqual(["a-open-1"]);
+    // The other three statuses were never requested at all — their totals
+    // stay null (never-reported), the same degraded shape an offline
+    // project or a fetch error produces, not zero.
+    expect(result.current.sectionTotals.in_progress).toBeNull();
+    expect(result.current.sectionTotals.closed).toBeNull();
+    expect(result.current.sectionTotals.cancelled).toBeNull();
+    const requestedStatuses = new Set(trackerList.mock.calls.map(([args]) => args.status));
+    expect(requestedStatuses).toEqual(new Set(["open"]));
+  });
+
+  it("growing options.sections fetches only the newly-added sections, without re-fetching what's already loaded (pas-2KY5X.4)", async () => {
+    const trackerList = installClient({
+      "prj-a:open:start": {
+        trackers: [makeTracker("a-open-1")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount: 1 },
+      },
+      "prj-a:closed:start": {
+        trackers: [makeTracker("a-closed-1", "closed")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount: 1 },
+      },
+    });
+    const { result, rerender } = renderHook(
+      ({ sections }: { sections: TrackerStatus[] | undefined }) =>
+        useTrackerProjectData({
+          projects: [PROJECT_A],
+          selectedProjectId: null,
+          all: true,
+          enabled: true,
+          pageSize: 50,
+          sections,
+        }),
+      { initialProps: { sections: ["open"] as TrackerStatus[] | undefined } },
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.trackers.map((t) => t.id)).toEqual(["a-open-1"]);
+    expect(trackerList.mock.calls.filter(([args]) => args.status === "open")).toHaveLength(1);
+
+    // Grow the desired set to all four — e.g. switching from a List status
+    // filter to Kanban, which always needs every lane.
+    rerender({ sections: undefined });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    // The already-loaded "open" row survives alongside the newly-fetched
+    // "closed" one — "open" itself was never re-requested or reset.
+    expect(result.current.trackers.map((t) => t.id).sort()).toEqual(["a-closed-1", "a-open-1"]);
+    expect(trackerList.mock.calls.filter(([args]) => args.status === "open")).toHaveLength(1);
+    expect(trackerList.mock.calls.filter(([args]) => args.status === "closed")).toHaveLength(1);
+  });
 });

@@ -675,6 +675,36 @@ describe("TrackerScreen kanban type filter", () => {
     expect(lastProjectDataOptions.current?.type).toBeUndefined();
   });
 
+  it("a List status filter reaches the query as options.sections instead of narrowing an all-four fetch in memory (pas-2KY5X.4)", () => {
+    render();
+    switchToList();
+
+    // Unfiltered List means all four sections — undefined, matching the
+    // hook's own "omitted = all four" default.
+    expect(lastProjectDataOptions.current?.sections).toBeUndefined();
+
+    const openPill = container?.querySelector<HTMLElement>('[data-testid="trackers-stat-open"]');
+    if (!openPill) throw new Error("Expected the Open stat pill to render");
+    act(() => {
+      openPill.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+    expect(lastProjectDataOptions.current?.sections).toEqual(["open"]);
+
+    const donePill = container?.querySelector<HTMLElement>('[data-testid="trackers-stat-done"]');
+    if (!donePill) throw new Error("Expected the Done stat pill to render");
+    act(() => {
+      donePill.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+    // "Done" maps to the closed section alone, per listVisibleStatusesForFilter.
+    expect(lastProjectDataOptions.current?.sections).toEqual(["closed"]);
+
+    // Switching to Kanban must not narrow the shared fetch even though the
+    // List filter is still "done" underneath — Kanban renders all five
+    // lanes from this one fetch.
+    switchToKanban();
+    expect(lastProjectDataOptions.current?.sections).toBeUndefined();
+  });
+
   it("type filter applies to the List view's tracker set", () => {
     render();
     switchToList();
@@ -784,7 +814,7 @@ describe("TrackerScreen mutation patching", () => {
     expect(projectDataState.current.loadMore).toHaveBeenCalledWith("open");
   });
 
-  it("sums closed and cancelled into the Kanban Done lane's total", () => {
+  it("the Kanban Done lane's total equals closed alone — cancelled is its own lane, not double-counted (pas-2KY5X.2)", () => {
     setProjectDataState({
       trackers: [taskA],
       sectionTotals: { open: 4, in_progress: 1, closed: 3, cancelled: 2 },
@@ -792,9 +822,12 @@ describe("TrackerScreen mutation patching", () => {
     render();
     switchToKanban();
 
-    expect(lastKanbanBoardProps.current?.laneTotals?.done).toBe(5);
-    expect(lastKanbanBoardProps.current?.laneTotals?.in_progress).toBe(1);
+    expect(lastKanbanBoardProps.current?.laneTotals?.done).toBe(3);
     expect(lastKanbanBoardProps.current?.laneTotals?.cancelled).toBe(2);
+    expect(lastKanbanBoardProps.current?.laneTotals?.in_progress).toBe(1);
+    // laneForTracker in tracker-board-model.ts renders only closed-status
+    // items in Done; summing in cancelled here would read 5 over 3 rows.
+    expect(lastKanbanBoardProps.current?.laneTotals?.done).not.toBe(3 + 2);
   });
 
   it("falls back the ready and open lanes to their loaded count instead of a status total", () => {

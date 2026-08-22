@@ -92,6 +92,7 @@ import { useTrackerSearch } from "@/tracker/use-tracker-search";
 import { buildTrackerHierarchy, type TrackerHierarchy } from "@/tracker/tracker-hierarchy";
 import type { TrackerBoardLaneKey } from "@/tracker/tracker-board-model";
 import {
+  listVisibleStatusesForFilter,
   matchesListStatFilter,
   type TrackerStatCounts,
   type TrackerStatFilter,
@@ -497,12 +498,30 @@ function TrackerScreenContent(): ReactElement {
     () => (viewMode === "list" ? STAT_FILTER_TO_PRIORITY[listStatFilter] : undefined),
     [viewMode, listStatFilter],
   );
+  // Which sections to keep loaded. Kanban always needs all four — it renders
+  // all five lanes from this one shared fetch. List with a priority filter
+  // also needs all four (priority spans every status). Only a status-shaped
+  // List filter (open/in_progress/done) narrows this to the exactly one
+  // section it shows — `undefined` here means "all four", matching the
+  // hook's own default, so this stays `undefined` for every other case
+  // instead of an equivalent-but-different four-element array.
+  const sectionsOption = useMemo(
+    () =>
+      viewMode === "list" && !isPriorityStatFilter(listStatFilter) && listStatFilter !== "all"
+        ? listVisibleStatusesForFilter(listStatFilter)
+        : undefined,
+    [viewMode, listStatFilter],
+  );
   // The single shared data source for both List and Kanban — always running
   // regardless of view mode or search. Switching view mode only changes how
-  // this array renders, never how it loads. Already scoped to
-  // `selectedProjectId` internally (or every project when none is selected),
-  // and now to `typeFilter`/the List priority filter too, so callers use
-  // `projectData.trackers` directly, no separate in-memory filter needed.
+  // this array renders, never how it loads. Scoped internally to
+  // `selectedProjectId`, `typeFilter`, the List priority filter, and which
+  // status sections `sectionsOption` asks for.
+  //
+  // `trackers` still needs the List status filter applied on top of it:
+  // narrowing `sectionsOption` stops the hook fetching a section, but it
+  // deliberately keeps sections it already loaded rather than discarding
+  // them, so a section can outlive the filter that asked for it.
   const pageStep = useTrackerPageStep();
   const projectData = useTrackerProjectData({
     projects: projectInputs,
@@ -512,6 +531,7 @@ function TrackerScreenContent(): ReactElement {
     pageSize: pageStep,
     type: typeFilter === "all" ? undefined : typeFilter,
     priority: priorityOption,
+    sections: sectionsOption,
   });
   // Exact server-computed counts for the toolbar stat pills — a separate
   // fetch from projectData because it has to stay unfiltered by
@@ -689,31 +709,28 @@ function TrackerScreenContent(): ReactElement {
   );
   // Status totals can't express the ready-versus-blocked split within Open,
   // so `ready` and `open` both fall back to their loaded count (laneTotal:
-  // null) — tracked separately as pas-UkLWZ.10. `done` sums closed +
-  // cancelled per the Component contract; `in_progress` and `cancelled` map
-  // straight across.
+  // null) — tracked separately as pas-UkLWZ.10. `laneForTracker` in
+  // tracker-board-model.ts maps `closed -> "done"` and `cancelled ->
+  // "cancelled"` as two separate lanes — the Done column renders closed items
+  // only, so its total is `closed` alone; summing in cancelled here would
+  // double-count every cancelled tracker across the board (pas-2KY5X.2).
+  // `in_progress` and `cancelled` map straight across.
   const laneTotals = useMemo<Partial<Record<TrackerBoardLaneKey, number | null>>>(() => {
     const { closed, cancelled, in_progress: inProgress } = projectData.sectionTotals;
-    return {
-      ready: null,
-      open: null,
-      in_progress: inProgress,
-      done: closed !== null && cancelled !== null ? closed + cancelled : null,
-      cancelled,
-    };
+    return { ready: null, open: null, in_progress: inProgress, done: closed, cancelled };
   }, [projectData.sectionTotals]);
   const laneHasMore = useMemo<Partial<Record<TrackerBoardLaneKey, boolean>>>(() => {
     const { closed, cancelled, in_progress: inProgress, open } = projectData.sectionHasMore;
-    return { ready: open, open, in_progress: inProgress, done: closed || cancelled, cancelled };
+    return { ready: open, open, in_progress: inProgress, done: closed, cancelled };
   }, [projectData.sectionHasMore]);
   const laneLoadingMore = useMemo<Partial<Record<TrackerBoardLaneKey, boolean>>>(() => {
     const { closed, cancelled, in_progress: inProgress, open } = projectData.sectionLoadingMore;
-    return { ready: open, open, in_progress: inProgress, done: closed || cancelled, cancelled };
+    return { ready: open, open, in_progress: inProgress, done: closed, cancelled };
   }, [projectData.sectionLoadingMore]);
-  // The Done lane merges closed+cancelled (see laneTotals above), so paging
-  // it forward has to advance both underlying status sections at once; every
-  // other lane maps onto exactly one status (`ready`/`open` both page the
-  // `open` section, since Ready is a client-side projection of it).
+  // Every lane now maps onto exactly one status section (`ready`/`open` both
+  // page the `open` section, since Ready is a client-side projection of it —
+  // see the reasoning below on why that one is left as a shared cursor
+  // instead of being split further).
   const handleKanbanLoadMore = useCallback(
     (lane: TrackerBoardLaneKey) => {
       switch (lane) {
@@ -726,7 +743,6 @@ function TrackerScreenContent(): ReactElement {
           return;
         case "done":
           projectData.loadMore("closed");
-          projectData.loadMore("cancelled");
           return;
         case "cancelled":
           projectData.loadMore("cancelled");
