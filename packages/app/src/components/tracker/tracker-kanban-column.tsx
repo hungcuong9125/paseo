@@ -1,4 +1,11 @@
-import { memo, useCallback, useState, type PropsWithChildren, type ReactElement } from "react";
+import {
+  memo,
+  useCallback,
+  useState,
+  type PropsWithChildren,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import type { StyleProp, ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
@@ -6,6 +13,8 @@ import { useTranslation } from "react-i18next";
 import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 import { TrackerKanbanCard } from "@/components/tracker/tracker-kanban-card";
 import { TrackerKanbanCardMenu } from "@/components/tracker/tracker-kanban-move-menu";
+import { TrackerKanbanLaneSkeleton } from "@/components/tracker/tracker-skeletons";
+import { SkeletonPulse, useSkeletonPulse } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { isNative } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -90,6 +99,13 @@ export interface TrackerKanbanColumnProps {
   onEdit?: (trackerId: string) => void;
   /** Tapping a card body (not the move menu) — omit to render cards non-pressable. */
   onCardPress?: (trackerId: string) => void;
+  /** Position in the rendered lane row — only decides how many skeleton cards
+   * this lane shows, so the placeholder board doesn't read as a uniform grid. */
+  laneIndex?: number;
+  /** True until the first page of tracker data lands. The lane's own chrome —
+   * column, header, name, scroll container — renders either way; only the card
+   * stack and the count badge swap to placeholders. */
+  isLoading?: boolean;
   style?: StyleProp<ViewStyle>;
 }
 
@@ -103,10 +119,13 @@ export function TrackerKanbanColumn({
   onTransition,
   onEdit,
   onCardPress,
+  laneIndex = 0,
+  isLoading = false,
   style,
 }: TrackerKanbanColumnProps): ReactElement {
   const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
+  const pulse = useSkeletonPulse(isLoading);
   const revealStep = isCompact ? REVEAL_STEP_COMPACT : REVEAL_STEP_DESKTOP;
   const [revealCount, setRevealCount] = useState(revealStep);
   const transitionLane = transitionLaneFor(lane);
@@ -120,72 +139,85 @@ export function TrackerKanbanColumn({
     [revealStep],
   );
 
+  // Assigned rather than nested in JSX: three-way branches read as nested
+  // ternaries there, which the lint rules reject outright.
+  let laneBody: ReactNode;
+  if (isLoading) {
+    laneBody = <TrackerKanbanLaneSkeleton laneIndex={laneIndex} pulse={pulse} />;
+  } else if (cards.length === 0) {
+    laneBody = (
+      <Text style={styles.emptyText}>{t(`tracker.kanban.empty.${laneTranslationKey(lane)}`)}</Text>
+    );
+  } else {
+    laneBody = visibleCards.map((card) => {
+      const tracker = card.tracker;
+      const stats = hierarchy.descendantStats(tracker.id);
+      const pending = isPending(tracker.id);
+      const cardTestID = `tracker-kanban-card-${tracker.id}`;
+      const cardBody = (
+        <TrackerKanbanCard
+          id={tracker.id}
+          title={tracker.title}
+          priority={tracker.priority}
+          status={tracker.status}
+          projectLabel={getProjectLabel?.(tracker) ?? null}
+          childCount={stats.childCount}
+          doneCount={stats.doneCount}
+          isComplete={isComplete}
+          createdAt={tracker.createdAt ?? null}
+          testID={cardTestID}
+        />
+      );
+      // Native: onCardPress rides ContextMenuTrigger's own onPress (see
+      // TrackerKanbanCardMenu) — never a second Pressable nested inside it. Web has
+      // no outer Pressable there, so TrackerKanbanCardPressable owns the tap.
+      return (
+        <TrackerKanbanCardMenu
+          key={tracker.id}
+          trackerId={tracker.id}
+          trackerTitle={tracker.title}
+          lane={transitionLane}
+          isPending={pending}
+          onTransition={onTransition}
+          onEdit={onEdit}
+          onCardPress={isNative ? onCardPress : undefined}
+          testID={`${cardTestID}-move`}
+        >
+          {!isNative && onCardPress ? (
+            <TrackerKanbanCardPressable
+              trackerId={tracker.id}
+              pending={pending}
+              onCardPress={onCardPress}
+              testID={`${cardTestID}-press`}
+            >
+              {cardBody}
+            </TrackerKanbanCardPressable>
+          ) : (
+            <View style={[styles.cardWrapper, pending && styles.cardPending]}>{cardBody}</View>
+          )}
+        </TrackerKanbanCardMenu>
+      );
+    });
+  }
+
   return (
     <View style={[styles.column, style]} testID={`tracker-kanban-column-${lane}`}>
       <View style={styles.header}>
         <Text style={styles.headerLabel}>
           {t(`tracker.kanban.lane.${laneTranslationKey(lane)}`)}
         </Text>
-        <StatusBadge label={`${cards.length}${isComplete ? "" : "+"}`} variant="muted" />
-      </View>
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
-        {cards.length === 0 ? (
-          <Text style={styles.emptyText}>
-            {t(`tracker.kanban.empty.${laneTranslationKey(lane)}`)}
-          </Text>
+        {isLoading ? (
+          <SkeletonPulse pulse={pulse} style={styles.headerCountSkeleton} />
         ) : (
-          visibleCards.map((card) => {
-            const tracker = card.tracker;
-            const stats = hierarchy.descendantStats(tracker.id);
-            const pending = isPending(tracker.id);
-            const cardTestID = `tracker-kanban-card-${tracker.id}`;
-            const cardBody = (
-              <TrackerKanbanCard
-                id={tracker.id}
-                title={tracker.title}
-                priority={tracker.priority}
-                status={tracker.status}
-                projectLabel={getProjectLabel?.(tracker) ?? null}
-                childCount={stats.childCount}
-                doneCount={stats.doneCount}
-                isComplete={isComplete}
-                createdAt={tracker.createdAt ?? null}
-                testID={cardTestID}
-              />
-            );
-            // Native: onCardPress rides ContextMenuTrigger's own onPress (see
-            // TrackerKanbanCardMenu) — never a second Pressable nested inside it. Web has
-            // no outer Pressable there, so TrackerKanbanCardPressable owns the tap.
-            return (
-              <TrackerKanbanCardMenu
-                key={tracker.id}
-                trackerId={tracker.id}
-                trackerTitle={tracker.title}
-                lane={transitionLane}
-                isPending={pending}
-                onTransition={onTransition}
-                onEdit={onEdit}
-                onCardPress={isNative ? onCardPress : undefined}
-                testID={`${cardTestID}-move`}
-              >
-                {!isNative && onCardPress ? (
-                  <TrackerKanbanCardPressable
-                    trackerId={tracker.id}
-                    pending={pending}
-                    onCardPress={onCardPress}
-                    testID={`${cardTestID}-press`}
-                  >
-                    {cardBody}
-                  </TrackerKanbanCardPressable>
-                ) : (
-                  <View style={[styles.cardWrapper, pending && styles.cardPending]}>
-                    {cardBody}
-                  </View>
-                )}
-              </TrackerKanbanCardMenu>
-            );
-          })
+          <StatusBadge label={`${cards.length}${isComplete ? "" : "+"}`} variant="muted" />
         )}
+      </View>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {laneBody}
         {remaining > 0 ? (
           <Pressable
             style={styles.showMore}
@@ -220,6 +252,14 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.medium,
     color: theme.colors.foreground,
+  },
+  // Sized to the StatusBadge it replaces (xs text + 3px vertical padding +
+  // hairline border) so the header doesn't change height when the count lands.
+  headerCountSkeleton: {
+    width: 28,
+    height: 22,
+    borderRadius: theme.borderRadius.full,
+    backgroundColor: theme.colors.surface3,
   },
   scroll: {
     flex: 1,

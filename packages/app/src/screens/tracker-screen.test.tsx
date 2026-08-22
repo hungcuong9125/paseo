@@ -12,6 +12,7 @@ import type { UseProjectsResult } from "@/hooks/use-projects";
 
 const {
   theme,
+  hostsState,
   projectsState,
   projectDataState,
   lastKanbanBoardProps,
@@ -50,6 +51,9 @@ const {
     borderWidth: { 1: 1 },
     opacity: { 50: 0.5 },
     iconSize: { sm: 14, md: 20, lg: 32 },
+  },
+  hostsState: {
+    current: [{ serverId: "srv1", label: "Local" }],
   },
   projectsState: {
     current: {
@@ -150,6 +154,14 @@ vi.mock("@/runtime/host-runtime", () => ({
     getClient: () => null,
     getSnapshot: () => null,
   }),
+  useHosts: () => hostsState.current,
+}));
+
+// One host, already hydrated: the screen reads these two to tell "no projects
+// yet" apart from "this user has no projects", and every case in this suite is
+// about a settled project list.
+vi.mock("@/stores/session-store-hooks", () => ({
+  useHydratedWorkspaceServerIds: (serverIds: readonly string[]) => [...serverIds],
 }));
 
 vi.mock("@/hooks/use-projects", () => ({
