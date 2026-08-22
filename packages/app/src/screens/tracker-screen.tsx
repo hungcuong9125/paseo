@@ -489,14 +489,17 @@ function TrackerScreenContent(): ReactElement {
     }
   }, [projectInputs, selectedProjectId]);
 
-  // The priority filter only ever narrows the fetch while List is the active
-  // view — Kanban's own priority filter (kanbanStatFilter) stays a client-side
-  // lane projection over the unfiltered set (buildTrackerBoard's isDimmed), so
-  // pushing it server-side here would wrongly narrow Kanban's data too, since
-  // both views share this one fetch.
+  // Priority narrows the fetch for both views. Kanban's buildTrackerBoard
+  // already drops non-matching cards client-side (tracker-board-model.ts),
+  // so sending the same priority server-side produces the identical card
+  // set — cheaper, and it makes laneTotals (built from sectionTotals) match
+  // what each lane actually renders instead of an all-priority overcount
+  // (pas-2KY5X.10). Status stays List-only below: Kanban's own status filter
+  // (kanbanStatFilter) only projects which lanes are visible, it never
+  // narrows the dataset, so pushing it would drop cards other lanes need.
   const priorityOption = useMemo(
-    () => (viewMode === "list" ? STAT_FILTER_TO_PRIORITY[listStatFilter] : undefined),
-    [viewMode, listStatFilter],
+    () => STAT_FILTER_TO_PRIORITY[viewMode === "list" ? listStatFilter : kanbanStatFilter],
+    [viewMode, listStatFilter, kanbanStatFilter],
   );
   // Which sections to keep loaded. Kanban always needs all four — it renders
   // all five lanes from this one shared fetch. List with a priority filter
@@ -551,17 +554,30 @@ function TrackerScreenContent(): ReactElement {
   // filters. `stats.projectErrors` is scoped to the picker (by design, so a
   // wrong project doesn't pay for fetching data nobody's viewing), so it goes
   // silent on every project except whichever one is currently selected. A
-  // second, unscoped stats call keeps the bell honest — one request per
-  // project (not the four a status-paginated fetch would cost), and only
-  // enabled while a project is actually selected, since with "All projects"
-  // active it would be an identical, wasted duplicate of `stats` above.
+  // second, unscoped-ish stats call keeps the bell honest for the rest — but
+  // it excludes whatever project `stats` above already selected, since that
+  // one's errors already surface in `stats.projectErrors`; fetching it again
+  // here was a wasted duplicate request every mount with a project selected
+  // (pas-2KY5X.8). "All projects" mode needs no separate bell fetch at all:
+  // `stats` is already unscoped there, so this stays disabled and
+  // `bellProjectErrors` reads `stats.projectErrors` directly.
   const isProjectFiltered = selectedProjectId !== null;
+  const bellProjects = useMemo(
+    () => projectInputs.filter((project) => project.projectId !== selectedProjectId),
+    [projectInputs, selectedProjectId],
+  );
   const bellStats = useTrackerStats({
-    projects: projectInputs,
+    projects: bellProjects,
     selectedProjectId: null,
     enabled: hasAnyProject && isProjectFiltered,
   });
-  const bellProjectErrors = isProjectFiltered ? bellStats.projectErrors : stats.projectErrors;
+  const bellProjectErrors = useMemo(
+    () =>
+      isProjectFiltered
+        ? [...stats.projectErrors, ...bellStats.projectErrors]
+        : stats.projectErrors,
+    [isProjectFiltered, stats.projectErrors, bellStats.projectErrors],
+  );
 
   // Built from the full (unfiltered-by-status) project set project data
   // returns — the List row's delete action needs to know the *real* child

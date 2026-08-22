@@ -1,21 +1,59 @@
 /**
  * @vitest-environment jsdom
  */
+import { useEffect, useReducer } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrackerStatus, TrackerSummary } from "@getpaseo/protocol/tracker/types";
-import type { TrackerProjectInput } from "@/tracker/aggregated-trackers";
+import type { AggregatedTracker, TrackerProjectInput } from "@/tracker/aggregated-trackers";
+import type { HostRuntimeConnectionStatus } from "@/runtime/host-runtime";
 
-const { runtimeState } = vi.hoisted(() => ({
+const { runtimeState, connectionStatusState } = vi.hoisted(() => ({
   runtimeState: {
     getClient: vi.fn(),
-    getSnapshot: vi.fn(() => ({ connectionStatus: "online" as const })),
+    getSnapshot: vi.fn((serverId: string) => ({
+      connectionStatus: connectionStatusState.byServer[serverId] ?? "online",
+    })),
+  },
+  connectionStatusState: {
+    byServer: {} as Record<string, string>,
+    listeners: new Set<() => void>(),
   },
 }));
 
 vi.mock("@/runtime/host-runtime", () => ({
   getHostRuntimeStore: () => runtimeState,
+  // Minimal reactive stand-in for the real useSyncExternalStore-backed hook —
+  // re-renders the calling component whenever setConnectionStatus below
+  // fires, mirroring the reactivity useTrackerProjectData's connectionStatusKey
+  // relies on (pas-2KY5X.13's fix), the same shape use-tracker-stats.test.ts
+  // uses for useSessionStore (pas-2KY5X.1).
+  useHostRuntimeConnectionStatuses: (
+    serverIds: readonly string[],
+  ): ReadonlyMap<string, HostRuntimeConnectionStatus> => {
+    const [, forceRender] = useReducer((c: number) => c + 1, 0);
+    useEffect(() => {
+      const listener = () => forceRender();
+      connectionStatusState.listeners.add(listener);
+      return () => {
+        connectionStatusState.listeners.delete(listener);
+      };
+    }, []);
+    return new Map(
+      serverIds.map((serverId) => [
+        serverId,
+        (connectionStatusState.byServer[serverId] ?? "online") as HostRuntimeConnectionStatus,
+      ]),
+    );
+  },
 }));
+
+function setConnectionStatus(serverId: string, status: HostRuntimeConnectionStatus): void {
+  connectionStatusState.byServer = { ...connectionStatusState.byServer, [serverId]: status };
+  for (const listener of connectionStatusState.listeners) {
+    listener();
+  }
+}
 
 import { useTrackerProjectData } from "./use-tracker-project-data";
 
@@ -31,6 +69,12 @@ const PROJECT_B: TrackerProjectInput = {
   projectId: "prj-b",
   projectName: "Project B",
 };
+const PROJECT_C: TrackerProjectInput = {
+  serverId: "host-b",
+  serverName: "Host B",
+  projectId: "prj-c",
+  projectName: "Project C",
+};
 
 function makeTracker(id: string, status: TrackerStatus = "open"): TrackerSummary {
   return {
@@ -40,6 +84,20 @@ function makeTracker(id: string, status: TrackerStatus = "open"): TrackerSummary
     status,
     priority: "P2",
     parentId: null,
+  };
+}
+
+/** Full AggregatedTracker row, PROJECT_A-tagged — lets pas-2KY5X.11 tests set
+ * `parentId`/`childCount`/`doneCount` directly, which makeTracker doesn't expose. */
+function trackerRow(overrides: Partial<AggregatedTracker> & { id: string }): AggregatedTracker {
+  return {
+    title: `Tracker ${overrides.id}`,
+    type: "task",
+    status: "open",
+    priority: "P2",
+    parentId: null,
+    ...PROJECT_A,
+    ...overrides,
   };
 }
 
@@ -72,6 +130,10 @@ function installClient(
 }
 
 describe("useTrackerProjectData", () => {
+  beforeEach(() => {
+    connectionStatusState.byServer = {};
+  });
+
   it("loads exactly the first page of every section on mount, with no automatic follow-up fetch", async () => {
     const trackerList = installClient({
       "prj-a:open:start": {
@@ -357,6 +419,156 @@ describe("useTrackerProjectData", () => {
     expect(result.current.sectionTotals.closed).toBe(3);
   });
 
+  it("patchTracker bumps every loaded ancestor's doneCount (not childCount) when a descendant's done-state flips (pas-2KY5X.11)", async () => {
+    installClient({
+      "prj-a:open:start": {
+        trackers: [
+          trackerRow({ id: "gp-1", parentId: null, childCount: 3, doneCount: 1 }),
+          trackerRow({ id: "p-1", parentId: "gp-1", childCount: 1, doneCount: 0 }),
+          trackerRow({ id: "c-1", parentId: "p-1", childCount: 0, doneCount: 0 }),
+        ],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false },
+      },
+    });
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 50,
+      }),
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    act(() => {
+      result.current.patchTracker(
+        trackerRow({ id: "c-1", parentId: "p-1", status: "closed", childCount: 0, doneCount: 0 }),
+      );
+    });
+
+    const byId = (id: string) => result.current.trackers.find((t) => t.id === id);
+    // Both ancestors' doneCount advance by the same +1 — descendantStats
+    // aggregates the whole subtree, not just direct children.
+    expect(byId("p-1")?.doneCount).toBe(1);
+    expect(byId("gp-1")?.doneCount).toBe(2);
+    // No tree-shape change, so childCount is untouched on both.
+    expect(byId("p-1")?.childCount).toBe(1);
+    expect(byId("gp-1")?.childCount).toBe(3);
+    expect(byId("c-1")?.status).toBe("closed");
+  });
+
+  it("patchTracker bumps every loaded ancestor's childCount (not doneCount) when a brand-new tracker is created under them (pas-2KY5X.11)", async () => {
+    installClient({
+      "prj-a:open:start": {
+        trackers: [trackerRow({ id: "p-1", parentId: null, childCount: 1, doneCount: 0 })],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false },
+      },
+    });
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 50,
+      }),
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    act(() => {
+      result.current.patchTracker(trackerRow({ id: "c-2", parentId: "p-1" }));
+    });
+
+    const parent = result.current.trackers.find((t) => t.id === "p-1");
+    expect(parent?.childCount).toBe(2);
+    expect(parent?.doneCount).toBe(0);
+  });
+
+  it("patchTracker leaves counts alone when the mutated tracker's parent isn't currently loaded", async () => {
+    installClient({
+      "prj-a:open:start": {
+        trackers: [
+          trackerRow({ id: "c-1", parentId: "missing-parent", childCount: 0, doneCount: 0 }),
+        ],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false },
+      },
+    });
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 50,
+      }),
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    // Must not throw for an ancestor the client never loaded — best effort,
+    // not a crash.
+    act(() => {
+      result.current.patchTracker(
+        trackerRow({
+          id: "c-1",
+          parentId: "missing-parent",
+          status: "closed",
+          childCount: 0,
+          doneCount: 0,
+        }),
+      );
+    });
+    expect(result.current.trackers.map((t) => ({ id: t.id, status: t.status }))).toEqual([
+      { id: "c-1", status: "closed" },
+    ]);
+  });
+
+  it("patchTracker does not adjust ancestor counts across a reparent — no UI path sets it today, and guessing risks a wrong count", async () => {
+    installClient({
+      "prj-a:open:start": {
+        trackers: [
+          trackerRow({ id: "old-parent", parentId: null, childCount: 1, doneCount: 0 }),
+          trackerRow({ id: "new-parent", parentId: null, childCount: 0, doneCount: 0 }),
+          trackerRow({ id: "c-1", parentId: "old-parent", childCount: 0, doneCount: 0 }),
+        ],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false },
+      },
+    });
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 50,
+      }),
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    act(() => {
+      result.current.patchTracker(
+        trackerRow({
+          id: "c-1",
+          parentId: "new-parent",
+          status: "closed",
+          childCount: 0,
+          doneCount: 0,
+        }),
+      );
+    });
+
+    const byId = (id: string) => result.current.trackers.find((t) => t.id === id);
+    expect(byId("old-parent")?.childCount).toBe(1);
+    expect(byId("old-parent")?.doneCount).toBe(0);
+    expect(byId("new-parent")?.childCount).toBe(0);
+    expect(byId("new-parent")?.doneCount).toBe(0);
+    expect(byId("c-1")?.parentId).toBe("new-parent");
+  });
+
   it("removeTrackers drops trackers by id from wherever they live", async () => {
     installClient({
       "prj-a:open:start": {
@@ -407,6 +619,83 @@ describe("useTrackerProjectData", () => {
       result.current.removeTrackers(["a-1"]);
     });
     expect(result.current.sectionTotals.open).toBe(1);
+  });
+
+  it("removeTrackers decrements the parent's childCount (and doneCount if the removed child was done) (pas-2KY5X.11)", async () => {
+    installClient({
+      "prj-a:open:start": {
+        trackers: [
+          trackerRow({ id: "p-1", parentId: null, childCount: 2, doneCount: 1 }),
+          trackerRow({ id: "c-1", parentId: "p-1", status: "closed", childCount: 0, doneCount: 0 }),
+          trackerRow({ id: "c-2", parentId: "p-1", childCount: 0, doneCount: 0 }),
+        ],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false },
+      },
+    });
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 50,
+      }),
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    // c-1 is closed (done) — removing it must pull both counts down.
+    act(() => {
+      result.current.removeTrackers(["c-1"]);
+    });
+    const parentAfterFirstDelete = result.current.trackers.find((t) => t.id === "p-1");
+    expect(parentAfterFirstDelete?.childCount).toBe(1);
+    expect(parentAfterFirstDelete?.doneCount).toBe(0);
+
+    // c-2 is open (not done) — removing it drops childCount only.
+    act(() => {
+      result.current.removeTrackers(["c-2"]);
+    });
+    const parentAfterSecondDelete = result.current.trackers.find((t) => t.id === "p-1");
+    expect(parentAfterSecondDelete?.childCount).toBe(0);
+    expect(parentAfterSecondDelete?.doneCount).toBe(0);
+  });
+
+  it("removeTrackers on a delete-tree cascade decrements the grandparent once per removed descendant, even though the parent between them is removed too (pas-2KY5X.11)", async () => {
+    installClient({
+      "prj-a:open:start": {
+        trackers: [
+          trackerRow({ id: "gp-1", parentId: null, childCount: 2, doneCount: 0 }),
+          trackerRow({ id: "p-1", parentId: "gp-1", childCount: 1, doneCount: 0 }),
+          trackerRow({ id: "c-1", parentId: "p-1", childCount: 0, doneCount: 0 }),
+        ],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false },
+      },
+    });
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 50,
+      }),
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    // A cascade removes p-1 and c-1 together — the server's real delete-tree
+    // response shape (packages/app/screens/tracker-screen.tsx's trackerDelete
+    // call passes the full removedIds list, not one id at a time).
+    act(() => {
+      result.current.removeTrackers(["p-1", "c-1"]);
+    });
+
+    expect(result.current.trackers.map((t) => t.id)).toEqual(["gp-1"]);
+    // gp-1 loses both p-1 and c-1 from its subtree — 2, not 1 — even though
+    // p-1 (the intermediate hop between gp-1 and c-1) was removed in the
+    // same batch and never got its own row updated.
+    expect(result.current.trackers[0]?.childCount).toBe(0);
   });
 
   it("leaves a null sectionTotal null through both patchTracker and removeTrackers", async () => {
@@ -577,5 +866,93 @@ describe("useTrackerProjectData", () => {
     expect(result.current.trackers.map((t) => t.id).sort()).toEqual(["a-closed-1", "a-open-1"]);
     expect(trackerList.mock.calls.filter(([args]) => args.status === "open")).toHaveLength(1);
     expect(trackerList.mock.calls.filter(([args]) => args.status === "closed")).toHaveLength(1);
+  });
+
+  it("refetches once an offline host reconnects, instead of leaving the section empty for the session (pas-2KY5X.13)", async () => {
+    setConnectionStatus("host-a", "offline");
+    const trackerList = installClient({
+      "prj-a:open:start": {
+        trackers: [makeTracker("a-open-1")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount: 1 },
+      },
+    });
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 50,
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // fetchTrackerPage short-circuits to an empty page for an offline host —
+    // the section "loads" (isLoading settles) but stays empty, and the real
+    // client.trackerList is never called.
+    expect(result.current.trackers).toEqual([]);
+    expect(trackerList).not.toHaveBeenCalled();
+
+    act(() => {
+      setConnectionStatus("host-a", "online");
+    });
+
+    const loadedIds = () => result.current.trackers.map((t) => t.id);
+    await waitFor(() => expect(loadedIds()).toEqual(["a-open-1"]));
+    expect(trackerList).toHaveBeenCalled();
+  });
+
+  it("a single host reconnecting retries only its own projects, leaving another project's loaded pages and paging cursor untouched (pas-2KY5X.13)", async () => {
+    // host-a (prj-a) is online the whole time; host-b (prj-c) starts offline.
+    setConnectionStatus("host-b", "offline");
+    const trackerList = installClient({
+      "prj-a:open:start": {
+        trackers: [makeTracker("a-open-1")],
+        hiddenCount: 0,
+        // hasMore: true is the tell — if prj-a's section were ever wiped and
+        // re-fetched, this cursor would be rebuilt from scratch rather than
+        // surviving untouched.
+        pageInfo: { nextCursor: "next", hasMore: true, totalCount: 5 },
+      },
+      "prj-c:open:start": {
+        trackers: [makeTracker("c-open-1")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount: 1 },
+      },
+    });
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A, PROJECT_C],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 50,
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // prj-a loaded normally; prj-c's host is offline, so it contributed
+    // nothing even though the response table has data waiting for it.
+    expect(result.current.trackers.map((t) => t.id)).toEqual(["a-open-1"]);
+    expect(result.current.sectionHasMore.open).toBe(true);
+
+    act(() => {
+      setConnectionStatus("host-b", "online");
+    });
+
+    const loadedIds = () => result.current.trackers.map((t) => t.id).sort();
+    await waitFor(() => expect(loadedIds()).toEqual(["a-open-1", "c-open-1"]));
+    // prj-a's own "open" page was never re-requested — a global reset would
+    // have refetched it (and every other project's every section) the moment
+    // host-b's status changed at all, not just host-b's own projects.
+    const prjAOpenRequests = trackerList.mock.calls.filter(
+      ([args]) => args.projectId === "prj-a" && args.status === "open",
+    );
+    expect(prjAOpenRequests).toHaveLength(1);
+    // prj-a's paging state survived the reconnect untouched.
+    expect(result.current.sectionHasMore.open).toBe(true);
   });
 });

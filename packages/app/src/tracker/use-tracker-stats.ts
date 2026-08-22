@@ -67,11 +67,12 @@ export interface UseTrackerStatsOptions {
 }
 
 export interface UseTrackerStatsResult {
-  /** Summed across in-scope projects. `null` when the host lacks
-   * `aitTrackerStats`, an in-scope project is offline/errors, or while
-   * loading — same "any gap poisons the total" rule as
-   * useTrackerProjectData's sectionTotals, so this never silently
-   * undercounts. */
+  /** Summed across the projects that reported. A project that's offline,
+   * lacks `aitTrackerStats`, or errors contributes nothing and is treated as
+   * absent — one broken project no longer blanks every pill (pas-2KY5X.14).
+   * `null` only while loading, or when a single *selected* project is the
+   * whole scope and it didn't report: there the scope has exactly one
+   * project, so a gap there really is "no data", not a partial total. */
   counts: TrackerStatsCounts | null;
   isLoading: boolean;
   /** One request per in-scope project already went out to fetch `counts` —
@@ -176,8 +177,20 @@ export function useTrackerStats(options: UseTrackerStatsOptions): UseTrackerStat
       return;
     }
     const countsList = perProject.map((entry) => entry.counts);
-    const allReported = countsList.every((c): c is TrackerStatsCounts => c !== null);
-    setCounts(allReported ? sumTrackerStatsCounts(countsList) : null);
+    const reportedCounts = countsList.filter((c): c is TrackerStatsCounts => c !== null);
+    // "All projects": sum whoever reported, skip the rest — a project that
+    // errors or lacks the capability is absent, not a poison (pas-2KY5X.14).
+    // A single *selected* project is still all-or-nothing: with exactly one
+    // project in scope, that project failing means there's genuinely no
+    // data, so pills stay blank instead of showing a misleading zero.
+    let nextCounts: TrackerStatsCounts | null;
+    if (options.selectedProjectId === null) {
+      nextCounts = sumTrackerStatsCounts(reportedCounts);
+    } else {
+      nextCounts =
+        reportedCounts.length === countsList.length ? sumTrackerStatsCounts(reportedCounts) : null;
+    }
+    setCounts(nextCounts);
     setProjectErrors(
       perProject
         .filter((entry) => entry.error !== null)

@@ -223,17 +223,25 @@ vi.mock("@/tracker/use-tracker-project-data", () => ({
 
 vi.mock("@/tracker/use-tracker-stats", () => ({
   // The screen calls this twice: the primary (picker-scoped) call and the
-  // header bell's second, always-unscoped call. `statsState.current` holds
-  // the full, unscoped fixture; scoping down to one project (mirroring the
-  // real hook's own relevantProjects filter) happens here so both call sites
-  // fall naturally out of the same fixture instead of needing to be told
-  // apart.
-  useTrackerStats: (options: { selectedProjectId: string | null }) => {
+  // header bell's second call, scoped to every project except the picker's
+  // (pas-2KY5X.8). `statsState.current` holds the full, unscoped fixture;
+  // narrowing by both `options.projects` and `options.selectedProjectId`
+  // (mirroring the real hook's own relevantProjects filter) happens here so
+  // both call sites fall naturally out of the same fixture instead of
+  // needing to be told apart.
+  useTrackerStats: (options: {
+    projects: readonly { projectId: string }[];
+    selectedProjectId: string | null;
+  }) => {
     const state = statsState.current;
-    const projectErrors =
+    const inScopeProjects =
       options.selectedProjectId === null
-        ? state.projectErrors
-        : state.projectErrors.filter((error) => error.projectId === options.selectedProjectId);
+        ? options.projects
+        : options.projects.filter((p) => p.projectId === options.selectedProjectId);
+    const inScopeProjectIds = new Set(inScopeProjects.map((p) => p.projectId));
+    const projectErrors = state.projectErrors.filter((error) =>
+      inScopeProjectIds.has(error.projectId),
+    );
     return { ...state, projectErrors };
   },
 }));
@@ -705,6 +713,53 @@ describe("TrackerScreen kanban type filter", () => {
     expect(lastProjectDataOptions.current?.sections).toBeUndefined();
   });
 
+  it("a Kanban priority filter reaches the query as options.priority instead of only dimming cards client-side (pas-2KY5X.10)", () => {
+    render();
+    switchToKanban();
+
+    // Default type filter is "task" and priority is unfiltered — only task-1
+    // (mixedTrackers' single task, default priority P2) reaches the board.
+    expect(lastProjectDataOptions.current?.priority).toBeUndefined();
+    expect(lastKanbanBoardProps.current?.trackers).toHaveLength(1);
+
+    const p2Button = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-kanban-priority-p2"]',
+    );
+    if (!p2Button) throw new Error("Expected the Kanban P2 priority filter button to render");
+    act(() => {
+      p2Button.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+    expect(lastProjectDataOptions.current?.priority).toBe("P2");
+    expect(lastKanbanBoardProps.current?.trackers).toHaveLength(1);
+
+    const p1Button = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-kanban-priority-p1"]',
+    );
+    if (!p1Button) throw new Error("Expected the Kanban P1 priority filter button to render");
+    act(() => {
+      p1Button.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+    expect(lastProjectDataOptions.current?.priority).toBe("P1");
+    // task-1 is P2, not P1 — the mock hook's server-side narrowing (mirroring
+    // the real priority push) drops it from the fetch itself, proof this
+    // isn't still a client-side-only buildTrackerBoard dim.
+    expect(lastKanbanBoardProps.current?.trackers).toHaveLength(0);
+
+    const allButton = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-kanban-priority-all"]',
+    );
+    if (!allButton) throw new Error("Expected the Kanban All priority filter button to render");
+    act(() => {
+      allButton.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+    expect(lastProjectDataOptions.current?.priority).toBeUndefined();
+
+    // Kanban's priority filter is independent state from List's — switching
+    // view must not carry a leftover priority into the other view's query.
+    switchToList();
+    expect(lastProjectDataOptions.current?.priority).toBeUndefined();
+  });
+
   it("type filter applies to the List view's tracker set", () => {
     render();
     switchToList();
@@ -961,10 +1016,49 @@ describe("TrackerScreen mutation patching", () => {
     });
 
     // The main (picker-scoped) stats call now only covers prj-a, so it
-    // reports no errors of its own — but the bell's separate, always-unscoped
-    // call still surfaces prj-b's failure.
+    // reports no errors of its own — but the bell's separate call (scoped to
+    // every project except prj-a) still surfaces prj-b's failure.
     expect(
       container?.querySelector('[data-testid="trackers-project-errors-copy-host-a:prj-b"]'),
     ).not.toBeNull();
+  });
+
+  it("the bell doesn't double-fetch or double-report the picker's own selected project (pas-2KY5X.8)", () => {
+    const errorOnProjectA: TrackerProjectError = {
+      serverId: "host-a",
+      serverName: "alpha",
+      projectId: "prj-a",
+      projectName: "Project A",
+      message: "No ait database",
+      code: "uninitialised",
+    };
+    setProjectsState({
+      projects: [
+        project({ hosts: [hostEntry({ projectId: "prj-a", projectName: "Project A" })] }),
+        project({
+          viewKey: "remote:github.com/acme/other",
+          projectName: "acme/other",
+          hosts: [hostEntry({ projectId: "prj-b", projectName: "Project B" })],
+        }),
+      ],
+    });
+    setStatsState({ projectErrors: [errorOnProjectA] });
+    render();
+
+    const projectAOption = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-project-picker-prj-a"]',
+    );
+    if (!projectAOption) throw new Error("Expected the Project A picker option to render");
+    act(() => {
+      projectAOption.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+
+    // The bell's own call excludes prj-a (the picker already covers it), so
+    // prj-a's error reaches the bell exactly once — via the picker-scoped
+    // stats call — not duplicated by the bell's fan-out.
+    const copyButtons = container?.querySelectorAll(
+      '[data-testid="trackers-project-errors-copy-host-a:prj-a"]',
+    );
+    expect(copyButtons).toHaveLength(1);
   });
 });

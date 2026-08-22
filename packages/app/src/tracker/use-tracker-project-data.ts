@@ -8,7 +8,8 @@ import {
   type TrackerProjectInput,
   type TrackersRuntime,
 } from "@/tracker/aggregated-trackers";
-import { getHostRuntimeStore } from "@/runtime/host-runtime";
+import { getHostRuntimeStore, useHostRuntimeConnectionStatuses } from "@/runtime/host-runtime";
+import { MAX_TREE_DEPTH, isDone } from "@/tracker/tracker-hierarchy";
 
 // Same four sections, same order, as TrackerTable's LIST_SECTIONS and
 // tracker-board-model.ts's buildTrackerBoard — kept as a plain status tuple
@@ -91,6 +92,173 @@ function adjustProjectTotal(
     ...cursors,
     [projectKey]: { ...cursorState, totalCount: cursorState.totalCount + delta },
   };
+}
+
+// Which status section currently holds each loaded tracker id — an ancestor
+// can sit in any section (its own status is unrelated to its descendants'),
+// so adjusting one means first finding where it lives.
+function locateTrackers(sections: SectionsState): Map<string, TrackerStatus> {
+  const location = new Map<string, TrackerStatus>();
+  for (const status of LIST_SECTION_STATUSES) {
+    for (const tracker of sections[status].trackers) {
+      location.set(tracker.id, status);
+    }
+  }
+  return location;
+}
+
+// Bumps childCount/doneCount by a known delta on every *loaded* ancestor of
+// `parentId` — the client-side counterpart to the server's
+// `withTrackerSubtreeStats` (docs/tracker-data.md), applied incrementally
+// instead of recomputed, so it can't undercount from a partially-loaded
+// subtree the way a full local recompute over `trackers` would. No RPC
+// exists to refetch just an ancestor chain by id (`project.tracker.list`
+// only filters by status/type/priority + pagination, not by id — pas-2KY5X.11
+// investigation), so this is the whole fix rather than a stopgap. The walk
+// stops the moment an ancestor isn't in the loaded set: its own `parentId` is
+// then unknown, so the chain can't continue, and it — along with everything
+// above it — stays stale until the next real fetch, same posture as every
+// other "only correct what's actually in hand" fallback in this file. A
+// tracker whose own count is `undefined` (predates server-side subtree
+// stats) is left `undefined`, never given a fabricated value.
+function adjustAncestorCounts(
+  sections: SectionsState,
+  parentId: string | null,
+  doneDelta: number,
+  childDelta: number,
+  startId: string,
+): SectionsState {
+  if ((doneDelta === 0 && childDelta === 0) || parentId === null) {
+    return sections;
+  }
+  const location = locateTrackers(sections);
+  const next: SectionsState = { ...sections };
+  // Seeded with the mutated tracker's own id: malformed/cyclic `parentId`
+  // data must never loop back onto the row this same patch just re-filed.
+  const visited = new Set<string>([startId]);
+  let currentId: string | null = parentId;
+  let depth = 0;
+  while (currentId !== null && !visited.has(currentId) && depth < MAX_TREE_DEPTH) {
+    visited.add(currentId);
+    const status = location.get(currentId);
+    if (status === undefined) {
+      break;
+    }
+    const section = next[status];
+    const index = section.trackers.findIndex((tracker) => tracker.id === currentId);
+    if (index === -1) {
+      break;
+    }
+    const ancestor = section.trackers[index];
+    if (next[status] === sections[status]) {
+      next[status] = { ...section, trackers: [...section.trackers] };
+    }
+    next[status].trackers[index] = {
+      ...ancestor,
+      childCount: ancestor.childCount === undefined ? undefined : ancestor.childCount + childDelta,
+      doneCount: ancestor.doneCount === undefined ? undefined : ancestor.doneCount + doneDelta,
+    };
+    currentId = ancestor.parentId;
+    depth += 1;
+  }
+  return next;
+}
+
+interface AncestorCountDelta {
+  childDelta: number;
+  doneDelta: number;
+}
+
+// removeTrackers' counterpart to adjustAncestorCounts — a delete-tree cascade
+// removes a whole subtree in one `removeTrackers(ids)` call, so the delta per
+// surviving ancestor isn't always ±1 the way a single patchTracker mutation
+// is. Walks each removed tracker's own parentId chain through `current` (the
+// PRE-removal snapshot, not the survivors being built) so a removed ancestor
+// still passes its removed descendants' contribution up to whatever further
+// ancestor survives — e.g. deleting a parent and its child together in one
+// cascade decrements the grandparent by 2, not 1, even though the parent
+// itself (one hop of that walk) is also being removed and never gets its own
+// row updated. Deltas are accumulated per surviving ancestor id before any
+// row is touched, so two removed siblings under the same parent net to a
+// single -2 write instead of two racing -1s.
+function computeAncestorRemovalDeltas(
+  current: SectionsState,
+  removedIds: ReadonlySet<string>,
+): Map<string, AncestorCountDelta> {
+  const location = locateTrackers(current);
+  const deltas = new Map<string, AncestorCountDelta>();
+  for (const removedId of removedIds) {
+    const status = location.get(removedId);
+    const removedTracker =
+      status !== undefined ? current[status].trackers.find((t) => t.id === removedId) : undefined;
+    if (!removedTracker) {
+      continue;
+    }
+    const wasDone = isDone(removedTracker);
+    const visited = new Set<string>([removedId]);
+    let currentId: string | null = removedTracker.parentId;
+    let depth = 0;
+    while (currentId !== null && !visited.has(currentId) && depth < MAX_TREE_DEPTH) {
+      visited.add(currentId);
+      const ancestorStatus = location.get(currentId);
+      const ancestor =
+        ancestorStatus !== undefined
+          ? current[ancestorStatus].trackers.find((t) => t.id === currentId)
+          : undefined;
+      if (!ancestor) {
+        break;
+      }
+      if (!removedIds.has(currentId)) {
+        const delta = deltas.get(currentId) ?? { childDelta: 0, doneDelta: 0 };
+        delta.childDelta -= 1;
+        if (wasDone) {
+          delta.doneDelta -= 1;
+        }
+        deltas.set(currentId, delta);
+      }
+      currentId = ancestor.parentId;
+      depth += 1;
+    }
+  }
+  return deltas;
+}
+
+// Applies each accumulated delta to whichever surviving section holds that
+// ancestor — every id here was, by construction, excluded from the removed
+// set, so it is still present in `sections`. Same undefined-stays-undefined
+// rule as adjustAncestorCounts.
+function applyAncestorRemovalDeltas(
+  sections: SectionsState,
+  deltas: ReadonlyMap<string, AncestorCountDelta>,
+): SectionsState {
+  if (deltas.size === 0) {
+    return sections;
+  }
+  const location = locateTrackers(sections);
+  const next: SectionsState = { ...sections };
+  for (const [id, delta] of deltas) {
+    const status = location.get(id);
+    if (status === undefined) {
+      continue;
+    }
+    const section = next[status];
+    const index = section.trackers.findIndex((tracker) => tracker.id === id);
+    if (index === -1) {
+      continue;
+    }
+    const ancestor = section.trackers[index];
+    if (next[status] === sections[status]) {
+      next[status] = { ...section, trackers: [...section.trackers] };
+    }
+    next[status].trackers[index] = {
+      ...ancestor,
+      childCount:
+        ancestor.childCount === undefined ? undefined : ancestor.childCount + delta.childDelta,
+      doneCount:
+        ancestor.doneCount === undefined ? undefined : ancestor.doneCount + delta.doneDelta,
+    };
+  }
+  return next;
 }
 
 export interface UseTrackerProjectDataOptions {
@@ -181,6 +349,31 @@ export function useTrackerProjectData(
         : options.projects,
     [options.projects, options.selectedProjectId],
   );
+
+  // fetchTrackerPage silently returns an empty page for a host whose
+  // connectionStatus isn't "online" (imperative `runtime.getSnapshot` read).
+  // `connectionStatuses` is this hook's reactive trigger for that fact
+  // changing later — but unlike pas-2KY5X.1's stats fix, it does NOT feed
+  // scopeKey: an early version folded it in, and any status change on any one
+  // host took the isNewScope path, wiping every project's already-loaded
+  // pages and cursors, not just the reconnected one's — worse at mount, where
+  // N hosts individually settle from "connecting" to "online" and each
+  // transition re-triggered a full reset-and-refetch storm across the whole
+  // workspace (caught in review, pas-2KY5X.11/.13). `connectionStatuses` is
+  // read instead by retryReconnectedProjects below, which re-fetches only the
+  // specific projects `offlineProjectKeysRef` marked offline, merging into
+  // the existing state via `mergePage` — the same targeted shape `loadMore`
+  // already uses, so every other project's paging progress survives.
+  const relevantServerIds = useMemo(
+    () => [...new Set(relevantProjects.map((project) => project.serverId))],
+    [relevantProjects],
+  );
+  const connectionStatuses = useHostRuntimeConnectionStatuses(relevantServerIds);
+  // Project keys (projectKeyOf) whose most recent fetch was served by
+  // fetchTrackerPage's offline short-circuit — cleared on every scope reset,
+  // populated by syncSections, drained by retryReconnectedProjects once that
+  // project gets real data.
+  const offlineProjectKeysRef = useRef<Set<string>>(new Set());
 
   const desiredSections = useMemo(
     () => (options.sections ? [...options.sections] : [...LIST_SECTION_STATUSES]),
@@ -304,6 +497,7 @@ export function useTrackerProjectData(
         seq = ++loadSeqRef.current;
         loadingMoreRef.current.clear();
         requestedStatusesRef.current = new Set();
+        offlineProjectKeysRef.current = new Set();
         setSections(createEmptySections());
         setSectionLoadingMore(createEmptyStatusRecord(false));
         setProjectErrors([]);
@@ -323,8 +517,14 @@ export function useTrackerProjectData(
         setPendingStatuses((current) => new Set([...current, ...toFetch]));
       }
       const pages = await Promise.all(
-        relevantProjects.flatMap((project) =>
-          toFetch.map(async (status) => {
+        relevantProjects.flatMap((project) => {
+          // Checked once per project, before its statuses fan out — cheap,
+          // and connectivity doesn't flip mid-batch in practice. Feeds
+          // offlineProjectKeysRef below so retryReconnectedProjects knows
+          // which projects to revisit once this host comes back.
+          const wasOfflineAtFetch =
+            runtime.getSnapshot(project.serverId)?.connectionStatus !== "online";
+          return toFetch.map(async (status) => {
             try {
               const result = await fetchTrackerPage({
                 project,
@@ -335,18 +535,26 @@ export function useTrackerProjectData(
                 type: options.type,
                 priority: options.priority,
               });
-              return { project, status, result, error: null as unknown };
+              return { project, status, result, error: null as unknown, wasOfflineAtFetch };
             } catch (error) {
-              return { project, status, result: null, error };
+              return { project, status, result: null, error, wasOfflineAtFetch };
             }
-          }),
-        ),
+          });
+        }),
       );
       if (seq !== loadSeqRef.current) {
         // Stale — a newer scope reset already reseeded pendingStatuses and
         // sections for the current scope; this batch belongs to an abandoned
         // one and must not touch either.
         return;
+      }
+      for (const page of pages) {
+        const projectKey = projectKeyOf(page.project);
+        if (page.wasOfflineAtFetch) {
+          offlineProjectKeysRef.current.add(projectKey);
+        } else {
+          offlineProjectKeysRef.current.delete(projectKey);
+        }
       }
       setPendingStatuses((current) => {
         if (current.size === 0) {
@@ -412,6 +620,87 @@ export function useTrackerProjectData(
     // lastScopeKeyRef, not through this dependency array.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syncSections, desiredSectionsKey]);
+
+  // Re-fetches exactly the projects offlineProjectKeysRef marked offline,
+  // for whatever statuses the current scope already has loaded — merged into
+  // the existing sections via mergePage, the same targeted shape `loadMore`
+  // uses, so every other project's already-loaded pages are untouched
+  // (pas-2KY5X.13). A no-op whenever nothing is flagged offline or nothing
+  // just reconnected, so this is safe to call on every trigger.
+  const retryReconnectedProjects = useCallback(async (): Promise<void> => {
+    if (offlineProjectKeysRef.current.size === 0) {
+      return;
+    }
+    const statuses = [...requestedStatusesRef.current];
+    if (statuses.length === 0) {
+      return;
+    }
+    const seq = loadSeqRef.current;
+    const targets = relevantProjects.filter(
+      (project) =>
+        offlineProjectKeysRef.current.has(projectKeyOf(project)) &&
+        runtime.getSnapshot(project.serverId)?.connectionStatus === "online",
+    );
+    if (targets.length === 0) {
+      return;
+    }
+    const retryOne = async (project: TrackerProjectInput, status: TrackerStatus): Promise<void> => {
+      try {
+        const result = await fetchTrackerPage({
+          project,
+          runtime,
+          status,
+          all: options.all,
+          limit: options.pageSize,
+          type: options.type,
+          priority: options.priority,
+        });
+        if (seq !== loadSeqRef.current) {
+          return;
+        }
+        offlineProjectKeysRef.current.delete(projectKeyOf(project));
+        mergePage(status, projectKeyOf(project), result.trackers, {
+          cursor: result.pageInfo?.nextCursor ?? null,
+          hasMore: result.pageInfo?.hasMore ?? false,
+          totalCount: result.pageInfo?.totalCount ?? null,
+        });
+      } catch (error) {
+        if (seq !== loadSeqRef.current) {
+          return;
+        }
+        // Fetched while online (targets already required that), so a thrown
+        // error is a real RPC failure, not an offline masking — clear the
+        // offline flag so a future reconnect doesn't retry a failure that
+        // has nothing to do with connectivity.
+        offlineProjectKeysRef.current.delete(projectKeyOf(project));
+        setProjectErrors((current) =>
+          hasErrorForProject(current, project)
+            ? current
+            : [...current, toTrackerProjectError(project, error)],
+        );
+        mergePage(status, projectKeyOf(project), [], ERRORED_CURSOR);
+      }
+    };
+    await Promise.all(
+      targets.flatMap((project) => statuses.map((status) => retryOne(project, status))),
+    );
+  }, [
+    relevantProjects,
+    runtime,
+    options.all,
+    options.pageSize,
+    options.type,
+    options.priority,
+    mergePage,
+  ]);
+
+  useEffect(() => {
+    void retryReconnectedProjects();
+    // connectionStatuses is the reactive trigger for the imperative
+    // runtime.getSnapshot reads inside retryReconnectedProjects — same
+    // pattern as pas-2KY5X.1's featureSupportKey.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [retryReconnectedProjects, connectionStatuses]);
 
   // Fetches exactly one more page per in-scope project that still has more
   // for `status` — no follow-up beyond this one page, unlike the deleted
@@ -537,7 +826,11 @@ export function useTrackerProjectData(
     const projectKey = projectKeyOf(updated);
     setSections((current) => {
       const previousStatus = findTrackerStatus(current, updated.id);
-      const next = createEmptySections();
+      const previousTracker =
+        previousStatus !== null
+          ? (current[previousStatus].trackers.find((tracker) => tracker.id === updated.id) ?? null)
+          : null;
+      let next = createEmptySections();
       for (const status of LIST_SECTION_STATUSES) {
         next[status].cursors = current[status].cursors;
         next[status].trackers = current[status].trackers.filter(
@@ -564,6 +857,28 @@ export function useTrackerProjectData(
           1,
         );
       }
+      // A parent's subtree badge ("1 of 2 done") is server-computed per row
+      // (docs/tracker-data.md) and this patch only ever touches `updated`'s
+      // own row — left alone, every ancestor's childCount/doneCount would go
+      // stale the moment a descendant's done-state changes (pas-2KY5X.11).
+      // Reparenting has no UI path today (create is the only mutation that
+      // sets parentId, and it always targets a fresh, previously-absent row),
+      // so it's intentionally not handled here: adjusting one chain without
+      // knowing the other risks a wrong count, which is worse than a stale
+      // one that a real refetch will still correct.
+      const reparented = previousTracker !== null && previousTracker.parentId !== updated.parentId;
+      if (!reparented) {
+        const wasDone = previousTracker !== null && isDone(previousTracker);
+        const isDoneNow = isDone(updated);
+        let doneDelta = 0;
+        if (isDoneNow && !wasDone) {
+          doneDelta = 1;
+        } else if (!isDoneNow && wasDone) {
+          doneDelta = -1;
+        }
+        const childDelta = previousTracker === null ? 1 : 0;
+        next = adjustAncestorCounts(next, updated.parentId, doneDelta, childDelta, updated.id);
+      }
       return next;
     });
   }, []);
@@ -571,6 +886,10 @@ export function useTrackerProjectData(
   const removeTrackers = useCallback((ids: string[]) => {
     const idSet = new Set(ids);
     setSections((current) => {
+      // Computed from `current` (pre-removal) before any row is dropped —
+      // see computeAncestorRemovalDeltas for why the walk needs to see
+      // through an ancestor that is itself part of this same removal.
+      const ancestorDeltas = computeAncestorRemovalDeltas(current, idSet);
       const next = createEmptySections();
       for (const status of LIST_SECTION_STATUSES) {
         let cursors = current[status].cursors;
@@ -584,7 +903,10 @@ export function useTrackerProjectData(
         }
         next[status] = { trackers: kept, cursors };
       }
-      return next;
+      // A parent's subtree badge must lose exactly what this delete removed
+      // (pas-2KY5X.11) — the same staleness patchTracker's ancestor walk
+      // fixes for a status/create mutation, on the delete path.
+      return applyAncestorRemovalDeltas(next, ancestorDeltas);
     });
   }, []);
 

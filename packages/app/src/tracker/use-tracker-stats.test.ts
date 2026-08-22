@@ -140,7 +140,7 @@ describe("useTrackerStats", () => {
     expect(result.current.counts?.all.byPriority.P2).toBe(8);
   });
 
-  it("returns null counts when any in-scope project's host lacks aitTrackerStats", async () => {
+  it("sums only the reporting project when one host lacks aitTrackerStats (pas-2KY5X.14)", async () => {
     installClients({
       "host-a": { supportsStats: true, result: makeCounts(5) },
       "host-b": { supportsStats: false },
@@ -153,10 +153,10 @@ describe("useTrackerStats", () => {
       }),
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    expect(result.current.counts).toBeNull();
+    expect(result.current.counts?.all.total).toBe(5);
   });
 
-  it("returns null counts when a project's stats RPC fails, and reports that project's error", async () => {
+  it("sums only the succeeding project when another's stats RPC fails, and reports that project's error (pas-2KY5X.14)", async () => {
     installClients({
       "host-a": { supportsStats: true, result: makeCounts(5) },
       "host-b": { supportsStats: true, result: new Error("boom") },
@@ -169,7 +169,9 @@ describe("useTrackerStats", () => {
       }),
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    expect(result.current.counts).toBeNull();
+    // The failing project is treated as absent, not a poison — prj-a's count
+    // still comes through alongside prj-b's error.
+    expect(result.current.counts?.all.total).toBe(5);
     expect(result.current.projectErrors).toEqual([
       {
         serverId: "host-b",
@@ -182,10 +184,10 @@ describe("useTrackerStats", () => {
     ]);
   });
 
-  it("keeps reporting counts for the projects that succeed alongside a failing one's error", async () => {
+  it("sums to a real zero when every in-scope project fails (pas-2KY5X.14)", async () => {
     installClients({
-      "host-a": { supportsStats: true, result: makeCounts(5) },
-      "host-b": { supportsStats: true, result: new Error("boom") },
+      "host-a": { supportsStats: true, result: new Error("boom") },
+      "host-b": { supportsStats: false },
     });
     const { result } = renderHook(() =>
       useTrackerStats({
@@ -195,11 +197,10 @@ describe("useTrackerStats", () => {
       }),
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    // The summed total still poisons to null (same "any gap" rule as
-    // sectionTotals) — but that must not stop prj-a's own fetch from
-    // completing or the failure from being reported.
+    // No project reported, but the scope wasn't poisoned — every gap is
+    // "absent", so summing nothing is a real zero, not a blanked total.
+    expect(result.current.counts?.all.total).toBe(0);
     expect(result.current.projectErrors).toHaveLength(1);
-    expect(result.current.projectErrors[0]?.projectId).toBe("prj-b");
   });
 
   it("an offline project contributes neither a count nor a projectErrors entry", async () => {
@@ -214,25 +215,26 @@ describe("useTrackerStats", () => {
       }),
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    expect(result.current.counts).toBeNull();
+    expect(result.current.counts?.all.total).toBe(5);
     expect(result.current.projectErrors).toEqual([]);
   });
 
-  it("a host too old to advertise aitTrackerStats contributes neither a count nor an error", async () => {
+  it("poisons counts when the single selected project fails (pas-2KY5X.14)", async () => {
     installClients({
-      "host-a": { supportsStats: true, result: makeCounts(5) },
-      "host-b": { supportsStats: false },
+      "host-a": { supportsStats: true, result: new Error("boom") },
+      "host-b": { supportsStats: true, result: makeCounts(3) },
     });
     const { result } = renderHook(() =>
       useTrackerStats({
         projects: [PROJECT_A, PROJECT_B],
-        selectedProjectId: null,
+        selectedProjectId: "prj-a",
         enabled: true,
       }),
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // Scoped to exactly one project, so its failure is genuinely "no data" —
+    // unlike the "all projects" scope above, this must stay null, not 0.
     expect(result.current.counts).toBeNull();
-    expect(result.current.projectErrors).toEqual([]);
   });
 
   it("scopes to the selected project only", async () => {
@@ -322,8 +324,11 @@ describe("useTrackerStats", () => {
       };
     });
 
+    // Selected explicitly (rather than left as "all projects") so this still
+    // exercises the poison-then-recover path after pas-2KY5X.14: with only
+    // one project selected, an unreported flag must still block the total.
     const { result } = renderHook(() =>
-      useTrackerStats({ projects: [PROJECT_A], selectedProjectId: null, enabled: true }),
+      useTrackerStats({ projects: [PROJECT_A], selectedProjectId: "prj-a", enabled: true }),
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     // Too early to read the feature — degrades exactly like an old daemon,
