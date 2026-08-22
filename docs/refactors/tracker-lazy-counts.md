@@ -1,5 +1,7 @@
 # Tracker lazy counts + server-side pagination
 
+The resulting design — how the screen loads and counts today — is in [docs/tracker-data.md](../tracker-data.md).
+
 Frozen contract for the batch that replaces the Tracker screen's
 fetch-everything background sweep with explicit pagination plus exact
 server-computed counts. Every seat in this batch implements against the

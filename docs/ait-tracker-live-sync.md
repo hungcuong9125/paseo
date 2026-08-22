@@ -6,7 +6,7 @@ Keep tracker data current when an agent or another process changes a project's A
 
 AIT remains the source of truth. Paseo does not open `.ait/ait.db` directly and does not maintain a second durable issue database. The daemon watches the AIT directory only to know when it must run the authoritative `ait` CLI again.
 
-None of this is wired up on the client yet. The Tracker screen does not subscribe, so an external `ait` change — another client, or `ait` run from a terminal — only reaches the screen on a manual refresh. `useAggregatedTrackers` and the `tracker` domain of `packages/app/src/data/push-router.ts` have no callers and are scheduled for deletion, so do not build on them. How the screen loads today is in [docs/refactors/tracker-lazy-counts.md](refactors/tracker-lazy-counts.md).
+The Tracker screen does not subscribe. Live sync is not wired up on the client: an external `ait` change — another client, or `ait` run from a terminal — reaches the screen only on manual refresh. The client-side subscription path (`useAggregatedTrackers`, the `tracker` domain of `packages/app/src/data/push-router.ts`) was removed, so do not build on it. How the screen loads and counts today is in [docs/tracker-data.md](tracker-data.md).
 
 ## Current path
 
