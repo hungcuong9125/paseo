@@ -138,6 +138,19 @@ Counts span every status — `closed` and `cancelled` included — matching what
 `getTrackerStatCounts` counts today. Priority counts span every status too,
 for the reason already documented in `tracker-stats.ts`.
 
+### 4b. The snapshot has to actually be cached
+
+`TrackerSyncManager.getSnapshot` tears the root watch down again whenever
+`listenerCount === 0`. Nothing subscribes any more — that is the point of this
+batch — so every paginated list request and every stats request pays a fresh
+`ait list --all --long` plus a watcher create/destroy cycle. One screen load
+across five projects is twenty full database reads.
+
+Keep the root alive on a short TTL after the last listener drops, so the reads
+in one screen load share a snapshot and the file observer still invalidates it.
+The "counts are free" claim this whole design rests on is only true against a
+warm root.
+
 ### 5. Feature flag
 
 `server_info.features.aitTrackerStats: boolean`. Gated once, at the app's
@@ -182,6 +195,30 @@ removed, the sweep is removed, and the hook returns:
   refetch: () => void;
 }
 ```
+
+`loadMore` must clear `sectionLoadingMore[status]` before it bails on a stale
+scope, and `loadFirstPages` must reset the whole record — otherwise switching
+project mid-fetch strands a spinner on the new scope's "Show more".
+
+`patchTracker` and `removeTrackers` adjust `sectionTotals` themselves:
+decrement the status a tracker left, increment the one it landed in, decrement
+on removal, and leave a `null` total alone. Counts came from `items.length`
+before this batch, so they self-corrected; now that a total is authoritative,
+closing an item has to move the number or the header lies until the next
+refetch.
+
+The hook takes the type and priority filters and passes them to
+`fetchTrackerPage`, and `scopeKey` includes them:
+
+```ts
+type?: TrackerType;       // both views
+priority?: TrackerPriority;  // List only — Kanban projects lanes, it does not filter the set
+```
+
+Filtering a loaded page in memory was fine when the sweep guaranteed the page
+was everything. It is not fine now: page one of fifty rows narrowed to Tasks
+renders three rows under a header claiming two hundred. Both the rows and
+`totalCount` have to be scoped by the same query.
 
 New `packages/app/src/tracker/use-tracker-stats.ts`:
 
@@ -266,7 +303,13 @@ components, maps status totals onto Kanban lanes, and feeds the toolbar stat
 pills from `useTrackerStats` instead of `getTrackerStatCounts` over the
 loaded array.
 
-The `bellProjectData` sweep at `pageSize: 1` is deleted. With `sweepOne`
-gone it would page the entire database one row at a time; it exists only to
-surface per-project `ait init` errors, which a single stats or first-page
-call already does.
+The `bellProjectData` sweep at `pageSize: 1` is deleted. It exists only to
+surface per-project `ait init` errors for the whole workspace, so
+`useTrackerStats` carries a `projectErrors` list alongside its counts — it
+already fans out one request per project, and a project that needs `ait init`
+fails exactly there.
+
+On a host too old to advertise `aitTrackerStats` the bell goes quiet. That is
+the capability gate doing its job (docs/protocol-compatibility.md: gate once,
+no fallback paths), not a regression to work around — that host cannot serve
+any of this feature set.
