@@ -74,6 +74,20 @@ export interface TrackerKanbanBoardProps {
   onTransitionError?: (trackerId: string, message: string) => void;
   /** Opens the caller's edit sheet for a card — omit to hide the kebab menu's Edit entry. */
   onEdit?: (trackerId: string) => void;
+  /**
+   * Performs the actual delete — same pending/error contract as `onTransition`. Omit to
+   * hide the kebab menu's Remove/Delete tree entry entirely.
+   */
+  onDelete?: (trackerId: string) => Promise<void>;
+  /** Called with a translated message when `onDelete` rejects, for the caller's toast. */
+  onDeleteError?: (trackerId: string, message: string) => void;
+  /**
+   * Resolves whether a tracker has descendants from the caller's own (unfiltered)
+   * hierarchy, for the delete item's confirm copy and cascade flag. Falls back to
+   * this board's own hierarchy (built from the type-filtered `trackers` prop) when
+   * omitted, which can undercount while a type filter hides a tracker's children.
+   */
+  getHasChildren?: (trackerId: string) => boolean;
   /** Resolved per-card only in multi-project (aggregated) contexts; omit for single-project boards. */
   getProjectLabel?: (tracker: TrackerSummary) => string | null;
   /** Tapping a card body (not the move menu) — omit to render cards non-pressable. */
@@ -100,6 +114,9 @@ export function TrackerKanbanBoard({
   onTransition,
   onTransitionError,
   onEdit,
+  onDelete,
+  onDeleteError,
+  getHasChildren,
   getProjectLabel,
   onCardPress,
   testID = "tracker-kanban-board",
@@ -135,6 +152,33 @@ export function TrackerKanbanBoard({
         });
     },
     [onTransition, onTransitionError, t, hierarchy],
+  );
+
+  // Same pending/error dance as handleTransition — the "Remove"/"Delete tree" item
+  // has already confirmed by the time this runs, so a rejection here is a real
+  // failure (e.g. `ait` refusing a non-cascaded delete), not a cancellation.
+  const handleDelete = useCallback(
+    (trackerId: string) => {
+      if (!onDelete) {
+        return;
+      }
+      const pendingSet = pendingSetRef.current;
+      pendingSet.markPending(trackerId);
+      forceRender();
+      onDelete(trackerId)
+        .catch(() => {
+          const tracker = hierarchy.trackerMap.get(trackerId);
+          onDeleteError?.(
+            trackerId,
+            t("tracker.kanban.error.deleteFailed", { title: tracker?.title ?? trackerId }),
+          );
+        })
+        .finally(() => {
+          pendingSet.clearPending(trackerId);
+          forceRender();
+        });
+    },
+    [onDelete, onDeleteError, t, hierarchy],
   );
 
   const isPending = useCallback(
@@ -176,6 +220,8 @@ export function TrackerKanbanBoard({
       isPending={isPending}
       onTransition={handleTransition}
       onEdit={onEdit}
+      onDelete={onDelete ? handleDelete : undefined}
+      getHasChildren={getHasChildren}
       onCardPress={onCardPress}
       style={columnStyle}
     />

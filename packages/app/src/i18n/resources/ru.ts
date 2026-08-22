@@ -2550,6 +2550,7 @@ export const ru: TranslationResources = {
       },
       error: {
         transitionFailed: "Не удалось переместить {{title}}. Попробуйте снова.",
+        deleteFailed: "Не удалось удалить {{title}}. Попробуйте снова.",
       },
     },
     list: {

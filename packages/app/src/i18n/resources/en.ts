@@ -2519,6 +2519,7 @@ export const en = {
       },
       error: {
         transitionFailed: "Couldn't move {{title}}. Try again.",
+        deleteFailed: "Couldn't delete {{title}}. Try again.",
       },
     },
     list: {
