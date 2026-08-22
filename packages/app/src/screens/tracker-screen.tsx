@@ -112,6 +112,39 @@ const TYPE_FILTER_DEFS: ReadonlyArray<{ value: TypeFilter; labelKey: string }> =
   { value: "all", labelKey: "tracker.kanban.type.all" },
 ];
 
+// sessionStorage, not the persisted app store: this remembers the choice for
+// "reload this tab", not across app restarts or other tabs — closer to how a
+// scroll position survives a reload than to a saved setting. Desktop/tablet
+// only; compact always mounts on List regardless of what's stored (see the
+// `isCompact` guards on both read and write below), so a phone session can
+// never override the desktop tab's remembered view and vice versa.
+const TRACKER_VIEW_MODE_STORAGE_KEY = "paseo:tracker:view-mode";
+
+function readStoredViewMode(): ViewMode | null {
+  if (!isWeb) {
+    return null;
+  }
+  try {
+    const stored = window.sessionStorage.getItem(TRACKER_VIEW_MODE_STORAGE_KEY);
+    return stored === "list" || stored === "kanban" ? stored : null;
+  } catch {
+    // Private-browsing storage lockouts and similar — the in-memory state
+    // still works for the rest of the session, it just won't survive reload.
+    return null;
+  }
+}
+
+function writeStoredViewMode(mode: ViewMode): void {
+  if (!isWeb) {
+    return;
+  }
+  try {
+    window.sessionStorage.setItem(TRACKER_VIEW_MODE_STORAGE_KEY, mode);
+  } catch {
+    // See readStoredViewMode.
+  }
+}
+
 // Mirrors sessions-screen.tsx's own search field/debounce — List-only (see
 // the `viewMode === "list"` gate in TrackerSearchRow): Kanban's board already
 // finds an item by scanning its column, and title+id substring search over a
@@ -122,14 +155,15 @@ const TRACKER_SEARCH_MIN_LENGTH = 3;
 // Toolbar width, not a breakpoint: opening the sidebar takes ~320px off this
 // row without changing the window breakpoint, so a breakpoint cannot tell
 // whether the three toolbar groups fit on one line. Measured natural widths at
-// the widest content (Kanban's six priority pills): project picker + pills 986,
+// the widest content (Kanban's six priority pills): project picker + pills 923,
 // type filter + New item 381, plus the 12 gap and the row's 24 inset each side
-// — 1427. Rounded up to leave the pills a little slack before they start
+// — 1364. Rounded up to leave the pills a little slack before they start
 // scrolling.
 const TOOLBAR_SINGLE_ROW_MIN_WIDTH = 1440;
 
-// Reserved width for a filter pill's count, wide enough for the three digits
-// these totals reach. See the `statNumber` style for why it is reserved.
+// Width of a loading pill's count skeleton — the real count has no reserved
+// column (it sizes to its own digits), but the placeholder has no digits to
+// size to, so it needs an explicit width standing in for a plausible one.
 const STAT_COUNT_WIDTH = 24;
 
 // Below TRACKER_SEARCH_MIN_LENGTH, every keystroke would re-filter the full
@@ -413,9 +447,23 @@ function TrackerScreenContent(): ReactElement {
   // Shared by BOTH views: which tracker granularities are included. Defaults to
   // "task" (preserves the board's original default; the List view inherits it).
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("task");
-  // Desktop defaults to Kanban, compact defaults to List.
-  const isCompactAtMount = useIsCompactFormFactor();
-  const [viewMode, setViewMode] = useState<ViewMode>(() => (isCompactAtMount ? "list" : "kanban"));
+  // Desktop/tablet defaults to Kanban and remembers the last choice across a
+  // reload (sessionStorage — see readStoredViewMode); compact always mounts on
+  // List and never reads or writes that memory, so switching view on a phone
+  // can't clobber what a desktop tab remembers, or vice versa.
+  const isCompact = useIsCompactFormFactor();
+  const [viewMode, setViewModeState] = useState<ViewMode>(() =>
+    isCompact ? "list" : (readStoredViewMode() ?? "kanban"),
+  );
+  const setViewMode = useCallback(
+    (next: ViewMode) => {
+      setViewModeState(next);
+      if (!isCompact) {
+        writeStoredViewMode(next);
+      }
+    },
+    [isCompact],
+  );
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedTracker, setSelectedTracker] = useState<AggregatedTracker | null>(null);
   // One shared edit target for BOTH views — the List row kebab and the Kanban
@@ -445,6 +493,29 @@ function TrackerScreenContent(): ReactElement {
     enabled: hasAnyProject,
     pageSize: pageStep,
   });
+
+  // The header bell reports "which projects in this workspace need `ait
+  // init`" — a workspace-wide fact, unrelated to which project the toolbar
+  // picker has narrowed the List/Kanban data to. `projectData.projectErrors`
+  // above is scoped to that picker (by design, so a wrong project doesn't pay
+  // for fetching data nobody's viewing), so it goes silent on every project
+  // except whichever one is currently selected. This second sweep is
+  // unscoped and exists purely to keep the bell honest; `pageSize: 1` because
+  // nothing here reads `.trackers` — the sweep only needs to run long enough
+  // to surface the per-project error, not to fetch real pages. Only enabled
+  // while a project is actually selected — with "All projects" active it
+  // would just be an identical, wasted duplicate of the sweep above.
+  const isProjectFiltered = selectedProjectId !== null;
+  const bellProjectData = useTrackerProjectData({
+    projects: projectInputs,
+    selectedProjectId: null,
+    all: true,
+    enabled: hasAnyProject && isProjectFiltered,
+    pageSize: 1,
+  });
+  const bellProjectErrors = isProjectFiltered
+    ? bellProjectData.projectErrors
+    : projectData.projectErrors;
 
   // Built from the full (unfiltered) project set project data returns — the
   // List row's delete action needs to know the *real* child count (any type,
@@ -642,9 +713,7 @@ function TrackerScreenContent(): ReactElement {
   const headerRightContent = useMemo(
     () => (
       <>
-        {projectData.projectErrors.length > 0 ? (
-          <TrackerErrorsButton errors={projectData.projectErrors} />
-        ) : null}
+        <TrackerErrorsButton errors={bellProjectErrors} />
         <SegmentedControl
           options={viewModeOptions}
           value={viewMode}
@@ -655,7 +724,7 @@ function TrackerScreenContent(): ReactElement {
         />
       </>
     ),
-    [projectData.projectErrors, viewMode],
+    [bellProjectErrors, viewMode, setViewMode],
   );
 
   return (
@@ -1042,7 +1111,9 @@ function TrackerFilterMenu({
 // Errors move into a header popover instead of an inline content banner —
 // most projects don't run `ait`, so a permanent "no ait database" strip in
 // the content area would be the common case, not the exception. The trigger
-// only renders when there is something to show (see headerRightContent).
+// itself always renders, error or not — it doubles as the discovery path for
+// `ait` on a project that has never used it (see TrackerErrorsButton). Only
+// the count badge is conditional (see TrackerErrorsBellIcon).
 // ait-cli-service's raw message is "no ait database at <dir>/.ait/ait.db —
 // run 'ait init' first" — the full absolute path is noise the user doesn't
 // need to read, but it is the only place the project's directory shows up,
@@ -1056,9 +1127,9 @@ function handleOpenAitRepo(): void {
 
 // A row (not a nested Text) — Text only reliably accepts Text/Image children
 // cross-platform, and hover props (onHoverIn/onHoverOut) only exist on
-// Pressable, not Text. Default colour matches the surrounding sentence (not
-// accent-tinted at rest); only hover picks up the accent colour + underline,
-// so it reads as a highlighted word rather than a conspicuous button.
+// Pressable, not Text. Underlined at rest so it reads as a link inside the
+// sentence rather than plain emphasis; only the colour is hover-only, picking
+// up the accent tint.
 function TrackerAitRepoLink(): ReactElement {
   const [isHovered, setIsHovered] = useState(false);
   const handleHoverIn = useCallback(() => setIsHovered(true), []);
@@ -1148,9 +1219,11 @@ function TrackerErrorsBellIcon({
   return (
     <>
       <ThemedBell size={20} uniProps={bellColorMapping} />
-      <View style={styles.errorsBadge}>
-        <Text style={styles.errorsBadgeText}>{count}</Text>
-      </View>
+      {count > 0 ? (
+        <View style={styles.errorsBadge}>
+          <Text style={styles.errorsBadgeText}>{count}</Text>
+        </View>
+      ) : null}
     </>
   );
 }
@@ -1264,17 +1337,25 @@ function TrackerErrorsButton({ errors }: { errors: TrackerProjectError[] }): Rea
               </Pressable>
             ) : null}
           </View>
-          <Text style={styles.errorsMenuDescription}>
-            These projects don&apos;t have one set up yet. Run{" "}
-            <Text style={styles.errorsRowEmphasis}>ait init</Text> in each to enable it.
-          </Text>
-          <View style={styles.errorsMenuDescriptionDivider} />
-          {errors.map((error, index) => (
-            <Fragment key={`${error.serverId}:${error.projectId}`}>
-              {index > 0 ? <View style={styles.errorsMenuDivider} /> : null}
-              <TrackerErrorRow error={error} />
-            </Fragment>
-          ))}
+          {errors.length > 0 ? (
+            <>
+              <Text style={styles.errorsMenuDescription}>
+                These projects don&apos;t have one set up yet. Run{" "}
+                <Text style={styles.errorsRowEmphasis}>ait init</Text> in each to enable it.
+              </Text>
+              <View style={styles.errorsMenuDescriptionDivider} />
+              {errors.map((error, index) => (
+                <Fragment key={`${error.serverId}:${error.projectId}`}>
+                  {index > 0 ? <View style={styles.errorsMenuDivider} /> : null}
+                  <TrackerErrorRow error={error} />
+                </Fragment>
+              ))}
+            </>
+          ) : (
+            <Text style={styles.errorsMenuDescription}>
+              Every project here already has one set up.
+            </Text>
+          )}
         </View>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -1864,11 +1945,7 @@ function StatFilterRow({
   // scroll content: auto margins collapse to 0 once the content overflows,
   // whereas centered justification would push the first pill past the
   // scroller's left edge where it can't be scrolled back into view.
-  const innerStyle = [
-    styles.statsRowInner,
-    viewMode === "kanban" && styles.statsRowInnerWide,
-    centered && styles.statsRowInnerCentered,
-  ];
+  const innerStyle = [styles.statsRowInner, centered && styles.statsRowInnerCentered];
 
   // Compact width folds the priority filter into TrackerFilterMenu (the
   // toolbar's overflow trigger) instead of rendering it inline — Kanban's
@@ -2183,15 +2260,13 @@ const styles = StyleSheet.create((theme) => ({
   statsRowContentInset: {
     paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
   },
+  // Same gap for List and Kanban — the pills read as one group either way.
+  // 10 doesn't land on the spacing scale (6 or 12 are the neighbours); a
+  // plain literal, same as STAT_COUNT_WIDTH above.
   statsRowInner: {
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[1.5],
-  },
-  // Kanban's priority buttons: wider gap than the List pills, which have a
-  // dropdown between them to break them up and these don't.
-  statsRowInnerWide: {
-    gap: theme.spacing[3],
+    gap: 10,
   },
   statsRowInnerCentered: {
     marginHorizontal: "auto",
@@ -2214,18 +2289,12 @@ const styles = StyleSheet.create((theme) => ({
   statCardActive: {
     backgroundColor: theme.colors.foreground,
   },
-  // minWidth + right alignment reserve a fixed column for the digits. These
-  // counts land after the labels do and keep climbing while the background
-  // sweep runs, and the row they sit in is centred on tablet — without a
-  // reserved column every new digit would nudge the whole row sideways.
   statNumber: {
     color: theme.colors.foregroundMuted,
     // Matches segmentedLabelSm's fontSize.sm — same reasoning as statCard's
     // minHeight above.
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.medium,
-    minWidth: STAT_COUNT_WIDTH,
-    textAlign: "right",
   },
   statNumberSkeleton: {
     width: STAT_COUNT_WIDTH,
@@ -2282,8 +2351,6 @@ const styles = StyleSheet.create((theme) => ({
   priorityFilterText: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
   },
   priorityFilterTextActive: {
     color: theme.colors.surface0,
@@ -2308,8 +2375,6 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.medium,
-    minWidth: STAT_COUNT_WIDTH,
-    textAlign: "right",
   },
   priorityFilterCountHovered: {
     color: theme.colors.palette.red[600],
@@ -2326,8 +2391,6 @@ const styles = StyleSheet.create((theme) => ({
   statLabel: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
   },
   statLabelActive: {
     color: theme.colors.surface0,
@@ -2367,7 +2430,6 @@ const styles = StyleSheet.create((theme) => ({
   errorsButtonTrigger: {
     position: "relative",
     padding: theme.spacing[1.5],
-    marginRight: theme.spacing[2],
     borderRadius: theme.borderRadius.full,
   },
   // Small count badge pinned to the trigger's top-right corner — a fixed
@@ -2442,6 +2504,7 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.medium,
     lineHeight: 20,
+    textDecorationLine: "underline",
   },
   errorsMenuLinkHovered: {
     color: theme.colors.accent,
