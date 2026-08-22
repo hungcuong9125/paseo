@@ -12,7 +12,7 @@ import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { settingsStyles } from "@/styles/settings";
 
-interface TrackerTableProps {
+export interface TrackerTableBaseProps {
   trackers: AggregatedTracker[];
   showProjectLabel: boolean;
   onOpenTracker: (tracker: AggregatedTracker) => void;
@@ -20,11 +20,6 @@ interface TrackerTableProps {
    * type/status filter must never hide a real child and make a parent look
    * deletable when `ait delete` would actually refuse it. */
   hierarchy: TrackerHierarchy;
-  /** False while the shared project-data sweep still has sections in flight —
-   * `hierarchy`'s child counts can only be undercounts until then, so the
-   * delete-confirmation path gates on this rather than trusting a count that
-   * might still grow. Everything else (viewing, editing) stays unblocked. */
-  isComplete: boolean;
   /** Called with the mutation's own response tracker after a row action
    * (start/close/reopen/cancel) succeeds — the caller patches its shared
    * data hook in place instead of this table re-fetching anything. */
@@ -34,14 +29,31 @@ interface TrackerTableProps {
   onEditTracker?: (tracker: AggregatedTracker) => void;
   /** Called with the ids `ait` actually removed after a row delete succeeds. */
   onTrackersRemoved?: (ids: string[]) => void;
-  /** Search mode renders one flat list with a single whole-result-set load
-   * more instead of per-status sections — search result sets are small and
-   * status bucketing adds nothing there. */
-  variant?: "sections" | "flat";
-  onLoadMoreAll?: () => void;
-  hasMoreAll?: boolean;
-  isLoadingMoreAll?: boolean;
 }
+
+export type TrackerTableProps = TrackerTableBaseProps &
+  (
+    | {
+        variant?: "sections";
+        sectionTotals: Partial<Record<TrackerStatus, number | null>>;
+        sectionHasMore: Partial<Record<TrackerStatus, boolean>>;
+        sectionLoadingMore: Partial<Record<TrackerStatus, boolean>>;
+        onLoadMore: (status: TrackerStatus) => void;
+        hasMoreAll?: never;
+        onLoadMoreAll?: never;
+        isLoadingMoreAll?: never;
+      }
+    | {
+        variant: "flat";
+        sectionTotals?: never;
+        sectionHasMore?: never;
+        sectionLoadingMore?: never;
+        onLoadMore?: never;
+        hasMoreAll?: boolean;
+        onLoadMoreAll?: () => void;
+        isLoadingMoreAll?: boolean;
+      }
+  );
 
 // The four real statuses, in the order they read top-to-bottom in the List view.
 // Unlike the Kanban board, List does NOT split `open` into Ready/Backlog (that
@@ -55,10 +67,6 @@ const LIST_SECTIONS: ReadonlyArray<{ status: TrackerStatus; labelKey: string }> 
   { status: "closed", labelKey: "tracker.list.section.done" },
   { status: "cancelled", labelKey: "tracker.list.section.cancelled" },
 ];
-
-// Every section caps at revealStep with a "Show N more" footer — the shared
-// data hook still loads everything, this only bounds what's rendered.
-const REVEALED_STATUSES = new Set<TrackerStatus>(["open", "in_progress", "closed", "cancelled"]);
 
 // Page size for the server-side pagination hooks that feed this table — the
 // same sizing convention the old client-side reveal used (50 desktop / 20
@@ -85,31 +93,18 @@ export function useTrackerPageStep(): number {
  * (`variant="flat"`) is the one exception: search result sets are small and
  * bounded, so it keeps its own whole-result-set "Load more" via `onLoadMoreAll`.
  */
-export function TrackerTable({
-  trackers,
-  showProjectLabel,
-  onOpenTracker,
-  hierarchy,
-  isComplete,
-  onTrackerPatched,
-  onEditTracker,
-  onTrackersRemoved,
-  variant = "sections",
-  onLoadMoreAll,
-  hasMoreAll = false,
-  isLoadingMoreAll = false,
-}: TrackerTableProps): ReactElement {
+export function TrackerTable(props: TrackerTableProps): ReactElement {
+  const {
+    trackers,
+    showProjectLabel,
+    onOpenTracker,
+    hierarchy,
+    onTrackerPatched,
+    onEditTracker,
+    onTrackersRemoved,
+  } = props;
   const { t } = useTranslation();
   const revealStep = useTrackerPageStep();
-  const [revealCounts, setRevealCounts] = useState<Partial<Record<TrackerStatus, number>>>({});
-  const handleRevealMore = useCallback(
-    (status: TrackerStatus) =>
-      setRevealCounts((current) => ({
-        ...current,
-        [status]: (current[status] ?? revealStep) + revealStep,
-      })),
-    [revealStep],
-  );
 
   const sortedTrackers = useMemo(
     () =>
@@ -136,24 +131,30 @@ export function TrackerTable({
     return buckets;
   }, [sortedTrackers]);
 
-  if (variant === "flat") {
+  if (props.variant === "flat") {
+    const { hasMoreAll, onLoadMoreAll, isLoadingMoreAll } = props;
     return (
       <View style={styles.listContent} testID="tracker-table">
         <View style={settingsStyles.card}>
-          {sortedTrackers.map((tracker, index) => (
-            <TrackerTableRow
-              key={`${tracker.serverId}:${tracker.projectId}:${tracker.id}`}
-              tracker={tracker}
-              projectLabel={showProjectLabel ? tracker.projectName : null}
-              isFirst={index === 0}
-              onOpenTracker={onOpenTracker}
-              hasChildren={hierarchy.descendantStats(tracker.id).childCount > 0}
-              isComplete={isComplete}
-              onTrackerPatched={onTrackerPatched}
-              onEdit={onEditTracker}
-              onTrackersRemoved={onTrackersRemoved}
-            />
-          ))}
+          {sortedTrackers.map((tracker, index) => {
+            const hasChildren =
+              tracker.childCount !== undefined
+                ? tracker.childCount > 0
+                : hierarchy.descendantStats(tracker.id).childCount > 0;
+            return (
+              <TrackerTableRow
+                key={`${tracker.serverId}:${tracker.projectId}:${tracker.id}`}
+                tracker={tracker}
+                projectLabel={showProjectLabel ? tracker.projectName : null}
+                isFirst={index === 0}
+                onOpenTracker={onOpenTracker}
+                hasChildren={hasChildren}
+                onTrackerPatched={onTrackerPatched}
+                onEdit={onEditTracker}
+                onTrackersRemoved={onTrackersRemoved}
+              />
+            );
+          })}
         </View>
         {hasMoreAll && onLoadMoreAll ? (
           <Pressable
@@ -174,6 +175,8 @@ export function TrackerTable({
     );
   }
 
+  const { sectionTotals, sectionHasMore, sectionLoadingMore, onLoadMore } = props;
+
   // Bucket the already-sorted list by status, preserving the sorted order within
   // each section. A section with zero items is hidden entirely (see below) —
   // this is how a toolbar status filter removes the other sections from view.
@@ -187,10 +190,12 @@ export function TrackerTable({
         if (items.length === 0) {
           return null;
         }
-        const isRevealed = REVEALED_STATUSES.has(section.status);
-        const revealCount = revealCounts[section.status] ?? revealStep;
-        const visibleItems = isRevealed ? items.slice(0, revealCount) : items;
-        const remaining = isRevealed ? Math.max(0, items.length - revealCount) : 0;
+        const total = sectionTotals[section.status];
+        const sectionCount = total ?? items.length;
+        const hasMore = sectionHasMore[section.status] ?? false;
+        const loadingMore = sectionLoadingMore[section.status] ?? false;
+        const showCount =
+          total != null ? Math.max(0, Math.min(revealStep, total - items.length)) : revealStep;
         return (
           <View
             key={section.status}
@@ -199,29 +204,35 @@ export function TrackerTable({
           >
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>{t(section.labelKey)}</Text>
-              <Text style={styles.sectionCount}>{items.length}</Text>
+              <Text style={styles.sectionCount}>{sectionCount}</Text>
             </View>
             <View style={settingsStyles.card}>
-              {visibleItems.map((tracker, index) => (
-                <TrackerTableRow
-                  key={`${tracker.serverId}:${tracker.projectId}:${tracker.id}`}
-                  tracker={tracker}
-                  projectLabel={showProjectLabel ? tracker.projectName : null}
-                  isFirst={index === 0}
-                  onOpenTracker={onOpenTracker}
-                  hasChildren={hierarchy.descendantStats(tracker.id).childCount > 0}
-                  isComplete={isComplete}
-                  onTrackerPatched={onTrackerPatched}
-                  onEdit={onEditTracker}
-                  onTrackersRemoved={onTrackersRemoved}
-                />
-              ))}
+              {items.map((tracker, index) => {
+                const hasChildren =
+                  tracker.childCount !== undefined
+                    ? tracker.childCount > 0
+                    : hierarchy.descendantStats(tracker.id).childCount > 0;
+                return (
+                  <TrackerTableRow
+                    key={`${tracker.serverId}:${tracker.projectId}:${tracker.id}`}
+                    tracker={tracker}
+                    projectLabel={showProjectLabel ? tracker.projectName : null}
+                    isFirst={index === 0}
+                    onOpenTracker={onOpenTracker}
+                    hasChildren={hasChildren}
+                    onTrackerPatched={onTrackerPatched}
+                    onEdit={onEditTracker}
+                    onTrackersRemoved={onTrackersRemoved}
+                  />
+                );
+              })}
             </View>
-            {remaining > 0 ? (
+            {hasMore ? (
               <TrackerTableShowMore
                 status={section.status}
-                label={t("tracker.list.showMore", { count: Math.min(revealStep, remaining) })}
-                onReveal={handleRevealMore}
+                label={t("tracker.list.showMore", { count: showCount })}
+                loading={loadingMore}
+                onLoadMore={onLoadMore}
               />
             ) : null}
           </View>
@@ -234,13 +245,15 @@ export function TrackerTable({
 const TrackerTableShowMore = memo(function TrackerTableShowMore({
   status,
   label,
-  onReveal,
+  loading,
+  onLoadMore,
 }: {
   status: TrackerStatus;
   label: string;
-  onReveal: (status: TrackerStatus) => void;
+  loading: boolean;
+  onLoadMore: (status: TrackerStatus) => void;
 }): ReactElement {
-  const handlePress = useCallback(() => onReveal(status), [onReveal, status]);
+  const handlePress = useCallback(() => onLoadMore(status), [onLoadMore, status]);
   return (
     <Pressable
       style={styles.showMore}
@@ -248,7 +261,11 @@ const TrackerTableShowMore = memo(function TrackerTableShowMore({
       accessibilityRole="button"
       testID={`tracker-table-section-${status}-show-more`}
     >
-      <Text style={styles.showMoreText}>{label}</Text>
+      {loading ? (
+        <LoadingSpinner size="small" color={styles.showMoreText.color} />
+      ) : (
+        <Text style={styles.showMoreText}>{label}</Text>
+      )}
     </Pressable>
   );
 });
@@ -261,7 +278,6 @@ function TrackerTableRow({
   isFirst,
   onOpenTracker,
   hasChildren,
-  isComplete,
   onTrackerPatched,
   onEdit,
   onTrackersRemoved,
@@ -271,7 +287,6 @@ function TrackerTableRow({
   isFirst: boolean;
   onOpenTracker: (tracker: AggregatedTracker) => void;
   hasChildren: boolean;
-  isComplete: boolean;
   onTrackerPatched?: (tracker: AggregatedTracker) => void;
   onEdit?: (tracker: AggregatedTracker) => void;
   onTrackersRemoved?: (ids: string[]) => void;
@@ -341,12 +356,10 @@ function TrackerTableRow({
 
   // Permanent and unrecorded — confirm before sending it, same as file/folder
   // deletion elsewhere in the app. `cascade` mirrors `hasChildren`: `ait`
-  // itself refuses a non-cascaded delete of a tracker with descendants. Blocked
-  // entirely while `!isComplete`: an undercounted `hasChildren` here could offer
-  // a non-cascaded delete for something that actually has un-swept children,
-  // which `ait delete` would then refuse server-side.
+  // itself refuses a non-cascaded delete of a tracker with descendants.
+  // Blocked while tracker.childCount is undefined to avoid accidental cascade.
   const handleDelete = useCallback(() => {
-    if (!isComplete) {
+    if (tracker.childCount === undefined) {
       return;
     }
     void (async () => {
@@ -369,16 +382,24 @@ function TrackerTableRow({
         onTrackersRemoved?.(removedIds);
       });
     })();
-  }, [runAction, mutations, tracker.id, tracker.title, hasChildren, isComplete, onTrackersRemoved]);
+  }, [
+    runAction,
+    mutations,
+    tracker.id,
+    tracker.title,
+    tracker.childCount,
+    hasChildren,
+    onTrackersRemoved,
+  ]);
 
   return (
     <TrackerRow
       tracker={tracker}
       projectLabel={projectLabel}
       hasChildren={hasChildren}
+      deleteDisabled={tracker.childCount === undefined}
       isFirst={isFirst}
       pending={pending}
-      deleteDisabled={!isComplete}
       onPress={handlePress}
       onEdit={handleEdit}
       onStart={handleStart}

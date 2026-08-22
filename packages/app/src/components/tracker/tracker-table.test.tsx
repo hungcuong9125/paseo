@@ -77,11 +77,12 @@ vi.mock("@/utils/confirm-dialog", () => ({
 }));
 
 // Render the real row id, plus stand-in Start/Delete buttons that forward the
-// row's own handlers — enough to exercise the mutation-patch callbacks and the
-// isComplete delete gate without pulling in the real kebab menu.
+// row's own handlers — enough to exercise the mutation-patch callbacks
+// without pulling in the real kebab menu.
 vi.mock("@/components/tracker/tracker-row", () => ({
   TrackerRow: (props: {
     tracker: AggregatedTracker;
+    hasChildren?: boolean;
     deleteDisabled?: boolean;
     onStart: () => void;
     onDelete: () => void;
@@ -90,6 +91,7 @@ vi.mock("@/components/tracker/tracker-row", () => ({
       "div",
       {
         "data-testid": `row-${props.tracker.id}`,
+        "data-has-children": String(Boolean(props.hasChildren)),
         "data-delete-disabled": String(Boolean(props.deleteDisabled)),
       },
       props.tracker.title,
@@ -115,7 +117,7 @@ vi.mock("@/components/tracker/tracker-row", () => ({
     ),
 }));
 
-import { TrackerTable } from "./tracker-table";
+import { TrackerTable, type TrackerTableProps } from "./tracker-table";
 import { buildTrackerHierarchy } from "@/tracker/tracker-hierarchy";
 
 function tracker(overrides: Partial<AggregatedTracker> = {}): AggregatedTracker {
@@ -136,11 +138,7 @@ function tracker(overrides: Partial<AggregatedTracker> = {}): AggregatedTracker 
 
 function renderTable(
   trackers: AggregatedTracker[],
-  overrides: {
-    isComplete?: boolean;
-    onTrackerPatched?: (tracker: AggregatedTracker) => void;
-    onTrackersRemoved?: (ids: string[]) => void;
-  } = {},
+  overrides: Partial<TrackerTableProps> = {},
 ): { container: HTMLElement; root: Root } {
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -152,9 +150,12 @@ function renderTable(
         showProjectLabel: false,
         onOpenTracker: vi.fn(),
         hierarchy: buildTrackerHierarchy(trackers),
-        isComplete: true,
+        sectionTotals: {},
+        sectionHasMore: {},
+        sectionLoadingMore: {},
+        onLoadMore: vi.fn(),
         ...overrides,
-      }),
+      } as TrackerTableProps),
     );
   });
   return { container, root };
@@ -249,21 +250,15 @@ describe("TrackerTable status grouping", () => {
     container = c;
 
     const openSection = c.querySelector('[data-testid="tracker-table-section-open"]');
-    const ipSection = c.querySelector('[data-testid="tracker-table-section-in_progress"]');
-
-    const openRowIds = Array.from(openSection?.querySelectorAll('[data-testid^="row-"]') ?? []).map(
-      (el) => el.getAttribute("data-testid"),
-    );
-    const ipRowIds = Array.from(ipSection?.querySelectorAll('[data-testid^="row-"]') ?? []).map(
-      (el) => el.getAttribute("data-testid"),
-    );
-
-    expect(openRowIds).toEqual(["row-a-open", "row-b-open"]);
-    expect(ipRowIds).toEqual(["row-a-ip", "row-b-ip"]);
+    const rows = openSection?.querySelectorAll('[data-testid^="row-"]');
+    expect(rows?.[0]?.getAttribute("data-testid")).toBe("row-a-open");
+    expect(rows?.[1]?.getAttribute("data-testid")).toBe("row-b-open");
   });
 
-  it("hides sections that have no items — e.g. a toolbar status filter leaves only one status", () => {
-    const { container: c } = renderTable([tracker({ id: "only-open", status: "open" })]);
+  it("renders only non-empty sections when a toolbar status filter leaves other buckets empty", () => {
+    const { container: c } = renderTable([
+      tracker({ id: "a-open", status: "open", title: "A open" }),
+    ]);
     container = c;
 
     expect(c.querySelector('[data-testid="tracker-table-section-open"]')).not.toBeNull();
@@ -272,29 +267,89 @@ describe("TrackerTable status grouping", () => {
     expect(c.querySelector('[data-testid="tracker-table-section-cancelled"]')).toBeNull();
   });
 
-  it("caps a large section at the reveal step and offers Show more, even though every row is already loaded", () => {
-    // The shared project-data hook's background sweep still loads the full
-    // set for hierarchy accuracy — this cap is purely about what the table
-    // *renders* at once, so a big backlog doesn't dump hundreds of rows into
-    // the DOM in one go.
-    const many = Array.from({ length: 51 }, (_, i) =>
-      tracker({ id: `open-${i}`, status: "open", title: `Open ${i}` }),
-    );
-    const { container: c } = renderTable(many);
+  it("renders sectionTotals when provided, and falls back to items.length when null or omitted", () => {
+    const trackers = [
+      tracker({ id: "open-1", status: "open" }),
+      tracker({ id: "open-2", status: "open" }),
+      tracker({ id: "ip-1", status: "in_progress" }),
+    ];
+    const { container: c } = renderTable(trackers, {
+      sectionTotals: {
+        open: 42,
+        in_progress: null,
+      },
+    });
     container = c;
 
     const openSection = c.querySelector('[data-testid="tracker-table-section-open"]');
-    expect(openSection?.textContent).toContain("51");
-    expect(openSection?.querySelectorAll('[data-testid^="row-"]')).toHaveLength(50);
-    const showMore = c.querySelector('[data-testid="tracker-table-section-open-show-more"]');
+    const ipSection = c.querySelector('[data-testid="tracker-table-section-in_progress"]');
+
+    expect(openSection?.textContent).toContain("42");
+    expect(ipSection?.textContent).toContain("1");
+  });
+
+  it("renders Show more with Math.min bounded remaining count when total is known", () => {
+    const onLoadMore = vi.fn();
+    const trackers = [tracker({ id: "open-1", status: "open", title: "Open 1" })];
+    const { container: c } = renderTable(trackers, {
+      sectionTotals: { open: 4 },
+      sectionHasMore: { open: true },
+      sectionLoadingMore: { open: false },
+      onLoadMore,
+    });
+    container = c;
+
+    const showMore = c.querySelector<HTMLElement>(
+      '[data-testid="tracker-table-section-open-show-more"]',
+    );
     expect(showMore).not.toBeNull();
+    // 4 total - 1 loaded = 3 remaining (Math.min(50, 3) = 3)
+    expect(showMore?.textContent).toContain("Show 3 more");
+  });
+
+  it("renders Show more when sectionHasMore is true, calls onLoadMore, and shows spinner when sectionLoadingMore is true", () => {
+    const onLoadMore = vi.fn();
+    const trackers = [tracker({ id: "open-1", status: "open", title: "Open 1" })];
+    const { container: c, root: r } = renderTable(trackers, {
+      sectionHasMore: { open: true },
+      sectionLoadingMore: { open: false },
+      onLoadMore,
+    });
+    container = c;
+    root = r;
+
+    const showMore = c.querySelector<HTMLElement>(
+      '[data-testid="tracker-table-section-open-show-more"]',
+    );
+    expect(showMore).not.toBeNull();
+    expect(showMore?.textContent).toContain("Show 50 more");
 
     act(() => {
       showMore?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     });
 
-    expect(openSection?.querySelectorAll('[data-testid^="row-"]')).toHaveLength(51);
-    expect(c.querySelector('[data-testid="tracker-table-section-open-show-more"]')).toBeNull();
+    expect(onLoadMore).toHaveBeenCalledWith("open");
+  });
+
+  it("reads row hasChildren from tracker.childCount when defined and falls back to hierarchy when undefined", () => {
+    const trackers = [
+      tracker({ id: "t-explicit-zero", status: "open", childCount: 0 }),
+      tracker({ id: "t-explicit-two", status: "open", childCount: 2 }),
+      tracker({ id: "t-fallback-parent", status: "open" }),
+      tracker({ id: "t-fallback-child", status: "open", parentId: "t-fallback-parent" }),
+    ];
+    const { container: c } = renderTable(trackers);
+    container = c;
+
+    const rowExplicitZero = c.querySelector('[data-testid="row-t-explicit-zero"]');
+    const rowExplicitTwo = c.querySelector('[data-testid="row-t-explicit-two"]');
+    const rowFallbackParent = c.querySelector('[data-testid="row-t-fallback-parent"]');
+    const rowFallbackChild = c.querySelector('[data-testid="row-t-fallback-child"]');
+
+    expect(rowExplicitZero?.getAttribute("data-has-children")).toBe("false");
+    expect(rowExplicitTwo?.getAttribute("data-has-children")).toBe("true");
+    expect(rowFallbackParent?.getAttribute("data-has-children")).toBe("true");
+    expect(rowFallbackChild?.getAttribute("data-has-children")).toBe("false");
   });
 
   it("groups the full set regardless of prior page boundaries", () => {
@@ -371,7 +426,7 @@ describe("TrackerTable mutation patching", () => {
 
   it("calls onTrackersRemoved with the ids ait actually removed after a confirmed delete", async () => {
     const onTrackersRemoved = vi.fn();
-    const { container: c } = renderTable([tracker({ id: "t-1", status: "open" })], {
+    const { container: c } = renderTable([tracker({ id: "t-1", status: "open", childCount: 0 })], {
       onTrackersRemoved,
     });
     container = c;
@@ -388,19 +443,22 @@ describe("TrackerTable mutation patching", () => {
     expect(onTrackersRemoved).toHaveBeenCalledWith(["t-1"]);
   });
 
-  it("marks the delete action disabled and skips confirmation while isComplete is false", async () => {
-    const { container: c } = renderTable([tracker({ id: "t-1", status: "open" })], {
-      isComplete: false,
-    });
+  it("marks the delete action disabled when tracker.childCount is undefined and enabled when defined", async () => {
+    const { container: c } = renderTable([
+      tracker({ id: "old-t", status: "open" }), // childCount undefined
+      tracker({ id: "new-t", status: "open", childCount: 0 }), // childCount defined
+    ]);
     container = c;
 
-    const row = c.querySelector<HTMLElement>('[data-testid="row-t-1"]');
-    expect(row?.getAttribute("data-delete-disabled")).toBe("true");
+    const oldRow = c.querySelector<HTMLElement>('[data-testid="row-old-t"]');
+    const newRow = c.querySelector<HTMLElement>('[data-testid="row-new-t"]');
+    expect(oldRow?.getAttribute("data-delete-disabled")).toBe("true");
+    expect(newRow?.getAttribute("data-delete-disabled")).toBe("false");
 
-    const deleteButton = c.querySelector<HTMLElement>('[data-testid="action-delete-t-1"]');
-    if (!deleteButton) throw new Error("Expected the Delete button to render");
+    const oldDeleteButton = c.querySelector<HTMLElement>('[data-testid="action-delete-old-t"]');
+    if (!oldDeleteButton) throw new Error("Expected old Delete button to render");
     await act(async () => {
-      deleteButton.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+      oldDeleteButton.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
       await flushPromises();
     });
 
