@@ -441,9 +441,23 @@ function TrackerScreenContent(): ReactElement {
           serverName: host.serverName,
           projectId: host.projectId,
           projectName: host.projectName,
+          aitInitialized: host.aitInitialized,
+          projectRootPath: host.repoRoot,
         })),
       ),
     [projectSummaries],
+  );
+  // Every project whose descriptor has affirmatively said "no .ait/ait.db"
+  // (aitInitialized === false) — undefined stays in, since that means
+  // "unknown" (an old daemon, or a workspace-derived legacy descriptor with
+  // no wire answer), not "excluded" (pas-2KY5X.28). This is what actually
+  // drives the tracker fetch/count below: gating it out here, before any
+  // request goes out, is the whole point of the feature — a project with no
+  // database was previously only discovered as unusable by attempting (and
+  // paying for) a real RPC and having it fail.
+  const initializedProjectInputs = useMemo(
+    () => projectInputs.filter((project) => project.aitInitialized !== false),
+    [projectInputs],
   );
   const hasAnyProject = projectInputs.length > 0;
 
@@ -532,7 +546,7 @@ function TrackerScreenContent(): ReactElement {
   // `server_info.features.aitTrackerSort` — rather than a page per project.
   const browsePageSize = useTrackerPageStep();
   const projectData = useTrackerProjectData({
-    projects: projectInputs,
+    projects: initializedProjectInputs,
     selectedProjectId,
     all: true,
     enabled: hasAnyProject,
@@ -546,9 +560,12 @@ function TrackerScreenContent(): ReactElement {
   // listStatFilter/kanbanStatFilter (the pills show every bucket at once) and
   // report every tracker type at once (one bucket per type), which the
   // paginated `projectData.trackers` array can't do once type is scoped into
-  // its own fetch.
+  // its own fetch. Scoped to initializedProjectInputs, not projectInputs
+  // (pas-2KY5X.28): a project the descriptor already says has no `.ait/ait.db`
+  // gets excluded before ever costing a stats RPC round-trip, which used to
+  // be the only way this hook discovered "uninitialised" at all.
   const stats = useTrackerStats({
-    projects: projectInputs,
+    projects: initializedProjectInputs,
     selectedProjectId,
     enabled: hasAnyProject,
   });
@@ -567,33 +584,79 @@ function TrackerScreenContent(): ReactElement {
   // `stats` is already unscoped there, so this stays disabled and
   // `bellProjectErrors` reads `stats.projectErrors` directly.
   const isProjectFiltered = selectedProjectId !== null;
+  // Scoped to initializedProjectInputs like `stats` above — a gated-out
+  // project has nothing left to discover here via an RPC (its bell row comes
+  // from gatedProjectErrors below instead), so probing it would just be
+  // another wasted request (pas-2KY5X.28).
   const bellProjects = useMemo(
-    () => projectInputs.filter((project) => project.projectId !== selectedProjectId),
-    [projectInputs, selectedProjectId],
+    () => initializedProjectInputs.filter((project) => project.projectId !== selectedProjectId),
+    [initializedProjectInputs, selectedProjectId],
   );
   const bellStats = useTrackerStats({
     projects: bellProjects,
     selectedProjectId: null,
     enabled: hasAnyProject && isProjectFiltered,
   });
-  const bellProjectErrors = useMemo(
+  // Second source of bell rows (pas-2KY5X.28): a project the descriptor
+  // already says has no `.ait/ait.db` never gets requested, so it can never
+  // surface through stats/bellStats' RPC-failure path above — this
+  // synthesizes the identical TrackerProjectError shape TrackerErrorRow
+  // already renders, straight from the descriptor. Always included
+  // (independent of isProjectFiltered) since aitInitialized is a fact about
+  // the project, not about what the toolbar picker currently has selected —
+  // the same "workspace-wide" posture the comment above already established
+  // for this list. projectRootPath is attached directly, so the row's copy
+  // command doesn't need to regex-parse anything (there is no RPC error
+  // message to parse from).
+  const gatedProjectErrors = useMemo<TrackerProjectError[]>(
     () =>
-      isProjectFiltered
+      projectInputs
+        .filter((project) => project.aitInitialized === false)
+        .map((project) => ({
+          serverId: project.serverId,
+          serverName: project.serverName,
+          projectId: project.projectId,
+          projectName: project.projectName,
+          message: `no ait database at ${project.projectRootPath}/.ait/ait.db — run 'ait init' first`,
+          code: "uninitialised",
+          projectRootPath: project.projectRootPath,
+        })),
+    [projectInputs],
+  );
+  const bellProjectErrors = useMemo(
+    () => [
+      ...gatedProjectErrors,
+      ...(isProjectFiltered
         ? [...stats.projectErrors, ...bellStats.projectErrors]
-        : stats.projectErrors,
-    [isProjectFiltered, stats.projectErrors, bellStats.projectErrors],
+        : stats.projectErrors),
+    ],
+    [gatedProjectErrors, isProjectFiltered, stats.projectErrors, bellStats.projectErrors],
   );
 
   // The picker offers only projects the bell hasn't flagged as erroring —
   // the same signal pas-2KY5X.14 already treats as "no usable data" for that
-  // project (an `ait` RPC failure: no database, cli missing, ...), reused
-  // here instead of a second, driftable check (pas-2KY5X.17). A project
-  // that's merely offline or whose host lacks `aitTrackerStats` contributes
-  // neither an error nor a count (useTrackerStats' own distinction), so it
-  // stays listed — only an active failure hides it. This only trims what the
-  // picker offers; `projectInputs` itself still drives every fetch, since
-  // those are exactly the requests that surface a project's error here in
-  // the first place.
+  // project, reused here instead of a second, driftable check (pas-2KY5X.17).
+  // A project that's merely offline or whose host lacks `aitTrackerStats`
+  // contributes neither an error nor a count (useTrackerStats' own
+  // distinction), so it stays listed — only an active failure hides it.
+  // "Active failure" now has two sources, not one (pas-2KY5X.28):
+  // bellProjectErrors folds in both a real RPC failure (no database, cli
+  // missing, ... — the pre-.28 path, for whatever still needs a live request
+  // to discover: an old daemon, or a failure `aitInitialized` doesn't cover)
+  // and the descriptor-derived gatedProjectErrors (aitInitialized === false,
+  // known upfront, no request involved). This filter doesn't need to change
+  // to account for that — it was always "whatever bellProjectErrors says",
+  // and that set just grew a second contributor. What DID change: this no
+  // longer merely trims what the picker offers while `projectInputs` drives
+  // every fetch underneath it unfiltered — `projectData`/`stats` above now
+  // fetch off `initializedProjectInputs`, which already excludes gated-out
+  // projects before any request goes out; this filter's remaining job is
+  // narrowing further, for whatever fails for a reason `aitInitialized`
+  // doesn't capture. pickerProjectInputs stays its own thing rather than
+  // becoming an alias of initializedProjectInputs: its scope is broader
+  // (every active-failure reason, not just "no database"), and conflating
+  // them would silently drop a project whose *other* kind of failure this
+  // filter still needs to catch.
   const pickerProjectInputs = useMemo(() => {
     if (bellProjectErrors.length === 0) {
       return projectInputs;
@@ -645,7 +708,13 @@ function TrackerScreenContent(): ReactElement {
     isProjectListLoading,
     isLoading: isListSearch ? false : projectData.isLoading,
     selectedProjectId: selectedProjectId ?? "all",
-    projectErrors: projectData.projectErrors,
+    // gatedProjectErrors first: a project excluded from initializedProjectInputs
+    // never reaches projectData (that's the whole point of the gate), so it
+    // can never surface through projectData.projectErrors — without this, a
+    // still-selected gated project silently falls through to the generic
+    // "empty" state instead of the actionable "Initialize tracker" CTA
+    // (pas-2KY5X.28).
+    projectErrors: [...gatedProjectErrors, ...projectData.projectErrors],
     visibleTrackersCount,
   });
 
@@ -964,6 +1033,7 @@ function TrackerScreenContent(): ReactElement {
         showProjectLabel={selectedProjectId === null}
         projects={pickerProjectInputs}
         selectedProjectId={selectedProjectId}
+        selectedProjectName={selectedProject?.projectName ?? null}
         onSelectProject={handleSelectProject}
         statFilter={effectiveStatFilter}
         onStatFilterChange={effectiveOnStatFilterChange}
@@ -988,7 +1058,7 @@ function TrackerScreenContent(): ReactElement {
         onRetry={handleRetry}
       />
       <TrackerFormSheet
-        projects={projectInputs}
+        projects={initializedProjectInputs}
         visible={createOpen}
         onClose={handleCloseCreate}
         onCreated={handleTrackerCreated}
@@ -1048,14 +1118,24 @@ function TrackerSearchRow({
 function ProjectPicker({
   projects,
   selectedProjectId,
+  selectedProjectName,
   onSelectProject,
 }: {
   projects: TrackerProjectInput[];
   selectedProjectId: string | null;
+  /** Falls back here, not straight to "All projects", when `selectedProjectId`
+   * isn't in `projects` — that list is already filtered down to what the
+   * picker offers (pas-2KY5X.17/.28: an erroring or gated-out project drops
+   * out of it), so a project that's *still selected* despite failing that
+   * filter would otherwise read as if nothing were selected at all, even
+   * though the body below is showing that exact project's own state. */
+  selectedProjectName: string | null;
   onSelectProject: (projectId: string | null) => void;
 }): ReactElement {
   const selectedLabel = selectedProjectId
-    ? (projects.find((p) => p.projectId === selectedProjectId)?.projectName ?? "All projects")
+    ? (projects.find((p) => p.projectId === selectedProjectId)?.projectName ??
+      selectedProjectName ??
+      "All projects")
     : "All projects";
   const handleSelectAll = useCallback(() => onSelectProject(null), [onSelectProject]);
 
@@ -1371,7 +1451,12 @@ function extractProjectDir(message: string): string | null {
 }
 
 function TrackerErrorRow({ error }: { error: TrackerProjectError }): ReactElement {
-  const projectDir = extractProjectDir(error.message);
+  // A gate-derived error (pas-2KY5X.28) carries projectRootPath directly —
+  // no RPC error message to regex-parse, since no request was ever sent.
+  // The regex stays the fallback for everything else: an old daemon that
+  // predates aitProjectInitStatus, or a project that fails for some other
+  // reason after passing the gate (cli_missing, a transient RPC error, ...).
+  const projectDir = error.projectRootPath ?? extractProjectDir(error.message);
   const command = projectDir ? `cd "${projectDir}" && ait init` : "ait init";
   const [copied, setCopied] = useState(false);
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1607,6 +1692,7 @@ function TrackerScreenBody({
   showProjectLabel,
   projects,
   selectedProjectId,
+  selectedProjectName,
   onSelectProject,
   statFilter,
   onStatFilterChange,
@@ -1665,6 +1751,14 @@ function TrackerScreenBody({
   showProjectLabel: boolean;
   projects: TrackerProjectInput[];
   selectedProjectId: string | null;
+  /** The selected project's own name, looked up from the unfiltered project
+   * list — not `projects` above, which is picker-filtered (pas-2KY5X.17/.28)
+   * and may not contain the selection at all (an already-selected project
+   * that starts erroring, or gets gated by aitInitialized === false, drops
+   * out of the picker's own list but stays selected). Lets the toolbar keep
+   * showing the real project name instead of silently reading as "All
+   * projects" while the body still renders that project's own state. */
+  selectedProjectName: string | null;
   onSelectProject: (projectId: string | null) => void;
   statFilter: StatFilter;
   onStatFilterChange: (value: StatFilter) => void;
@@ -1725,6 +1819,7 @@ function TrackerScreenBody({
       statsLoading={statsLoading}
       projects={projects}
       selectedProjectId={selectedProjectId}
+      selectedProjectName={selectedProjectName}
       onSelectProject={onSelectProject}
       statFilter={statFilter}
       onStatFilterChange={onStatFilterChange}
@@ -2294,6 +2389,7 @@ function TrackersToolbar({
   statsLoading,
   projects,
   selectedProjectId,
+  selectedProjectName,
   onSelectProject,
   statFilter,
   onStatFilterChange,
@@ -2313,6 +2409,8 @@ function TrackersToolbar({
   statsLoading: boolean;
   projects: TrackerProjectInput[];
   selectedProjectId: string | null;
+  /** See ProjectPicker's own doc comment on this same field. */
+  selectedProjectName: string | null;
   onSelectProject: (projectId: string | null) => void;
   statFilter: StatFilter;
   onStatFilterChange: (value: StatFilter) => void;
@@ -2344,6 +2442,7 @@ function TrackersToolbar({
       <ProjectPicker
         projects={projects}
         selectedProjectId={selectedProjectId}
+        selectedProjectName={selectedProjectName}
         onSelectProject={onSelectProject}
       />
     ) : null;

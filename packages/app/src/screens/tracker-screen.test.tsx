@@ -990,6 +990,7 @@ describe("TrackerScreen mutation patching", () => {
       serverName: "alpha",
       projectId: "project-a",
       projectName: "Project",
+      projectRootPath: "/repo/project-a",
     };
     act(() => {
       onCreated(created, createdProject);
@@ -1180,5 +1181,187 @@ describe("TrackerScreen mutation patching", () => {
       '[data-testid="trackers-project-errors-copy-host-a:prj-a"]',
     );
     expect(copyButtons).toHaveLength(1);
+  });
+
+  // pas-2KY5X.28: aitInitialized === false is known upfront from the
+  // descriptor, not discovered by a failed RPC — the fetch must exclude the
+  // project before ever requesting anything from it, and the bell row must
+  // still work without needing one either.
+  it("a project with aitInitialized === false is excluded from the fetch, but still appears in the bell with a copy command built from projectRootPath directly (pas-2KY5X.28)", () => {
+    setProjectsState({
+      projects: [
+        project({
+          hosts: [
+            hostEntry({
+              projectId: "prj-a",
+              projectName: "Project A",
+              aitInitialized: true,
+              repoRoot: "/repo/prj-a",
+            }),
+          ],
+        }),
+        project({
+          viewKey: "remote:github.com/acme/other",
+          projectName: "acme/other",
+          hosts: [
+            hostEntry({
+              projectId: "prj-b",
+              projectName: "Project B",
+              aitInitialized: false,
+              repoRoot: "/repo/prj-b",
+            }),
+          ],
+        }),
+      ],
+    });
+    render();
+
+    // Excluded from the fetch — never sent to useTrackerProjectData at all,
+    // so nothing was ever requested from it in the first place.
+    expect(lastProjectDataOptions.current?.projects.map((p) => p.projectId)).toEqual(["prj-a"]);
+
+    // Still shows up in the bell — statsState is untouched by this test
+    // (default: no projectErrors), so this row can only have come from the
+    // descriptor-derived gate, not an RPC failure.
+    const copyButton = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-project-errors-copy-host-a:prj-b"]',
+    );
+    expect(copyButton).not.toBeNull();
+    expect(copyButton?.textContent).toContain('cd "/repo/prj-b" && ait init');
+  });
+
+  it("a project with aitInitialized === true is not excluded from the fetch (pas-2KY5X.28)", () => {
+    setProjectsState({
+      projects: [
+        project({
+          hosts: [hostEntry({ projectId: "prj-a", aitInitialized: true, repoRoot: "/repo/prj-a" })],
+        }),
+      ],
+    });
+    render();
+
+    expect(lastProjectDataOptions.current?.projects.map((p) => p.projectId)).toEqual(["prj-a"]);
+  });
+
+  it("a project whose aitInitialized is undefined (old daemon, or simply unknown) is not excluded — matches pre-.28 behavior exactly (pas-2KY5X.28)", () => {
+    setProjectsState({
+      projects: [
+        // hostEntry()'s default omits aitInitialized entirely.
+        project({ hosts: [hostEntry({ projectId: "prj-a", repoRoot: "/repo/prj-a" })] }),
+      ],
+    });
+    render();
+
+    expect(lastProjectDataOptions.current?.projects.map((p) => p.projectId)).toEqual(["prj-a"]);
+  });
+
+  // pas-2KY5X.28 follow-up (found by sweeping the tracker feature for what
+  // the gate leaves stale): a project can still be *selected* after it drops
+  // out of initializedProjectInputs — the picker already prevents selecting
+  // an already-gated project (pas-2KY5X.17), but a project selected while
+  // healthy/unknown and gated moments later (its descriptor catches up, or
+  // its .ait/ait.db genuinely disappears) stays selected. Before this fix,
+  // that state fell through to a bare "empty" screen with no explanation,
+  // because projectData.projectErrors can never contain a project that was
+  // never fetched in the first place.
+  it("a selected project that becomes gated (aitInitialized flips to false) shows the Initialize tracker CTA instead of a bare empty screen", () => {
+    setProjectsState({
+      projects: [
+        project({
+          hosts: [
+            hostEntry({ projectId: "prj-a", projectName: "Project A", aitInitialized: true }),
+          ],
+        }),
+        project({
+          viewKey: "remote:github.com/acme/other",
+          projectName: "acme/other",
+          hosts: [
+            hostEntry({ projectId: "prj-b", projectName: "Project B", aitInitialized: true }),
+          ],
+        }),
+      ],
+    });
+    render();
+
+    const projectBOption = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-project-picker-prj-b"]',
+    );
+    if (!projectBOption) throw new Error("Expected the Project B picker option to render");
+    act(() => {
+      projectBOption.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+
+    // Still selected, but its descriptor now reports no database.
+    setProjectsState({
+      projects: [
+        project({
+          hosts: [
+            hostEntry({ projectId: "prj-a", projectName: "Project A", aitInitialized: true }),
+          ],
+        }),
+        project({
+          viewKey: "remote:github.com/acme/other",
+          projectName: "acme/other",
+          hosts: [
+            hostEntry({ projectId: "prj-b", projectName: "Project B", aitInitialized: false }),
+          ],
+        }),
+      ],
+    });
+    setProjectDataState({ trackers: [] });
+    render();
+
+    expect(container?.querySelector('[data-testid="trackers-initialise"]')).not.toBeNull();
+  });
+
+  it('the toolbar still shows the real project name (not "All projects") for a selected project that dropped out of the picker\'s own list', () => {
+    // A third, unaffected project (prj-c) keeps the picker itself rendered
+    // once prj-b is gated below — with only prj-a left, pas-2KY5X.17's own
+    // "don't show a picker for a single selectable project" rule would hide
+    // the trigger entirely, and there'd be nothing to read a label from.
+    const threeProjects = [
+      project({
+        hosts: [hostEntry({ projectId: "prj-a", projectName: "Project A", aitInitialized: true })],
+      }),
+      project({
+        viewKey: "remote:github.com/acme/other",
+        projectName: "acme/other",
+        hosts: [hostEntry({ projectId: "prj-b", projectName: "Project B", aitInitialized: true })],
+      }),
+      project({
+        viewKey: "remote:github.com/acme/third",
+        projectName: "acme/third",
+        hosts: [hostEntry({ projectId: "prj-c", projectName: "Project C", aitInitialized: true })],
+      }),
+    ];
+    setProjectsState({ projects: threeProjects });
+    render();
+
+    const projectBOption = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-project-picker-prj-b"]',
+    );
+    if (!projectBOption) throw new Error("Expected the Project B picker option to render");
+    act(() => {
+      projectBOption.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+
+    setProjectsState({
+      projects: [
+        threeProjects[0]!,
+        project({
+          viewKey: "remote:github.com/acme/other",
+          projectName: "acme/other",
+          hosts: [
+            hostEntry({ projectId: "prj-b", projectName: "Project B", aitInitialized: false }),
+          ],
+        }),
+        threeProjects[2]!,
+      ],
+    });
+    render();
+
+    const trigger = container?.querySelector('[data-testid="trackers-project-picker-trigger"]');
+    expect(trigger?.textContent).toBe("Project B");
+    expect(trigger?.textContent).not.toBe("All projects");
   });
 });

@@ -20,6 +20,19 @@ export interface TrackerProjectInput {
   serverName: string;
   projectId: string;
   projectName: string;
+  /** From ProjectDescriptor.aitInitialized (pas-2KY5X.28). `false` means the
+   * daemon checked `.ait/ait.db` and it doesn't exist — callers should
+   * exclude this project from any fetch/count rather than pay for an RPC
+   * that can only fail. `undefined` means "unknown" (old daemon, or a
+   * workspace-derived legacy descriptor with no wire answer) and must NOT be
+   * treated as false — that's exactly today's pre-.28 behavior: include the
+   * project, let a real request discover the failure. */
+  aitInitialized?: boolean;
+  /** From ProjectDescriptor.projectRootPath — carried here so a gated-out
+   * project's bell row can build its `cd <dir> && ait init` copy command
+   * directly, without ever having sent a request whose error message it
+   * could otherwise regex-parse. */
+  projectRootPath: string;
 }
 
 /** One tracker tagged with the project (and host) it came from, so a flat
@@ -39,6 +52,12 @@ export interface TrackerProjectError {
   projectName: string;
   message: string;
   code: TrackerErrorCode;
+  /** Only set for an error synthesized from a gate (aitInitialized === false,
+   * pas-2KY5X.28), so the bell row can build its copy command directly
+   * instead of regex-parsing `message`. An error surfaced from a real failed
+   * RPC leaves this unset — the regex path is still how those get a
+   * directory, since the RPC layer that catches them doesn't have this. */
+  projectRootPath?: string;
 }
 
 export interface TrackersRuntimeSnapshot {

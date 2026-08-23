@@ -3089,6 +3089,8 @@ export const ServerInfoStatusPayloadSchema = z
         aitTrackerStats: z.boolean().optional(),
         // COMPAT(aitTrackerSort): added in v0.4.1, remove gate after 2027-02-19.
         aitTrackerSort: z.boolean().optional(),
+        // COMPAT(aitProjectInitStatus): added in v0.4.1, remove gate after 2027-02-19.
+        aitProjectInitStatus: z.boolean().optional(),
         // COMPAT(checkoutForgeSetAutoMerge): added in v0.1.106, remove old
         // checkoutGithubSetAutoMerge fallback after 2026-12-28.
         checkoutForgeSetAutoMerge: z.boolean().optional(),
@@ -3642,6 +3644,14 @@ export const WorkspaceProjectDescriptorPayloadSchema = z.object({
   projectCustomIconRevision: z.string().nullable().optional(),
   projectRootPath: z.string(),
   projectKind: z.enum(["git", "non_git", "directory"]),
+  // COMPAT(aitProjectInitStatus): added in v0.4.1, remove gate after 2027-02-19.
+  // Whether this project has a `.ait/ait.db` — checked fresh on every
+  // descriptor build, not cached, so running `ait init` while the app is
+  // open flips it on the next push. `undefined` means "unknown": an old
+  // daemon that predates this field, or (in principle) a client reading a
+  // descriptor this daemon didn't attach the check to. Callers must never
+  // treat `undefined` as `false` — see docs/protocol-compatibility.md.
+  aitInitialized: z.boolean().optional(),
 });
 
 export const FetchWorkspacesResponseMessageSchema = z.object({

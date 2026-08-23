@@ -64,11 +64,21 @@ function sortMerged(trackers: AggregatedTracker[]): void {
   trackers.sort((a, b) => a.projectId.localeCompare(b.projectId) || a.id.localeCompare(b.id));
 }
 
-function projectKeyOf(project: TrackerProjectInput): string {
+// Narrower than TrackerProjectInput on purpose (pas-2KY5X.28 added a
+// required projectRootPath there) — this reads only the two fields every
+// caller actually has in common (TrackerProjectInput, TrackerProjectError,
+// AggregatedTracker), not the full project shape.
+function projectKeyOf(project: { serverId: string; projectId: string }): string {
   return `${project.serverId}:${project.projectId}`;
 }
 
-function hasErrorForProject(errors: TrackerProjectError[], project: TrackerProjectInput): boolean {
+// Narrower than TrackerProjectInput for the same reason as projectKeyOf
+// above — a caller sometimes checks a TrackerProjectError (which has no
+// projectRootPath) against the accumulated error list.
+function hasErrorForProject(
+  errors: TrackerProjectError[],
+  project: { serverId: string; projectId: string },
+): boolean {
   return errors.some((e) => e.serverId === project.serverId && e.projectId === project.projectId);
 }
 

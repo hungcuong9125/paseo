@@ -910,8 +910,16 @@ export class VoiceAssistantWebSocketServer {
     );
   }
 
-  public publishProjectUpdate(update: ProjectUpdate): void {
-    for (const session of this.listTrustedSessions()) session.emitProjectUpdate(update);
+  public async publishProjectUpdate(update: ProjectUpdate): Promise<void> {
+    // Concurrent across sessions (each one's own cheap local `.ait/ait.db`
+    // check runs in parallel, not serialized session-by-session), but
+    // awaited overall — a caller that does care about delivery order
+    // relative to whatever it does next can rely on this actually
+    // finishing, and it's what stopped this from racing session.ts's own
+    // rename/icon-set callers against their assertions in tests.
+    await Promise.all(
+      this.listTrustedSessions().map((session) => session.emitProjectUpdate(update)),
+    );
   }
 
   public publishSpeechReadiness(readiness: SpeechReadinessSnapshot | null): void {
@@ -1652,6 +1660,8 @@ export class VoiceAssistantWebSocketServer {
         aitTrackerLive: true,
         // COMPAT(aitTrackerReady): added in v0.4.1, remove gate after 2027-02-19.
         aitTrackerReady: true,
+        // COMPAT(aitProjectInitStatus): added in v0.4.1, remove gate after 2027-02-19.
+        aitProjectInitStatus: true,
         // COMPAT(providerRemoval): added in v0.1.105, drop the gate when floor >= v0.1.105.
         providerRemoval: true,
         // COMPAT(importSessionWorkspaceTarget): added in v0.1.110, remove gate after 2027-01-16.

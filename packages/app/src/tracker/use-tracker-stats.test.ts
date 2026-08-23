@@ -59,12 +59,14 @@ const PROJECT_A: TrackerProjectInput = {
   serverName: "Host A",
   projectId: "prj-a",
   projectName: "Project A",
+  projectRootPath: "/repo/prj-a",
 };
 const PROJECT_B: TrackerProjectInput = {
   serverId: "host-b",
   serverName: "Host B",
   projectId: "prj-b",
   projectName: "Project B",
+  projectRootPath: "/repo/prj-b",
 };
 
 function makeBucket(total: number): TrackerStatsCounts["all"] {

@@ -82,18 +82,21 @@ const PROJECT_A: TrackerProjectInput = {
   serverName: "Host A",
   projectId: "prj-a",
   projectName: "Project A",
+  projectRootPath: "/repo/prj-a",
 };
 const PROJECT_B: TrackerProjectInput = {
   serverId: "host-a",
   serverName: "Host A",
   projectId: "prj-b",
   projectName: "Project B",
+  projectRootPath: "/repo/prj-b",
 };
 const PROJECT_C: TrackerProjectInput = {
   serverId: "host-b",
   serverName: "Host B",
   projectId: "prj-c",
   projectName: "Project C",
+  projectRootPath: "/repo/prj-c",
 };
 
 function makeTracker(id: string, status: TrackerStatus = "open"): TrackerSummary {
@@ -1165,6 +1168,7 @@ function makeProjects(count: number): TrackerProjectInput[] {
     serverName: "Host A",
     projectId: `prj-${index}`,
     projectName: `Project ${index}`,
+    projectRootPath: `/repo/prj-${index}`,
   }));
 }
 
@@ -1740,12 +1744,14 @@ describe("useTrackerProjectData sort-capability race (pas-2KY5X.25)", () => {
       serverName: "Host A",
       projectId: "prj-a",
       projectName: "Project A",
+      projectRootPath: "/repo/prj-a",
     };
     const projectOnHostB: TrackerProjectInput = {
       serverId: "host-b",
       serverName: "Host B",
       projectId: "prj-b",
       projectName: "Project B",
+      projectRootPath: "/repo/prj-b",
     };
     setConnectionStatus("host-a", "online");
     setConnectionStatus("host-b", "connecting");
@@ -1831,12 +1837,14 @@ describe("useTrackerProjectData sort-capability race (pas-2KY5X.25)", () => {
       serverName: "Host A",
       projectId: "prj-a",
       projectName: "Project A",
+      projectRootPath: "/repo/prj-a",
     };
     const projectOnHostB: TrackerProjectInput = {
       serverId: "host-b",
       serverName: "Host B",
       projectId: "prj-b",
       projectName: "Project B",
+      projectRootPath: "/repo/prj-b",
     };
     setConnectionStatus("host-a", "online");
     setConnectionStatus("host-b", "offline");
@@ -1933,12 +1941,14 @@ describe("useTrackerProjectData sectionTotals partial sum (pas-2KY5X.25)", () =>
       serverName: "Host A",
       projectId: "prj-a",
       projectName: "Project A",
+      projectRootPath: "/repo/prj-a",
     };
     const projectOnHostB: TrackerProjectInput = {
       serverId: "host-b",
       serverName: "Host B",
       projectId: "prj-b",
       projectName: "Project B",
+      projectRootPath: "/repo/prj-b",
     };
     setConnectionStatus("host-a", "online");
     setConnectionStatus("host-b", "offline");
