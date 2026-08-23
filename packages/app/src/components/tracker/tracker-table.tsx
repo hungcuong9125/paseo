@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import type { TrackerStatus } from "@getpaseo/protocol/tracker/types";
 import { TrackerRow, type TrackerRowPending } from "@/components/tracker/tracker-row";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
-import { useIsCompactFormFactor } from "@/constants/layout";
+import { useIsMobileBreakpoint } from "@/constants/layout";
 import type { AggregatedTracker } from "@/tracker/aggregated-trackers";
 import type { TrackerHierarchy } from "@/tracker/tracker-hierarchy";
 import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
@@ -74,9 +74,14 @@ const LIST_SECTIONS: ReadonlyArray<{ status: TrackerStatus; labelKey: string }> 
 export const REVEAL_STEP_DESKTOP = 30;
 export const REVEAL_STEP_COMPACT = 20;
 
+// useIsMobileBreakpoint (xs only), not useIsCompactFormFactor (xs + sm) — the
+// design's line is mobile (xs) at REVEAL_STEP_COMPACT, tablet and desktop
+// (sm and up) at REVEAL_STEP_DESKTOP, and useIsCompactFormFactor answers a
+// different question ("does this fit a single-panel shell") that put a
+// tablet or narrow desktop window on the mobile-sized step (pas-2KY5X.22).
 export function useTrackerPageStep(): number {
-  const isCompact = useIsCompactFormFactor();
-  return isCompact ? REVEAL_STEP_COMPACT : REVEAL_STEP_DESKTOP;
+  const isMobile = useIsMobileBreakpoint();
+  return isMobile ? REVEAL_STEP_COMPACT : REVEAL_STEP_DESKTOP;
 }
 
 /**

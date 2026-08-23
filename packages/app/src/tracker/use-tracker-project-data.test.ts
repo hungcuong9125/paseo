@@ -1151,6 +1151,222 @@ function totalRowsFetched(
     .reduce((sum, entry) => sum + entry.count, 0);
 }
 
+/**
+ * Same shape as installGenerousSortedClient, but with two knobs pas-2KY5X.24
+ * needs and the sort-mock doesn't expose: per-project supply that can differ
+ * wildly (a real workspace never has evenly-stocked projects), and whether
+ * `aitTrackerSort` is advertised at all — `sortSupported: false` forces every
+ * relevant project onto the per-project pagination fallback instead of the
+ * merged budget. `omitTotalForProjectId` drops `pageInfo.totalCount` from one
+ * project's pages, standing in for an old CLI binary that predates
+ * total_count — the daemon-side condition sectionTotals' "any project misses
+ * its total, the whole section total goes null" contract exists for.
+ */
+function installVariableSupplyClient(options: {
+  supplyByProjectId: Record<string, number>;
+  sortSupported: boolean;
+  omitTotalForProjectId?: string;
+}): {
+  trackerList: ReturnType<typeof vi.fn>;
+} {
+  let clock = 1_000_000;
+  const remainingByKey = new Map<string, number>();
+  const trackerList = vi.fn(
+    async (args: {
+      projectId: string;
+      status?: TrackerStatus;
+      page?: { limit: number; cursor?: string };
+    }) => {
+      const key = `${args.projectId}:${args.status}`;
+      const total = options.supplyByProjectId[args.projectId] ?? 0;
+      const remaining = remainingByKey.get(key) ?? total;
+      const limit = args.page?.limit ?? total;
+      const take = Math.max(0, Math.min(remaining, limit));
+      const trackers: TrackerSummary[] = [];
+      for (let i = 0; i < take; i++) {
+        clock -= 1;
+        trackers.push({
+          id: `${args.projectId}-${clock}`,
+          title: `Tracker ${clock}`,
+          type: "task",
+          status: args.status ?? "open",
+          priority: "P2",
+          parentId: null,
+          createdAt: String(clock).padStart(10, "0"),
+        });
+      }
+      const nextRemaining = remaining - take;
+      remainingByKey.set(key, nextRemaining);
+      return {
+        trackers,
+        hiddenCount: 0,
+        pageInfo: {
+          nextCursor: nextRemaining > 0 ? `cursor-${nextRemaining}` : null,
+          hasMore: nextRemaining > 0,
+          ...(args.projectId === options.omitTotalForProjectId ? {} : { totalCount: total }),
+        },
+      };
+    },
+  );
+  runtimeState.getClient.mockReturnValue({
+    trackerList,
+    trackerSearch: vi.fn(),
+    getLastServerInfoMessage: () => ({ features: { aitTrackerSort: options.sortSupported } }),
+  });
+  return { trackerList };
+}
+
+// Investigation for pas-2KY5X.24: the user saw the Kanban Done badge go
+// 20, then 130, then 220 across three "Show 30 more" presses — not 30-row
+// steps — and asked which of two causes was responsible: laneTotal being
+// null (badge falling back to the loaded count) or loadMore fetching more
+// than one step's worth per press.
+describe("useTrackerProjectData loadMore step size (pas-2KY5X.24)", () => {
+  beforeEach(() => {
+    connectionStatusState.byServer = {};
+  });
+
+  it("merge mode: three successive loadMore presses each add at most pageSize rows, even with uneven per-project supply", async () => {
+    const projects = makeProjects(3);
+    const { trackerList } = installVariableSupplyClient({
+      supplyByProjectId: { "prj-0": 50, "prj-1": 35, "prj-2": 15 },
+      sortSupported: true,
+    });
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects,
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 30,
+        sections: ["closed"],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const counts = [result.current.trackers.length];
+
+    for (let press = 0; press < 3; press++) {
+      act(() => {
+        result.current.loadMore("closed");
+      });
+      await waitFor(() => expect(result.current.sectionLoadingMore.closed).toBe(false));
+      counts.push(result.current.trackers.length);
+    }
+
+    const deltas = counts.slice(1).map((count, index) => count - counts[index]!);
+    // eslint-disable-next-line no-console
+    console.log(
+      `pas-2KY5X.24 merge mode observed: loaded counts ${counts.join(" -> ")}` +
+        ` (deltas ${deltas.join(", ")}), sectionTotals.closed=${result.current.sectionTotals.closed}`,
+    );
+    for (const delta of deltas) {
+      expect(delta).toBeLessThanOrEqual(30);
+    }
+    // Every relevant project reported its total on round 1 of the very first
+    // fetch (see fetchMergedStatusWindow) — sectionTotals is real and stable
+    // from the start, not the loaded-so-far fallback.
+    expect(result.current.sectionTotals.closed).toBe(100);
+    expect(trackerList.mock.calls.some(([args]) => args.sort !== undefined)).toBe(true);
+  });
+
+  it("per-project fallback: loadMore adds one pageSize page PER project, so a press can add far more than pageSize rows — this is pre-existing per-project behaviour, not a merge-mode regression", async () => {
+    const projects = makeProjects(3);
+    // Generously stocked (well beyond pageSize per project per press) so no
+    // project runs dry across the three presses below — that isolates the
+    // per-project-vs-shared-budget difference from exhaustion effects, which
+    // the merge-mode test above already covers separately with tight supply.
+    installVariableSupplyClient({
+      supplyByProjectId: { "prj-0": 200, "prj-1": 150, "prj-2": 120 },
+      sortSupported: false,
+    });
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects,
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 30,
+        sections: ["closed"],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const counts = [result.current.trackers.length];
+
+    for (let press = 0; press < 3; press++) {
+      act(() => {
+        result.current.loadMore("closed");
+      });
+      await waitFor(() => expect(result.current.sectionLoadingMore.closed).toBe(false));
+      counts.push(result.current.trackers.length);
+    }
+
+    const deltas = counts.slice(1).map((count, index) => count - counts[index]!);
+    // eslint-disable-next-line no-console
+    console.log(
+      `pas-2KY5X.24 per-project fallback observed: loaded counts ${counts.join(" -> ")}` +
+        ` (deltas ${deltas.join(", ")}), sectionTotals.closed=${result.current.sectionTotals.closed}`,
+    );
+    // Every project still in the running contributes up to pageSize(30) in
+    // the same press — three still-hungry projects can add up to 90 in one
+    // press, not <=30. The step size the button label promises only holds in
+    // merge mode.
+    expect(Math.max(...deltas)).toBeGreaterThan(30);
+    // Every project still reports its own total per page here too — the
+    // fallback path doesn't poison sectionTotals by itself; it takes a
+    // project that never reports totalCount to do that (next test).
+    expect(result.current.sectionTotals.closed).toBe(470);
+  });
+
+  it("per-project fallback with one project missing totalCount: the badge falls back to the loaded count, which then grows by more than pageSize per press", async () => {
+    const projects = makeProjects(3);
+    installVariableSupplyClient({
+      supplyByProjectId: { "prj-0": 200, "prj-1": 150, "prj-2": 120 },
+      sortSupported: false,
+      // Stands in for one host on an old `ait` CLI that predates total_count
+      // — plausible on the same host that also predates aitTrackerSort.
+      omitTotalForProjectId: "prj-2",
+    });
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects,
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 30,
+        sections: ["closed"],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // laneTotal (sectionTotals.closed) is null from the start — one project
+    // never reports a total, which poisons the whole section per the
+    // documented "a null from any one project poisons the whole section
+    // total" contract (docs/tracker-data.md) — so the Kanban badge falls
+    // back to `cards.length` (this hook's `trackers.length` here).
+    expect(result.current.sectionTotals.closed).toBe(null);
+    const badgeValues = [result.current.trackers.length];
+
+    for (let press = 0; press < 3; press++) {
+      act(() => {
+        result.current.loadMore("closed");
+      });
+      await waitFor(() => expect(result.current.sectionLoadingMore.closed).toBe(false));
+      expect(result.current.sectionTotals.closed).toBe(null);
+      badgeValues.push(result.current.trackers.length);
+    }
+
+    // eslint-disable-next-line no-console
+    console.log(`pas-2KY5X.24 badge-fallback observed sequence: ${badgeValues.join(" -> ")}`);
+    const deltas = badgeValues.slice(1).map((count, index) => count - badgeValues[index]!);
+    expect(Math.max(...deltas)).toBeGreaterThan(30);
+  });
+});
+
 describe("useTrackerProjectData merge mode (pas-2KY5X.15)", () => {
   beforeEach(() => {
     connectionStatusState.byServer = {};

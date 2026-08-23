@@ -14,7 +14,7 @@ import {
   type TrackersRuntime,
 } from "@/tracker/aggregated-trackers";
 import { getHostRuntimeStore, useHostRuntimeConnectionStatuses } from "@/runtime/host-runtime";
-import { MAX_TREE_DEPTH, isDone } from "@/tracker/tracker-hierarchy";
+import { MAX_TREE_DEPTH, compareByCreatedNewest, isDone } from "@/tracker/tracker-hierarchy";
 import { useSessionStore } from "@/stores/session-store";
 
 // Same four sections, same order, as TrackerTable's LIST_SECTIONS and
@@ -69,26 +69,6 @@ function hasErrorForProject(errors: TrackerProjectError[], project: TrackerProje
   return errors.some((e) => e.serverId === project.serverId && e.projectId === project.projectId);
 }
 
-// Mirrors `ait list --sort newest`'s own order (pas-2KY5X.19): createdAt
-// descending, id descending as the tiebreaker — the tiebreaker follows the
-// sort direction there, so it has to here too, or the client-side merge
-// picks a different "next" row than the server would have for a single
-// stream. A row missing createdAt (a response from before sort support
-// existed) sorts after everything that has one rather than crashing the
-// comparison.
-function compareNewestFirst(a: AggregatedTracker, b: AggregatedTracker): number {
-  if (a.createdAt !== undefined && b.createdAt !== undefined && a.createdAt !== b.createdAt) {
-    return a.createdAt < b.createdAt ? 1 : -1;
-  }
-  if (a.createdAt !== undefined && b.createdAt === undefined) {
-    return -1;
-  }
-  if (a.createdAt === undefined && b.createdAt !== undefined) {
-    return 1;
-  }
-  return a.id < b.id ? 1 : -1;
-}
-
 // The k-way merge step: each buffer is one project's rows, already
 // newest-first (guaranteed by the server when sort is active). Repeatedly
 // takes whichever buffer's head is newest until `count` rows are taken or
@@ -111,7 +91,7 @@ function takeNewest(
       if (head === undefined) {
         continue;
       }
-      if (bestRow === null || compareNewestFirst(head, bestRow) < 0) {
+      if (bestRow === null || compareByCreatedNewest(head, bestRow) < 0) {
         bestKey = key;
         bestRow = head;
       }
