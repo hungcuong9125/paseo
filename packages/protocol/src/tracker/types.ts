@@ -13,6 +13,9 @@ export type TrackerStatus = z.infer<typeof TrackerStatusSchema>;
 export const TrackerPrioritySchema = z.enum(["P0", "P1", "P2", "P3", "P4"]);
 export type TrackerPriority = z.infer<typeof TrackerPrioritySchema>;
 
+export const TrackerSortSchema = z.enum(["oldest", "newest"]);
+export type TrackerSort = z.infer<typeof TrackerSortSchema>;
+
 // The slim shape `ait list` returns by default: enough for a row.
 export const TrackerSummarySchema = z.object({
   id: z.string(),

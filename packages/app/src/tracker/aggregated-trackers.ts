@@ -3,6 +3,7 @@ import { TrackerRpcError } from "@getpaseo/client/internal/daemon-client";
 import type { TrackerErrorCode, TrackerStatsCounts } from "@getpaseo/protocol/tracker/rpc-schemas";
 import type {
   TrackerPriority,
+  TrackerSort,
   TrackerStatus,
   TrackerSummary,
   TrackerType,
@@ -19,6 +20,19 @@ export interface TrackerProjectInput {
   serverName: string;
   projectId: string;
   projectName: string;
+  /** From ProjectDescriptor.aitInitialized (pas-2KY5X.28). `false` means the
+   * daemon checked `.ait/ait.db` and it doesn't exist — callers should
+   * exclude this project from any fetch/count rather than pay for an RPC
+   * that can only fail. `undefined` means "unknown" (old daemon, or a
+   * workspace-derived legacy descriptor with no wire answer) and must NOT be
+   * treated as false — that's exactly today's pre-.28 behavior: include the
+   * project, let a real request discover the failure. */
+  aitInitialized?: boolean;
+  /** From ProjectDescriptor.projectRootPath — carried here so a gated-out
+   * project's bell row can build its `cd <dir> && ait init` copy command
+   * directly, without ever having sent a request whose error message it
+   * could otherwise regex-parse. */
+  projectRootPath: string;
 }
 
 /** One tracker tagged with the project (and host) it came from, so a flat
@@ -38,6 +52,12 @@ export interface TrackerProjectError {
   projectName: string;
   message: string;
   code: TrackerErrorCode;
+  /** Only set for an error synthesized from a gate (aitInitialized === false,
+   * pas-2KY5X.28), so the bell row can build its copy command directly
+   * instead of regex-parsing `message`. An error surfaced from a real failed
+   * RPC leaves this unset — the regex path is still how those get a
+   * directory, since the RPC layer that catches them doesn't have this. */
+  projectRootPath?: string;
 }
 
 export interface TrackersRuntimeSnapshot {
@@ -45,7 +65,9 @@ export interface TrackersRuntimeSnapshot {
 }
 
 export interface TrackersRuntime {
-  getClient(serverId: string): Pick<DaemonClient, "trackerList" | "trackerSearch"> | null;
+  getClient(
+    serverId: string,
+  ): Pick<DaemonClient, "trackerList" | "trackerSearch" | "getLastServerInfoMessage"> | null;
   getSnapshot(serverId: string): TrackersRuntimeSnapshot | null | undefined;
 }
 
@@ -119,6 +141,11 @@ export interface FetchTrackerPageInput {
   status?: TrackerStatus;
   type?: TrackerType;
   priority?: TrackerPriority;
+  /** Server-side order (`server_info.features.aitTrackerSort` gates whether
+   * the daemon's `ait` actually understands it — pas-2KY5X.15/.20). Omitted
+   * entirely rather than sent-and-ignored when the capability is absent, so
+   * an old daemon never has to reject an unknown flag. */
+  sort?: TrackerSort;
   all: boolean;
   limit: number;
   cursor?: string;
@@ -151,6 +178,7 @@ export async function fetchTrackerPage(input: FetchTrackerPageInput): Promise<Tr
     ...(input.status !== undefined ? { status: input.status } : {}),
     ...(input.type !== undefined ? { trackerType: input.type } : {}),
     ...(input.priority !== undefined ? { priority: input.priority } : {}),
+    ...(input.sort !== undefined ? { sort: input.sort } : {}),
     page: { limit: input.limit, ...(input.cursor !== undefined ? { cursor: input.cursor } : {}) },
   });
   return {

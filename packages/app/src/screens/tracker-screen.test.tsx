@@ -223,17 +223,25 @@ vi.mock("@/tracker/use-tracker-project-data", () => ({
 
 vi.mock("@/tracker/use-tracker-stats", () => ({
   // The screen calls this twice: the primary (picker-scoped) call and the
-  // header bell's second, always-unscoped call. `statsState.current` holds
-  // the full, unscoped fixture; scoping down to one project (mirroring the
-  // real hook's own relevantProjects filter) happens here so both call sites
-  // fall naturally out of the same fixture instead of needing to be told
-  // apart.
-  useTrackerStats: (options: { selectedProjectId: string | null }) => {
+  // header bell's second call, scoped to every project except the picker's
+  // (pas-2KY5X.8). `statsState.current` holds the full, unscoped fixture;
+  // narrowing by both `options.projects` and `options.selectedProjectId`
+  // (mirroring the real hook's own relevantProjects filter) happens here so
+  // both call sites fall naturally out of the same fixture instead of
+  // needing to be told apart.
+  useTrackerStats: (options: {
+    projects: readonly { projectId: string }[];
+    selectedProjectId: string | null;
+  }) => {
     const state = statsState.current;
-    const projectErrors =
+    const inScopeProjects =
       options.selectedProjectId === null
-        ? state.projectErrors
-        : state.projectErrors.filter((error) => error.projectId === options.selectedProjectId);
+        ? options.projects
+        : options.projects.filter((p) => p.projectId === options.selectedProjectId);
+    const inScopeProjectIds = new Set(inScopeProjects.map((p) => p.projectId));
+    const projectErrors = state.projectErrors.filter((error) =>
+      inScopeProjectIds.has(error.projectId),
+    );
     return { ...state, projectErrors };
   },
 }));
@@ -311,7 +319,7 @@ vi.mock("@/components/tracker/tracker-table", () => ({
     lastListTableProps.current = props;
     return React.createElement("div", { "data-testid": "mock-tracker-table" });
   },
-  useTrackerPageStep: () => 50,
+  useTrackerPageStep: () => 30,
 }));
 
 vi.mock("@/components/tracker/tracker-kanban-board", () => ({
@@ -675,6 +683,94 @@ describe("TrackerScreen kanban type filter", () => {
     expect(lastProjectDataOptions.current?.type).toBeUndefined();
   });
 
+  it("fetches the same page step the Show-more label promises, 30 on desktop (pas-2KY5X.15)", () => {
+    render();
+    switchToKanban();
+
+    // One number for the whole screen: useTrackerPageStep drives the fetch
+    // budget, the label, and search alike, so a section can never load 30
+    // rows under a button offering 50. Mocked to 30 above, matching
+    // REVEAL_STEP_DESKTOP.
+    expect(lastProjectDataOptions.current?.pageSize).toBe(30);
+  });
+
+  it("a List status filter reaches the query as options.sections instead of narrowing an all-four fetch in memory (pas-2KY5X.4)", () => {
+    render();
+    switchToList();
+
+    // Unfiltered List means all four sections — undefined, matching the
+    // hook's own "omitted = all four" default.
+    expect(lastProjectDataOptions.current?.sections).toBeUndefined();
+
+    const openPill = container?.querySelector<HTMLElement>('[data-testid="trackers-stat-open"]');
+    if (!openPill) throw new Error("Expected the Open stat pill to render");
+    act(() => {
+      openPill.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+    expect(lastProjectDataOptions.current?.sections).toEqual(["open"]);
+
+    const donePill = container?.querySelector<HTMLElement>('[data-testid="trackers-stat-done"]');
+    if (!donePill) throw new Error("Expected the Done stat pill to render");
+    act(() => {
+      donePill.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+    // "Done" maps to the closed section alone, per listVisibleStatusesForFilter.
+    expect(lastProjectDataOptions.current?.sections).toEqual(["closed"]);
+
+    // Switching to Kanban must not narrow the shared fetch even though the
+    // List filter is still "done" underneath — Kanban renders all five
+    // lanes from this one fetch.
+    switchToKanban();
+    expect(lastProjectDataOptions.current?.sections).toBeUndefined();
+  });
+
+  it("a Kanban priority filter reaches the query as options.priority instead of only dimming cards client-side (pas-2KY5X.10)", () => {
+    render();
+    switchToKanban();
+
+    // Default type filter is "task" and priority is unfiltered — only task-1
+    // (mixedTrackers' single task, default priority P2) reaches the board.
+    expect(lastProjectDataOptions.current?.priority).toBeUndefined();
+    expect(lastKanbanBoardProps.current?.trackers).toHaveLength(1);
+
+    const p2Button = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-kanban-priority-p2"]',
+    );
+    if (!p2Button) throw new Error("Expected the Kanban P2 priority filter button to render");
+    act(() => {
+      p2Button.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+    expect(lastProjectDataOptions.current?.priority).toBe("P2");
+    expect(lastKanbanBoardProps.current?.trackers).toHaveLength(1);
+
+    const p1Button = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-kanban-priority-p1"]',
+    );
+    if (!p1Button) throw new Error("Expected the Kanban P1 priority filter button to render");
+    act(() => {
+      p1Button.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+    expect(lastProjectDataOptions.current?.priority).toBe("P1");
+    // task-1 is P2, not P1 — the mock hook's server-side narrowing (mirroring
+    // the real priority push) drops it from the fetch itself, proof this
+    // isn't still a client-side-only buildTrackerBoard dim.
+    expect(lastKanbanBoardProps.current?.trackers).toHaveLength(0);
+
+    const allButton = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-kanban-priority-all"]',
+    );
+    if (!allButton) throw new Error("Expected the Kanban All priority filter button to render");
+    act(() => {
+      allButton.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+    expect(lastProjectDataOptions.current?.priority).toBeUndefined();
+
+    // Kanban's priority filter is independent state from List's — switching
+    // view must not carry a leftover priority into the other view's query.
+    switchToList();
+    expect(lastProjectDataOptions.current?.priority).toBeUndefined();
+  });
+
   it("type filter applies to the List view's tracker set", () => {
     render();
     switchToList();
@@ -725,6 +821,11 @@ describe("TrackerScreen mutation patching", () => {
     root = createRoot(container);
     setProjectsState({});
     setProjectDataState({ trackers: [taskA] });
+    // statsState isn't reset by anything else here — without this, a test
+    // that sets projectErrors (e.g. to exercise the bell or pas-2KY5X.17's
+    // picker filter) leaks that into whichever test runs next and never
+    // calls setStatsState itself.
+    setStatsState({});
     lastKanbanBoardProps.current = null;
     lastListTableProps.current = null;
     lastFormSheetProps.current = null;
@@ -784,7 +885,7 @@ describe("TrackerScreen mutation patching", () => {
     expect(projectDataState.current.loadMore).toHaveBeenCalledWith("open");
   });
 
-  it("sums closed and cancelled into the Kanban Done lane's total", () => {
+  it("the Kanban Done lane's total equals closed alone — cancelled is its own lane, not double-counted (pas-2KY5X.2)", () => {
     setProjectDataState({
       trackers: [taskA],
       sectionTotals: { open: 4, in_progress: 1, closed: 3, cancelled: 2 },
@@ -792,9 +893,12 @@ describe("TrackerScreen mutation patching", () => {
     render();
     switchToKanban();
 
-    expect(lastKanbanBoardProps.current?.laneTotals?.done).toBe(5);
-    expect(lastKanbanBoardProps.current?.laneTotals?.in_progress).toBe(1);
+    expect(lastKanbanBoardProps.current?.laneTotals?.done).toBe(3);
     expect(lastKanbanBoardProps.current?.laneTotals?.cancelled).toBe(2);
+    expect(lastKanbanBoardProps.current?.laneTotals?.in_progress).toBe(1);
+    // laneForTracker in tracker-board-model.ts renders only closed-status
+    // items in Done; summing in cancelled here would read 5 over 3 rows.
+    expect(lastKanbanBoardProps.current?.laneTotals?.done).not.toBe(3 + 2);
   });
 
   it("falls back the ready and open lanes to their loaded count instead of a status total", () => {
@@ -833,6 +937,29 @@ describe("TrackerScreen mutation patching", () => {
     expect(statsState.current.refetch).toHaveBeenCalled();
   });
 
+  it("the List toolbar's Done pill counts closed alone, not closed+cancelled, matching the section header below it (pas-2KY5X.18)", () => {
+    const bucket: TrackerStatsCounts["all"] = {
+      total: 9,
+      byStatus: { open: 0, in_progress: 0, closed: 3, cancelled: 2 },
+      byPriority: { P0: 0, P1: 0, P2: 9, P3: 0, P4: 0 },
+    };
+    setStatsState({
+      counts: { all: bucket, task: bucket, epic: bucket, initiative: bucket },
+    });
+    render();
+    switchToList();
+
+    const donePill = container?.querySelector<HTMLElement>('[data-testid="trackers-stat-done"]');
+    if (!donePill) throw new Error("Expected the Done stat pill to render");
+    // 3 (closed), never 5 (closed+cancelled) — clicking this pill only ever
+    // surfaces closed rows (listVisibleStatusesForFilter("done") === ["closed"]
+    // in tracker-stats.ts), so a count that included cancelled would disagree
+    // with what selecting the pill actually shows, on top of disagreeing with
+    // the section header's own closed-only total right below it.
+    expect(donePill.textContent).toContain("3");
+    expect(donePill.textContent).not.toContain("5");
+  });
+
   it("patches the shared hook with the transition's own response after a Kanban transition succeeds", async () => {
     render();
     switchToKanban();
@@ -863,6 +990,7 @@ describe("TrackerScreen mutation patching", () => {
       serverName: "alpha",
       projectId: "project-a",
       projectName: "Project",
+      projectRootPath: "/repo/project-a",
     };
     act(() => {
       onCreated(created, createdProject);
@@ -903,6 +1031,10 @@ describe("TrackerScreen mutation patching", () => {
       message: "No ait database",
       code: "uninitialised",
     };
+    // A third, error-free project (prj-c) keeps the picker showing more than
+    // one option after pas-2KY5X.17 hides prj-b from it — without it, the
+    // picker itself wouldn't render at all (see the .17 test below), and
+    // there'd be nothing to click to select prj-a through.
     setProjectsState({
       projects: [
         project({ hosts: [hostEntry({ projectId: "prj-a", projectName: "Project A" })] }),
@@ -910,6 +1042,11 @@ describe("TrackerScreen mutation patching", () => {
           viewKey: "remote:github.com/acme/other",
           projectName: "acme/other",
           hosts: [hostEntry({ projectId: "prj-b", projectName: "Project B" })],
+        }),
+        project({
+          viewKey: "remote:github.com/acme/third",
+          projectName: "acme/third",
+          hosts: [hostEntry({ projectId: "prj-c", projectName: "Project C" })],
         }),
       ],
     });
@@ -928,10 +1065,303 @@ describe("TrackerScreen mutation patching", () => {
     });
 
     // The main (picker-scoped) stats call now only covers prj-a, so it
-    // reports no errors of its own — but the bell's separate, always-unscoped
-    // call still surfaces prj-b's failure.
+    // reports no errors of its own — but the bell's separate call (scoped to
+    // every project except prj-a) still surfaces prj-b's failure.
     expect(
       container?.querySelector('[data-testid="trackers-project-errors-copy-host-a:prj-b"]'),
     ).not.toBeNull();
+  });
+
+  it("the project picker never offers a project the bell has flagged as erroring (pas-2KY5X.17)", () => {
+    const errorOnProjectB: TrackerProjectError = {
+      serverId: "host-a",
+      serverName: "alpha",
+      projectId: "prj-b",
+      projectName: "Project B",
+      message: "No ait database",
+      code: "uninitialised",
+    };
+    setProjectsState({
+      projects: [
+        project({ hosts: [hostEntry({ projectId: "prj-a", projectName: "Project A" })] }),
+        project({
+          viewKey: "remote:github.com/acme/other",
+          projectName: "acme/other",
+          hosts: [hostEntry({ projectId: "prj-b", projectName: "Project B" })],
+        }),
+        project({
+          viewKey: "remote:github.com/acme/third",
+          projectName: "acme/third",
+          hosts: [hostEntry({ projectId: "prj-c", projectName: "Project C" })],
+        }),
+      ],
+    });
+    setStatsState({ projectErrors: [errorOnProjectB] });
+    render();
+
+    expect(
+      container?.querySelector('[data-testid="trackers-project-picker-prj-a"]'),
+    ).not.toBeNull();
+    expect(
+      container?.querySelector('[data-testid="trackers-project-picker-prj-c"]'),
+    ).not.toBeNull();
+    expect(container?.querySelector('[data-testid="trackers-project-picker-prj-b"]')).toBeNull();
+  });
+
+  it("the project picker doesn't render at all once erroring projects leave only one selectable project (pas-2KY5X.17)", () => {
+    const errorOnProjectB: TrackerProjectError = {
+      serverId: "host-a",
+      serverName: "alpha",
+      projectId: "prj-b",
+      projectName: "Project B",
+      message: "No ait database",
+      code: "uninitialised",
+    };
+    setProjectsState({
+      projects: [
+        project({ hosts: [hostEntry({ projectId: "prj-a", projectName: "Project A" })] }),
+        project({
+          viewKey: "remote:github.com/acme/other",
+          projectName: "acme/other",
+          hosts: [hostEntry({ projectId: "prj-b", projectName: "Project B" })],
+        }),
+      ],
+    });
+    setStatsState({ projectErrors: [errorOnProjectB] });
+    render();
+
+    // Same "only offer a picker when there's something to pick between" rule
+    // the screen already applies to a genuinely single-project workspace —
+    // once prj-b is filtered out, prj-a is the only project left, so the
+    // trigger itself shouldn't render.
+    expect(container?.querySelector('[data-testid="trackers-project-picker-trigger"]')).toBeNull();
+  });
+
+  it("the bell doesn't double-fetch or double-report the picker's own selected project (pas-2KY5X.8)", () => {
+    const errorOnProjectA: TrackerProjectError = {
+      serverId: "host-a",
+      serverName: "alpha",
+      projectId: "prj-a",
+      projectName: "Project A",
+      message: "No ait database",
+      code: "uninitialised",
+    };
+    setProjectsState({
+      projects: [
+        project({ hosts: [hostEntry({ projectId: "prj-a", projectName: "Project A" })] }),
+        project({
+          viewKey: "remote:github.com/acme/other",
+          projectName: "acme/other",
+          hosts: [hostEntry({ projectId: "prj-b", projectName: "Project B" })],
+        }),
+      ],
+    });
+    // Selected while healthy, then it starts erroring — pas-2KY5X.17 hides an
+    // already-erroring project from the picker, so it can no longer be
+    // selected there in the first place; this is the reachable version of
+    // "the selected project is also the one erroring" (e.g. its ait database
+    // disappears mid-session, after selection already happened).
+    render();
+
+    const projectAOption = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-project-picker-prj-a"]',
+    );
+    if (!projectAOption) throw new Error("Expected the Project A picker option to render");
+    act(() => {
+      projectAOption.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+
+    setStatsState({ projectErrors: [errorOnProjectA] });
+    render();
+
+    // The bell's own call excludes prj-a (the picker already covers it), so
+    // prj-a's error reaches the bell exactly once — via the picker-scoped
+    // stats call — not duplicated by the bell's fan-out.
+    const copyButtons = container?.querySelectorAll(
+      '[data-testid="trackers-project-errors-copy-host-a:prj-a"]',
+    );
+    expect(copyButtons).toHaveLength(1);
+  });
+
+  // pas-2KY5X.28: aitInitialized === false is known upfront from the
+  // descriptor, not discovered by a failed RPC — the fetch must exclude the
+  // project before ever requesting anything from it, and the bell row must
+  // still work without needing one either.
+  it("a project with aitInitialized === false is excluded from the fetch, but still appears in the bell with a copy command built from projectRootPath directly (pas-2KY5X.28)", () => {
+    setProjectsState({
+      projects: [
+        project({
+          hosts: [
+            hostEntry({
+              projectId: "prj-a",
+              projectName: "Project A",
+              aitInitialized: true,
+              repoRoot: "/repo/prj-a",
+            }),
+          ],
+        }),
+        project({
+          viewKey: "remote:github.com/acme/other",
+          projectName: "acme/other",
+          hosts: [
+            hostEntry({
+              projectId: "prj-b",
+              projectName: "Project B",
+              aitInitialized: false,
+              repoRoot: "/repo/prj-b",
+            }),
+          ],
+        }),
+      ],
+    });
+    render();
+
+    // Excluded from the fetch — never sent to useTrackerProjectData at all,
+    // so nothing was ever requested from it in the first place.
+    expect(lastProjectDataOptions.current?.projects.map((p) => p.projectId)).toEqual(["prj-a"]);
+
+    // Still shows up in the bell — statsState is untouched by this test
+    // (default: no projectErrors), so this row can only have come from the
+    // descriptor-derived gate, not an RPC failure.
+    const copyButton = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-project-errors-copy-host-a:prj-b"]',
+    );
+    expect(copyButton).not.toBeNull();
+    expect(copyButton?.textContent).toContain('cd "/repo/prj-b" && ait init');
+  });
+
+  it("a project with aitInitialized === true is not excluded from the fetch (pas-2KY5X.28)", () => {
+    setProjectsState({
+      projects: [
+        project({
+          hosts: [hostEntry({ projectId: "prj-a", aitInitialized: true, repoRoot: "/repo/prj-a" })],
+        }),
+      ],
+    });
+    render();
+
+    expect(lastProjectDataOptions.current?.projects.map((p) => p.projectId)).toEqual(["prj-a"]);
+  });
+
+  it("a project whose aitInitialized is undefined (old daemon, or simply unknown) is not excluded — matches pre-.28 behavior exactly (pas-2KY5X.28)", () => {
+    setProjectsState({
+      projects: [
+        // hostEntry()'s default omits aitInitialized entirely.
+        project({ hosts: [hostEntry({ projectId: "prj-a", repoRoot: "/repo/prj-a" })] }),
+      ],
+    });
+    render();
+
+    expect(lastProjectDataOptions.current?.projects.map((p) => p.projectId)).toEqual(["prj-a"]);
+  });
+
+  // pas-2KY5X.28 follow-up (found by sweeping the tracker feature for what
+  // the gate leaves stale): a project can still be *selected* after it drops
+  // out of initializedProjectInputs — the picker already prevents selecting
+  // an already-gated project (pas-2KY5X.17), but a project selected while
+  // healthy/unknown and gated moments later (its descriptor catches up, or
+  // its .ait/ait.db genuinely disappears) stays selected. Before this fix,
+  // that state fell through to a bare "empty" screen with no explanation,
+  // because projectData.projectErrors can never contain a project that was
+  // never fetched in the first place.
+  it("a selected project that becomes gated (aitInitialized flips to false) shows the Initialize tracker CTA instead of a bare empty screen", () => {
+    setProjectsState({
+      projects: [
+        project({
+          hosts: [
+            hostEntry({ projectId: "prj-a", projectName: "Project A", aitInitialized: true }),
+          ],
+        }),
+        project({
+          viewKey: "remote:github.com/acme/other",
+          projectName: "acme/other",
+          hosts: [
+            hostEntry({ projectId: "prj-b", projectName: "Project B", aitInitialized: true }),
+          ],
+        }),
+      ],
+    });
+    render();
+
+    const projectBOption = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-project-picker-prj-b"]',
+    );
+    if (!projectBOption) throw new Error("Expected the Project B picker option to render");
+    act(() => {
+      projectBOption.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+
+    // Still selected, but its descriptor now reports no database.
+    setProjectsState({
+      projects: [
+        project({
+          hosts: [
+            hostEntry({ projectId: "prj-a", projectName: "Project A", aitInitialized: true }),
+          ],
+        }),
+        project({
+          viewKey: "remote:github.com/acme/other",
+          projectName: "acme/other",
+          hosts: [
+            hostEntry({ projectId: "prj-b", projectName: "Project B", aitInitialized: false }),
+          ],
+        }),
+      ],
+    });
+    setProjectDataState({ trackers: [] });
+    render();
+
+    expect(container?.querySelector('[data-testid="trackers-initialise"]')).not.toBeNull();
+  });
+
+  it('the toolbar still shows the real project name (not "All projects") for a selected project that dropped out of the picker\'s own list', () => {
+    // A third, unaffected project (prj-c) keeps the picker itself rendered
+    // once prj-b is gated below — with only prj-a left, pas-2KY5X.17's own
+    // "don't show a picker for a single selectable project" rule would hide
+    // the trigger entirely, and there'd be nothing to read a label from.
+    const threeProjects = [
+      project({
+        hosts: [hostEntry({ projectId: "prj-a", projectName: "Project A", aitInitialized: true })],
+      }),
+      project({
+        viewKey: "remote:github.com/acme/other",
+        projectName: "acme/other",
+        hosts: [hostEntry({ projectId: "prj-b", projectName: "Project B", aitInitialized: true })],
+      }),
+      project({
+        viewKey: "remote:github.com/acme/third",
+        projectName: "acme/third",
+        hosts: [hostEntry({ projectId: "prj-c", projectName: "Project C", aitInitialized: true })],
+      }),
+    ];
+    setProjectsState({ projects: threeProjects });
+    render();
+
+    const projectBOption = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-project-picker-prj-b"]',
+    );
+    if (!projectBOption) throw new Error("Expected the Project B picker option to render");
+    act(() => {
+      projectBOption.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+
+    setProjectsState({
+      projects: [
+        threeProjects[0]!,
+        project({
+          viewKey: "remote:github.com/acme/other",
+          projectName: "acme/other",
+          hosts: [
+            hostEntry({ projectId: "prj-b", projectName: "Project B", aitInitialized: false }),
+          ],
+        }),
+        threeProjects[2]!,
+      ],
+    });
+    render();
+
+    const trigger = container?.querySelector('[data-testid="trackers-project-picker-trigger"]');
+    expect(trigger?.textContent).toBe("Project B");
+    expect(trigger?.textContent).not.toBe("All projects");
   });
 });

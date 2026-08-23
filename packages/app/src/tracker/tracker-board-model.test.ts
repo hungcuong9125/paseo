@@ -154,15 +154,53 @@ describe("buildTrackerBoard", () => {
     expect(board.open.map((card) => card.tracker.id)).toEqual(["z", "a", "b"]);
   });
 
-  it("sorts the done lane by updatedAt descending, with missing updatedAt last", () => {
+  it("sorts the done lane by createdAt descending, with missing createdAt last", () => {
     const trackers = [
-      tracker({ id: "older", status: "closed", updatedAt: "2026-01-01T00:00:00Z" }),
-      tracker({ id: "newer", status: "closed", updatedAt: "2026-06-01T00:00:00Z" }),
-      tracker({ id: "no-updated-at", status: "closed" }),
+      tracker({ id: "older", status: "closed", createdAt: "2026-01-01T00:00:00Z" }),
+      tracker({ id: "newer", status: "closed", createdAt: "2026-06-01T00:00:00Z" }),
+      tracker({ id: "no-created-at", status: "closed" }),
     ];
 
     const board = buildTrackerBoard(trackers, "all");
 
-    expect(board.done.map((card) => card.tracker.id)).toEqual(["newer", "older", "no-updated-at"]);
+    expect(board.done.map((card) => card.tracker.id)).toEqual(["newer", "older", "no-created-at"]);
+  });
+
+  // pas-2KY5X.23: the done/cancelled lanes used to re-sort by updatedAt, which
+  // could disagree with the createdAt order the merge selected and the card
+  // label renders. createdAt must win regardless of updatedAt.
+  it("orders the done lane by createdAt even when updatedAt disagrees", () => {
+    const trackers = [
+      tracker({
+        id: "a",
+        status: "closed",
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-08-01T00:00:00Z",
+      }),
+      tracker({
+        id: "b",
+        status: "closed",
+        createdAt: "2026-06-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      }),
+    ];
+
+    const board = buildTrackerBoard(trackers, "all");
+
+    expect(board.done.map((card) => card.tracker.id)).toEqual(["b", "a"]);
+  });
+
+  // Matches `ait list --sort newest`'s tiebreaker (pas-2KY5X.19/.23): id
+  // descending, same direction as the createdAt sort itself.
+  it("breaks a createdAt tie in the cancelled lane by id descending", () => {
+    const trackers = [
+      tracker({ id: "a", status: "cancelled", createdAt: "2026-01-01T00:00:00Z" }),
+      tracker({ id: "z", status: "cancelled", createdAt: "2026-01-01T00:00:00Z" }),
+      tracker({ id: "m", status: "cancelled", createdAt: "2026-01-01T00:00:00Z" }),
+    ];
+
+    const board = buildTrackerBoard(trackers, "all");
+
+    expect(board.cancelled.map((card) => card.tracker.id)).toEqual(["z", "m", "a"]);
   });
 });

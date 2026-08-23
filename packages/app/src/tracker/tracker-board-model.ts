@@ -1,5 +1,5 @@
 import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
-import { compareTrackers } from "@/tracker/tracker-hierarchy";
+import { compareByCreatedNewest, compareTrackers } from "@/tracker/tracker-hierarchy";
 import { matchesTrackerStatFilter, type TrackerStatFilter } from "@/tracker/tracker-stats";
 
 // Same domain as the toolbar's filter, reused directly. Only the priority
@@ -67,22 +67,6 @@ function isPriorityFilter(filter: TrackerBoardFilter): filter is "p0" | "p1" | "
   );
 }
 
-// `updatedAt` is optional on TrackerSummary (older callers may not populate
-// it yet), so missing values still sort last. ISO-8601 strings sort
-// lexicographically the same as chronologically.
-function compareByRecency(left: TrackerSummary, right: TrackerSummary): number {
-  if (left.updatedAt && right.updatedAt) {
-    return right.updatedAt.localeCompare(left.updatedAt);
-  }
-  if (left.updatedAt) {
-    return -1;
-  }
-  if (right.updatedAt) {
-    return 1;
-  }
-  return left.id.localeCompare(right.id);
-}
-
 /**
  * Partitions a flat tracker list into the five Kanban lanes, every one of
  * which always renders — the toolbar's priority filter (the only Kanban stat
@@ -138,8 +122,11 @@ export function buildTrackerBoard(
   ready.sort((a, b) => compareTrackers(a.tracker, b.tracker));
   open.sort((a, b) => compareTrackers(a.tracker, b.tracker));
   inProgress.sort((a, b) => compareTrackers(a.tracker, b.tracker));
-  done.sort((a, b) => compareByRecency(a.tracker, b.tracker));
-  cancelled.sort((a, b) => compareByRecency(a.tracker, b.tracker));
+  // pas-2KY5X.23: createdAt is the single recency key across selection, lane
+  // order, and the card label — this used to re-sort by updatedAt, which
+  // disagreed with both.
+  done.sort((a, b) => compareByCreatedNewest(a.tracker, b.tracker));
+  cancelled.sort((a, b) => compareByCreatedNewest(a.tracker, b.tracker));
 
   return { visibleLanes: ALL_LANES, ready, open, in_progress: inProgress, done, cancelled };
 }

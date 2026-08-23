@@ -86,7 +86,7 @@ export class TrackerSession {
     // manager still supplies the full snapshot used for daemon-side subtree
     // counts. Kanban's requests never carry these fields and keep taking the
     // unchanged legacy path below.
-    if (request.page || request.status || request.trackerType || request.priority) {
+    if (request.page || request.status || request.trackerType || request.priority || request.sort) {
       await this.handlePaginatedListRequest(request);
       return;
     }
@@ -143,6 +143,7 @@ export class TrackerSession {
         status: request.status,
         type: request.trackerType,
         priority: request.priority,
+        sort: request.sort,
         limit: request.page?.limit,
         offset,
       });

@@ -25,6 +25,37 @@ export function compareTrackers(left: TrackerSummary, right: TrackerSummary): nu
   return left.priority.localeCompare(right.priority) || left.id.localeCompare(right.id);
 }
 
+// Mirrors `ait list --sort newest`'s own order (pas-2KY5X.19): createdAt
+// descending, id descending as the tiebreaker — the tiebreaker follows the
+// sort direction there, so it has to here too, or a client-side sort or merge
+// picks a different "next" row than the server would have for the same
+// stream. A row missing createdAt (a response from before sort support
+// existed) sorts after everything that has one rather than crashing the
+// comparison.
+//
+// The single shared "newest" key across selection (use-tracker-project-data's
+// k-way merge), lane ordering (tracker-board-model's Done/Cancelled lanes),
+// and the card label (tracker-kanban-card renders createdAt) — pas-2KY5X.23
+// found those three disagreeing (two different fields, two different
+// tiebreakers) and produced a visibly scrambled order. Sharing this function
+// is what keeps them from drifting apart again; do not re-derive a local copy.
+export function compareByCreatedNewest(left: TrackerSummary, right: TrackerSummary): number {
+  if (
+    left.createdAt !== undefined &&
+    right.createdAt !== undefined &&
+    left.createdAt !== right.createdAt
+  ) {
+    return left.createdAt < right.createdAt ? 1 : -1;
+  }
+  if (left.createdAt !== undefined && right.createdAt === undefined) {
+    return -1;
+  }
+  if (left.createdAt === undefined && right.createdAt !== undefined) {
+    return 1;
+  }
+  return left.id < right.id ? 1 : -1;
+}
+
 // A precomputed parent/child index over a flat `TrackerSummary[]`. Built once and
 // reused so descendant stats cost no repeated scans. The guards live inside
 // `descendantStats`, which is the operation a status board calls per parent.

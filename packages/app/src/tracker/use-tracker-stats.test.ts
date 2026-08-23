@@ -1,21 +1,56 @@
 /**
  * @vitest-environment jsdom
  */
+import { useEffect, useReducer } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { TrackerStatsCounts } from "@getpaseo/protocol/tracker/rpc-schemas";
 import type { TrackerProjectInput } from "@/tracker/aggregated-trackers";
 
-const { runtimeState } = vi.hoisted(() => ({
+const { runtimeState, sessionStoreState } = vi.hoisted(() => ({
   runtimeState: {
     getClient: vi.fn(),
     getSnapshot: vi.fn(() => ({ connectionStatus: "online" as const })),
+  },
+  sessionStoreState: {
+    sessions: {} as Record<string, { serverInfo?: { features?: Record<string, boolean> } }>,
+    listeners: new Set<() => void>(),
   },
 }));
 
 vi.mock("@/runtime/host-runtime", () => ({
   getHostRuntimeStore: () => runtimeState,
 }));
+
+// Minimal reactive stand-in for the real Zustand useSessionStore — re-renders
+// the calling component whenever setSessionFeatureSupport below fires, the
+// same reactivity the real store gives useTrackerStats' featureSupportKey
+// selector (pas-2KY5X.1's fix).
+vi.mock("@/stores/session-store", () => ({
+  useSessionStore: (
+    selector: (state: { sessions: typeof sessionStoreState.sessions }) => unknown,
+  ) => {
+    const [, forceRender] = useReducer((c: number) => c + 1, 0);
+    useEffect(() => {
+      const listener = () => forceRender();
+      sessionStoreState.listeners.add(listener);
+      return () => {
+        sessionStoreState.listeners.delete(listener);
+      };
+    }, []);
+    return selector({ sessions: sessionStoreState.sessions });
+  },
+}));
+
+function setSessionFeatureSupport(serverId: string, aitTrackerStats: boolean): void {
+  sessionStoreState.sessions = {
+    ...sessionStoreState.sessions,
+    [serverId]: { serverInfo: { features: { aitTrackerStats } } },
+  };
+  for (const listener of sessionStoreState.listeners) {
+    listener();
+  }
+}
 
 import { useTrackerStats } from "./use-tracker-stats";
 
@@ -24,12 +59,14 @@ const PROJECT_A: TrackerProjectInput = {
   serverName: "Host A",
   projectId: "prj-a",
   projectName: "Project A",
+  projectRootPath: "/repo/prj-a",
 };
 const PROJECT_B: TrackerProjectInput = {
   serverId: "host-b",
   serverName: "Host B",
   projectId: "prj-b",
   projectName: "Project B",
+  projectRootPath: "/repo/prj-b",
 };
 
 function makeBucket(total: number): TrackerStatsCounts["all"] {
@@ -105,7 +142,7 @@ describe("useTrackerStats", () => {
     expect(result.current.counts?.all.byPriority.P2).toBe(8);
   });
 
-  it("returns null counts when any in-scope project's host lacks aitTrackerStats", async () => {
+  it("sums only the reporting project when one host lacks aitTrackerStats (pas-2KY5X.14)", async () => {
     installClients({
       "host-a": { supportsStats: true, result: makeCounts(5) },
       "host-b": { supportsStats: false },
@@ -118,10 +155,10 @@ describe("useTrackerStats", () => {
       }),
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    expect(result.current.counts).toBeNull();
+    expect(result.current.counts?.all.total).toBe(5);
   });
 
-  it("returns null counts when a project's stats RPC fails, and reports that project's error", async () => {
+  it("sums only the succeeding project when another's stats RPC fails, and reports that project's error (pas-2KY5X.14)", async () => {
     installClients({
       "host-a": { supportsStats: true, result: makeCounts(5) },
       "host-b": { supportsStats: true, result: new Error("boom") },
@@ -134,7 +171,9 @@ describe("useTrackerStats", () => {
       }),
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    expect(result.current.counts).toBeNull();
+    // The failing project is treated as absent, not a poison — prj-a's count
+    // still comes through alongside prj-b's error.
+    expect(result.current.counts?.all.total).toBe(5);
     expect(result.current.projectErrors).toEqual([
       {
         serverId: "host-b",
@@ -147,10 +186,10 @@ describe("useTrackerStats", () => {
     ]);
   });
 
-  it("keeps reporting counts for the projects that succeed alongside a failing one's error", async () => {
+  it("sums to a real zero when every in-scope project fails (pas-2KY5X.14)", async () => {
     installClients({
-      "host-a": { supportsStats: true, result: makeCounts(5) },
-      "host-b": { supportsStats: true, result: new Error("boom") },
+      "host-a": { supportsStats: true, result: new Error("boom") },
+      "host-b": { supportsStats: false },
     });
     const { result } = renderHook(() =>
       useTrackerStats({
@@ -160,11 +199,10 @@ describe("useTrackerStats", () => {
       }),
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    // The summed total still poisons to null (same "any gap" rule as
-    // sectionTotals) — but that must not stop prj-a's own fetch from
-    // completing or the failure from being reported.
+    // No project reported, but the scope wasn't poisoned — every gap is
+    // "absent", so summing nothing is a real zero, not a blanked total.
+    expect(result.current.counts?.all.total).toBe(0);
     expect(result.current.projectErrors).toHaveLength(1);
-    expect(result.current.projectErrors[0]?.projectId).toBe("prj-b");
   });
 
   it("an offline project contributes neither a count nor a projectErrors entry", async () => {
@@ -179,25 +217,26 @@ describe("useTrackerStats", () => {
       }),
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    expect(result.current.counts).toBeNull();
+    expect(result.current.counts?.all.total).toBe(5);
     expect(result.current.projectErrors).toEqual([]);
   });
 
-  it("a host too old to advertise aitTrackerStats contributes neither a count nor an error", async () => {
+  it("poisons counts when the single selected project fails (pas-2KY5X.14)", async () => {
     installClients({
-      "host-a": { supportsStats: true, result: makeCounts(5) },
-      "host-b": { supportsStats: false },
+      "host-a": { supportsStats: true, result: new Error("boom") },
+      "host-b": { supportsStats: true, result: makeCounts(3) },
     });
     const { result } = renderHook(() =>
       useTrackerStats({
         projects: [PROJECT_A, PROJECT_B],
-        selectedProjectId: null,
+        selectedProjectId: "prj-a",
         enabled: true,
       }),
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // Scoped to exactly one project, so its failure is genuinely "no data" —
+    // unlike the "all projects" scope above, this must stay null, not 0.
     expect(result.current.counts).toBeNull();
-    expect(result.current.projectErrors).toEqual([]);
   });
 
   it("scopes to the selected project only", async () => {
@@ -262,5 +301,47 @@ describe("useTrackerStats", () => {
     });
     // The stale prj-a-scoped resolution must not overwrite prj-b's counts.
     expect(result.current.counts?.all.total).toBe(3);
+  });
+
+  it("a host that reports aitTrackerStats only after mount still produces counts (pas-2KY5X.1)", async () => {
+    // host-a's server_info hasn't landed yet at mount — same shape as a host
+    // still finishing its handshake, or a false read that arrived before
+    // server_info did.
+    setSessionFeatureSupport("host-a", false);
+    runtimeState.getClient.mockImplementation((serverId: string) => {
+      if (serverId !== "host-a") {
+        return null;
+      }
+      return {
+        // Reads the reactive fixture at call time — mirrors how the real
+        // DaemonClient's cached server_info and the Zustand session store
+        // are two views onto the same underlying fact.
+        getLastServerInfoMessage: () => ({
+          features: {
+            aitTrackerStats:
+              sessionStoreState.sessions["host-a"]?.serverInfo?.features?.aitTrackerStats === true,
+          },
+        }),
+        trackerStats: async () => ({ counts: makeCounts(5), error: null, errorCode: null }),
+      };
+    });
+
+    // Selected explicitly (rather than left as "all projects") so this still
+    // exercises the poison-then-recover path after pas-2KY5X.14: with only
+    // one project selected, an unreported flag must still block the total.
+    const { result } = renderHook(() =>
+      useTrackerStats({ projects: [PROJECT_A], selectedProjectId: "prj-a", enabled: true }),
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // Too early to read the feature — degrades exactly like an old daemon,
+    // not stuck: a later flag flip must still recover.
+    expect(result.current.counts).toBeNull();
+
+    act(() => {
+      setSessionFeatureSupport("host-a", true);
+    });
+
+    await waitFor(() => expect(result.current.counts).not.toBeNull());
+    expect(result.current.counts?.all.total).toBe(5);
   });
 });

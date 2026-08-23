@@ -4,6 +4,7 @@ import { lstat, mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises";
 import { basename, resolve, sep } from "path";
 import { homedir } from "node:os";
 import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
+import { checkAitInitialized } from "./ait-init-status.js";
 import {
   serializeAgentStreamEvent,
   type AgentSnapshotPayload,
@@ -1156,12 +1157,12 @@ export class Session {
     );
   }
 
-  emitProjectUpdate(update: ProjectUpdate): void {
+  async emitProjectUpdate(update: ProjectUpdate): Promise<void> {
     const message: SessionOutboundMessage = {
       type: "project.update",
       payload:
         update.kind === "upsert"
-          ? { kind: "upsert", project: this.buildProjectDescriptor(update.project) }
+          ? { kind: "upsert", project: await this.buildProjectDescriptor(update.project) }
           : update,
     };
     if (this.clientCapabilitiesBySource.size === 0 || !this.onMessageToSource) {
@@ -2745,7 +2746,11 @@ export class Session {
 
       // Emit a project.update so clients that track the project as an empty
       // project (no workspaces yet) receive the resolved name immediately.
-      this.emitProjectUpdate({ kind: "upsert", project: updated });
+      // Awaited (not fire-and-forget): the descriptor build costs one cheap
+      // local `.ait/ait.db` stat, not a network round trip, and leaving this
+      // un-awaited raced the response-then-broadcast ordering tests already
+      // rely on against whatever the caller does next.
+      await this.emitProjectUpdate({ kind: "upsert", project: updated });
 
       // Re-emit descriptors for every workspace under this project so the new
       // resolved name lands in the UI immediately.
@@ -2799,7 +2804,11 @@ export class Session {
         type: "project.icon.set.response",
         payload: { requestId, projectId, accepted: true, error: null },
       });
-      this.emitProjectUpdate({ kind: "upsert", project: updated });
+      // Awaited (not fire-and-forget): the descriptor build costs one cheap
+      // local `.ait/ait.db` stat, not a network round trip, and leaving this
+      // un-awaited raced the response-then-broadcast ordering tests already
+      // rely on against whatever the caller does next.
+      await this.emitProjectUpdate({ kind: "upsert", project: updated });
 
       const affectedWorkspaceIds = (await this.workspaceRegistry.list())
         .filter((workspace) => workspace.projectId === projectId)
@@ -4737,9 +4746,9 @@ export class Session {
     }
   }
 
-  private buildProjectDescriptor(
+  private async buildProjectDescriptor(
     project: PersistedProjectRecord,
-  ): WorkspaceProjectDescriptorPayload {
+  ): Promise<WorkspaceProjectDescriptorPayload> {
     return {
       projectId: project.projectId,
       ...(project.projectKey ? { projectKey: project.projectKey } : {}),
@@ -4748,6 +4757,7 @@ export class Session {
       projectCustomIconRevision: project.customIconRevision ?? null,
       projectRootPath: project.rootPath,
       projectKind: project.kind,
+      aitInitialized: await checkAitInitialized(project.rootPath),
     };
   }
 
@@ -5260,9 +5270,11 @@ export class Session {
 
   private async handleProjectListRequest(requestId: string): Promise<void> {
     try {
-      const projects = (await this.projectRegistry.list())
-        .filter((project) => !project.archivedAt)
-        .map((project) => this.buildProjectDescriptor(project));
+      const projects = await Promise.all(
+        (await this.projectRegistry.list())
+          .filter((project) => !project.archivedAt)
+          .map((project) => this.buildProjectDescriptor(project)),
+      );
       this.emit({
         type: "project.list.response",
         payload: { requestId, projects },
@@ -5633,7 +5645,7 @@ export class Session {
         type: "project.add.response",
         payload: {
           requestId: request.requestId,
-          project: this.buildProjectDescriptor(project),
+          project: await this.buildProjectDescriptor(project),
           error: null,
         },
       });
@@ -5667,7 +5679,7 @@ export class Session {
         payload: {
           requestId: request.requestId,
           directoryPath: result.directoryPath,
-          project: this.buildProjectDescriptor(result.project),
+          project: await this.buildProjectDescriptor(result.project),
           error: null,
           errorCode: null,
         },
@@ -5832,7 +5844,7 @@ export class Session {
           requestId: request.requestId,
           repo: repo.displayName,
           checkoutPath,
-          project: this.buildProjectDescriptor(project),
+          project: await this.buildProjectDescriptor(project),
           error: null,
         },
       });

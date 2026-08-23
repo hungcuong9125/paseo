@@ -231,9 +231,12 @@ export function TrackerKanbanColumn({
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        testID={`tracker-kanban-column-${lane}-scroll`}
       >
         {laneBody}
-        {laneHasMore && onLoadMore ? (
+      </ScrollView>
+      {laneHasMore && onLoadMore ? (
+        <View style={styles.footer} testID={`tracker-kanban-column-${lane}-footer`}>
           <Pressable
             style={styles.showMore}
             onPress={handleLoadMore}
@@ -248,8 +251,8 @@ export function TrackerKanbanColumn({
               </Text>
             )}
           </Pressable>
-        ) : null}
-      </ScrollView>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -283,6 +286,14 @@ const styles = StyleSheet.create((theme) => ({
   scroll: {
     flex: 1,
     minHeight: 0,
+  },
+  // Pinned below the scrollable card area so loading more cards can't push it
+  // down. flexShrink: 0 keeps the button's tap target from being squeezed;
+  // rendered only when there is a "Show more" to show, so a lane with no more
+  // cards collapses to zero height instead of reserving a blank footer next to
+  // a sibling lane that does have a button.
+  footer: {
+    flexShrink: 0,
   },
   scrollContent: {
     gap: theme.spacing[2],

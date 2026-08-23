@@ -712,6 +712,9 @@ describe("project command-center RPCs", () => {
               projectCustomIconRevision: null,
               projectRootPath: directoryPath,
               projectKind: "non_git",
+              // A freshly created directory has no `.ait/ait.db` inside it,
+              // so the fresh check (pas-2KY5X.28) correctly reports false.
+              aitInitialized: false,
             },
             error: null,
             errorCode: null,
@@ -4967,7 +4970,7 @@ test("keeps selective delivery scoped per socket when a retained session also ha
   ]);
 });
 
-test("sends project updates only to capable sockets in a retained session", () => {
+test("sends project updates only to capable sockets in a retained session", async () => {
   const messages: SessionOutboundMessage[] = [];
   const targetedMessages: Array<{ source: object; message: SessionOutboundMessage }> = [];
   const session = createSessionForTest({ messages, targetedMessages });
@@ -4976,7 +4979,10 @@ test("sends project updates only to capable sockets in a retained session", () =
   session.updateClientCapabilities(null, legacySocket);
   session.updateClientCapabilities({ [CLIENT_CAPS.projectUpdates]: true }, capableSocket);
 
-  session.emitProjectUpdate({
+  // emitProjectUpdate is async (pas-2KY5X.28's descriptor build awaits a
+  // fresh .ait/ait.db check) — awaited so the assertions below don't run
+  // before the message actually lands.
+  await session.emitProjectUpdate({
     kind: "upsert",
     project: createPersistedProjectRecord({
       projectId: "project-capable-socket",
@@ -5041,6 +5047,9 @@ test("project.list returns every active project descriptor", async () => {
             projectCustomIconRevision: null,
             projectRootPath: "/tmp/project-active",
             projectKind: "git",
+            // rootPath doesn't exist on disk in this fixture, so the fresh
+            // `.ait/ait.db` check (pas-2KY5X.28) correctly reports false.
+            aitInitialized: false,
           },
         ],
       },

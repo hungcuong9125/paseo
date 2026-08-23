@@ -88,6 +88,26 @@ describe("TrackerSession", () => {
     expect(findByType(emitted, "project.tracker.list.response")?.payload.error).toBeNull();
   });
 
+  it("threads the sort through a tracker list request", async () => {
+    const receivedSorts: Array<string | undefined> = [];
+    const { session, emitted } = makeSession({
+      listTrackers: async ({ sort }: { sort?: string }) => {
+        receivedSorts.push(sort);
+        return { trackers: [SAMPLE_TRACKER], hiddenCount: 0 };
+      },
+    });
+
+    await session.handleProjectTrackerListRequest({
+      type: "project.tracker.list.request",
+      requestId: "r-sort",
+      projectId: PROJECT_ID,
+      sort: "newest",
+    });
+
+    expect(receivedSorts[0]).toBe("newest");
+    expect(findByType(emitted, "project.tracker.list.response")?.payload.error).toBeNull();
+  });
+
   it("serves stats from the full tracker snapshot", async () => {
     const trackers = [
       { ...SAMPLE_TRACKER, id: "open-task", priority: "P0" as const },

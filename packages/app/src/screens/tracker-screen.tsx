@@ -92,6 +92,7 @@ import { useTrackerSearch } from "@/tracker/use-tracker-search";
 import { buildTrackerHierarchy, type TrackerHierarchy } from "@/tracker/tracker-hierarchy";
 import type { TrackerBoardLaneKey } from "@/tracker/tracker-board-model";
 import {
+  listVisibleStatusesForFilter,
   matchesListStatFilter,
   type TrackerStatCounts,
   type TrackerStatFilter,
@@ -440,9 +441,23 @@ function TrackerScreenContent(): ReactElement {
           serverName: host.serverName,
           projectId: host.projectId,
           projectName: host.projectName,
+          aitInitialized: host.aitInitialized,
+          projectRootPath: host.repoRoot,
         })),
       ),
     [projectSummaries],
+  );
+  // Every project whose descriptor has affirmatively said "no .ait/ait.db"
+  // (aitInitialized === false) — undefined stays in, since that means
+  // "unknown" (an old daemon, or a workspace-derived legacy descriptor with
+  // no wire answer), not "excluded" (pas-2KY5X.28). This is what actually
+  // drives the tracker fetch/count below: gating it out here, before any
+  // request goes out, is the whole point of the feature — a project with no
+  // database was previously only discovered as unusable by attempting (and
+  // paying for) a real RPC and having it fail.
+  const initializedProjectInputs = useMemo(
+    () => projectInputs.filter((project) => project.aitInitialized !== false),
+    [projectInputs],
   );
   const hasAnyProject = projectInputs.length > 0;
 
@@ -488,39 +503,69 @@ function TrackerScreenContent(): ReactElement {
     }
   }, [projectInputs, selectedProjectId]);
 
-  // The priority filter only ever narrows the fetch while List is the active
-  // view — Kanban's own priority filter (kanbanStatFilter) stays a client-side
-  // lane projection over the unfiltered set (buildTrackerBoard's isDimmed), so
-  // pushing it server-side here would wrongly narrow Kanban's data too, since
-  // both views share this one fetch.
+  // Priority narrows the fetch for both views. Kanban's buildTrackerBoard
+  // already drops non-matching cards client-side (tracker-board-model.ts),
+  // so sending the same priority server-side produces the identical card
+  // set — cheaper, and it makes laneTotals (built from sectionTotals) match
+  // what each lane actually renders instead of an all-priority overcount
+  // (pas-2KY5X.10). Status stays List-only below: Kanban's own status filter
+  // (kanbanStatFilter) only projects which lanes are visible, it never
+  // narrows the dataset, so pushing it would drop cards other lanes need.
   const priorityOption = useMemo(
-    () => (viewMode === "list" ? STAT_FILTER_TO_PRIORITY[listStatFilter] : undefined),
+    () => STAT_FILTER_TO_PRIORITY[viewMode === "list" ? listStatFilter : kanbanStatFilter],
+    [viewMode, listStatFilter, kanbanStatFilter],
+  );
+  // Which sections to keep loaded. Kanban always needs all four — it renders
+  // all five lanes from this one shared fetch. List with a priority filter
+  // also needs all four (priority spans every status). Only a status-shaped
+  // List filter (open/in_progress/done) narrows this to the exactly one
+  // section it shows — `undefined` here means "all four", matching the
+  // hook's own default, so this stays `undefined` for every other case
+  // instead of an equivalent-but-different four-element array.
+  const sectionsOption = useMemo(
+    () =>
+      viewMode === "list" && !isPriorityStatFilter(listStatFilter) && listStatFilter !== "all"
+        ? listVisibleStatusesForFilter(listStatFilter)
+        : undefined,
     [viewMode, listStatFilter],
   );
   // The single shared data source for both List and Kanban — always running
   // regardless of view mode or search. Switching view mode only changes how
-  // this array renders, never how it loads. Already scoped to
-  // `selectedProjectId` internally (or every project when none is selected),
-  // and now to `typeFilter`/the List priority filter too, so callers use
-  // `projectData.trackers` directly, no separate in-memory filter needed.
-  const pageStep = useTrackerPageStep();
+  // this array renders, never how it loads. Scoped internally to
+  // `selectedProjectId`, `typeFilter`, the List priority filter, and which
+  // status sections `sectionsOption` asks for.
+  //
+  // `trackers` still needs the List status filter applied on top of it:
+  // narrowing `sectionsOption` stops the hook fetching a section, but it
+  // deliberately keeps sections it already loaded rather than discarding
+  // them, so a section can outlive the filter that asked for it.
+  // One page step for the whole screen: what a section fetches, what the
+  // "Show N more" label promises, and what search pages by. In All-projects
+  // mode this is a shared budget across every relevant project — a k-way
+  // merge over each project's newest-first stream, gated on
+  // `server_info.features.aitTrackerSort` — rather than a page per project.
+  const browsePageSize = useTrackerPageStep();
   const projectData = useTrackerProjectData({
-    projects: projectInputs,
+    projects: initializedProjectInputs,
     selectedProjectId,
     all: true,
     enabled: hasAnyProject,
-    pageSize: pageStep,
+    pageSize: browsePageSize,
     type: typeFilter === "all" ? undefined : typeFilter,
     priority: priorityOption,
+    sections: sectionsOption,
   });
   // Exact server-computed counts for the toolbar stat pills — a separate
   // fetch from projectData because it has to stay unfiltered by
   // listStatFilter/kanbanStatFilter (the pills show every bucket at once) and
   // report every tracker type at once (one bucket per type), which the
   // paginated `projectData.trackers` array can't do once type is scoped into
-  // its own fetch.
+  // its own fetch. Scoped to initializedProjectInputs, not projectInputs
+  // (pas-2KY5X.28): a project the descriptor already says has no `.ait/ait.db`
+  // gets excluded before ever costing a stats RPC round-trip, which used to
+  // be the only way this hook discovered "uninitialised" at all.
   const stats = useTrackerStats({
-    projects: projectInputs,
+    projects: initializedProjectInputs,
     selectedProjectId,
     enabled: hasAnyProject,
   });
@@ -531,17 +576,98 @@ function TrackerScreenContent(): ReactElement {
   // filters. `stats.projectErrors` is scoped to the picker (by design, so a
   // wrong project doesn't pay for fetching data nobody's viewing), so it goes
   // silent on every project except whichever one is currently selected. A
-  // second, unscoped stats call keeps the bell honest — one request per
-  // project (not the four a status-paginated fetch would cost), and only
-  // enabled while a project is actually selected, since with "All projects"
-  // active it would be an identical, wasted duplicate of `stats` above.
+  // second, unscoped-ish stats call keeps the bell honest for the rest — but
+  // it excludes whatever project `stats` above already selected, since that
+  // one's errors already surface in `stats.projectErrors`; fetching it again
+  // here was a wasted duplicate request every mount with a project selected
+  // (pas-2KY5X.8). "All projects" mode needs no separate bell fetch at all:
+  // `stats` is already unscoped there, so this stays disabled and
+  // `bellProjectErrors` reads `stats.projectErrors` directly.
   const isProjectFiltered = selectedProjectId !== null;
+  // Scoped to initializedProjectInputs like `stats` above — a gated-out
+  // project has nothing left to discover here via an RPC (its bell row comes
+  // from gatedProjectErrors below instead), so probing it would just be
+  // another wasted request (pas-2KY5X.28).
+  const bellProjects = useMemo(
+    () => initializedProjectInputs.filter((project) => project.projectId !== selectedProjectId),
+    [initializedProjectInputs, selectedProjectId],
+  );
   const bellStats = useTrackerStats({
-    projects: projectInputs,
+    projects: bellProjects,
     selectedProjectId: null,
     enabled: hasAnyProject && isProjectFiltered,
   });
-  const bellProjectErrors = isProjectFiltered ? bellStats.projectErrors : stats.projectErrors;
+  // Second source of bell rows (pas-2KY5X.28): a project the descriptor
+  // already says has no `.ait/ait.db` never gets requested, so it can never
+  // surface through stats/bellStats' RPC-failure path above — this
+  // synthesizes the identical TrackerProjectError shape TrackerErrorRow
+  // already renders, straight from the descriptor. Always included
+  // (independent of isProjectFiltered) since aitInitialized is a fact about
+  // the project, not about what the toolbar picker currently has selected —
+  // the same "workspace-wide" posture the comment above already established
+  // for this list. projectRootPath is attached directly, so the row's copy
+  // command doesn't need to regex-parse anything (there is no RPC error
+  // message to parse from).
+  const gatedProjectErrors = useMemo<TrackerProjectError[]>(
+    () =>
+      projectInputs
+        .filter((project) => project.aitInitialized === false)
+        .map((project) => ({
+          serverId: project.serverId,
+          serverName: project.serverName,
+          projectId: project.projectId,
+          projectName: project.projectName,
+          message: `no ait database at ${project.projectRootPath}/.ait/ait.db — run 'ait init' first`,
+          code: "uninitialised",
+          projectRootPath: project.projectRootPath,
+        })),
+    [projectInputs],
+  );
+  const bellProjectErrors = useMemo(
+    () => [
+      ...gatedProjectErrors,
+      ...(isProjectFiltered
+        ? [...stats.projectErrors, ...bellStats.projectErrors]
+        : stats.projectErrors),
+    ],
+    [gatedProjectErrors, isProjectFiltered, stats.projectErrors, bellStats.projectErrors],
+  );
+
+  // The picker offers only projects the bell hasn't flagged as erroring —
+  // the same signal pas-2KY5X.14 already treats as "no usable data" for that
+  // project, reused here instead of a second, driftable check (pas-2KY5X.17).
+  // A project that's merely offline or whose host lacks `aitTrackerStats`
+  // contributes neither an error nor a count (useTrackerStats' own
+  // distinction), so it stays listed — only an active failure hides it.
+  // "Active failure" now has two sources, not one (pas-2KY5X.28):
+  // bellProjectErrors folds in both a real RPC failure (no database, cli
+  // missing, ... — the pre-.28 path, for whatever still needs a live request
+  // to discover: an old daemon, or a failure `aitInitialized` doesn't cover)
+  // and the descriptor-derived gatedProjectErrors (aitInitialized === false,
+  // known upfront, no request involved). This filter doesn't need to change
+  // to account for that — it was always "whatever bellProjectErrors says",
+  // and that set just grew a second contributor. What DID change: this no
+  // longer merely trims what the picker offers while `projectInputs` drives
+  // every fetch underneath it unfiltered — `projectData`/`stats` above now
+  // fetch off `initializedProjectInputs`, which already excludes gated-out
+  // projects before any request goes out; this filter's remaining job is
+  // narrowing further, for whatever fails for a reason `aitInitialized`
+  // doesn't capture. pickerProjectInputs stays its own thing rather than
+  // becoming an alias of initializedProjectInputs: its scope is broader
+  // (every active-failure reason, not just "no database"), and conflating
+  // them would silently drop a project whose *other* kind of failure this
+  // filter still needs to catch.
+  const pickerProjectInputs = useMemo(() => {
+    if (bellProjectErrors.length === 0) {
+      return projectInputs;
+    }
+    const erroredKeys = new Set(
+      bellProjectErrors.map((error) => `${error.serverId}:${error.projectId}`),
+    );
+    return projectInputs.filter(
+      (project) => !erroredKeys.has(`${project.serverId}:${project.projectId}`),
+    );
+  }, [projectInputs, bellProjectErrors]);
 
   // Built from the full (unfiltered-by-status) project set project data
   // returns — the List row's delete action needs to know the *real* child
@@ -582,7 +708,13 @@ function TrackerScreenContent(): ReactElement {
     isProjectListLoading,
     isLoading: isListSearch ? false : projectData.isLoading,
     selectedProjectId: selectedProjectId ?? "all",
-    projectErrors: projectData.projectErrors,
+    // gatedProjectErrors first: a project excluded from initializedProjectInputs
+    // never reaches projectData (that's the whole point of the gate), so it
+    // can never surface through projectData.projectErrors — without this, a
+    // still-selected gated project silently falls through to the generic
+    // "empty" state instead of the actionable "Initialize tracker" CTA
+    // (pas-2KY5X.28).
+    projectErrors: [...gatedProjectErrors, ...projectData.projectErrors],
     visibleTrackersCount,
   });
 
@@ -689,31 +821,28 @@ function TrackerScreenContent(): ReactElement {
   );
   // Status totals can't express the ready-versus-blocked split within Open,
   // so `ready` and `open` both fall back to their loaded count (laneTotal:
-  // null) — tracked separately as pas-UkLWZ.10. `done` sums closed +
-  // cancelled per the Component contract; `in_progress` and `cancelled` map
-  // straight across.
+  // null) — tracked separately as pas-UkLWZ.10. `laneForTracker` in
+  // tracker-board-model.ts maps `closed -> "done"` and `cancelled ->
+  // "cancelled"` as two separate lanes — the Done column renders closed items
+  // only, so its total is `closed` alone; summing in cancelled here would
+  // double-count every cancelled tracker across the board (pas-2KY5X.2).
+  // `in_progress` and `cancelled` map straight across.
   const laneTotals = useMemo<Partial<Record<TrackerBoardLaneKey, number | null>>>(() => {
     const { closed, cancelled, in_progress: inProgress } = projectData.sectionTotals;
-    return {
-      ready: null,
-      open: null,
-      in_progress: inProgress,
-      done: closed !== null && cancelled !== null ? closed + cancelled : null,
-      cancelled,
-    };
+    return { ready: null, open: null, in_progress: inProgress, done: closed, cancelled };
   }, [projectData.sectionTotals]);
   const laneHasMore = useMemo<Partial<Record<TrackerBoardLaneKey, boolean>>>(() => {
     const { closed, cancelled, in_progress: inProgress, open } = projectData.sectionHasMore;
-    return { ready: open, open, in_progress: inProgress, done: closed || cancelled, cancelled };
+    return { ready: open, open, in_progress: inProgress, done: closed, cancelled };
   }, [projectData.sectionHasMore]);
   const laneLoadingMore = useMemo<Partial<Record<TrackerBoardLaneKey, boolean>>>(() => {
     const { closed, cancelled, in_progress: inProgress, open } = projectData.sectionLoadingMore;
-    return { ready: open, open, in_progress: inProgress, done: closed || cancelled, cancelled };
+    return { ready: open, open, in_progress: inProgress, done: closed, cancelled };
   }, [projectData.sectionLoadingMore]);
-  // The Done lane merges closed+cancelled (see laneTotals above), so paging
-  // it forward has to advance both underlying status sections at once; every
-  // other lane maps onto exactly one status (`ready`/`open` both page the
-  // `open` section, since Ready is a client-side projection of it).
+  // Every lane now maps onto exactly one status section (`ready`/`open` both
+  // page the `open` section, since Ready is a client-side projection of it —
+  // see the reasoning below on why that one is left as a shared cursor
+  // instead of being split further).
   const handleKanbanLoadMore = useCallback(
     (lane: TrackerBoardLaneKey) => {
       switch (lane) {
@@ -726,7 +855,6 @@ function TrackerScreenContent(): ReactElement {
           return;
         case "done":
           projectData.loadMore("closed");
-          projectData.loadMore("cancelled");
           return;
         case "cancelled":
           projectData.loadMore("cancelled");
@@ -903,8 +1031,9 @@ function TrackerScreenContent(): ReactElement {
         isLoadingMoreAll={searchState.isLoadingMore}
         isSearchLoading={isListSearch && searchState.isLoading}
         showProjectLabel={selectedProjectId === null}
-        projects={projectInputs}
+        projects={pickerProjectInputs}
         selectedProjectId={selectedProjectId}
+        selectedProjectName={selectedProject?.projectName ?? null}
         onSelectProject={handleSelectProject}
         statFilter={effectiveStatFilter}
         onStatFilterChange={effectiveOnStatFilterChange}
@@ -929,7 +1058,7 @@ function TrackerScreenContent(): ReactElement {
         onRetry={handleRetry}
       />
       <TrackerFormSheet
-        projects={projectInputs}
+        projects={initializedProjectInputs}
         visible={createOpen}
         onClose={handleCloseCreate}
         onCreated={handleTrackerCreated}
@@ -989,14 +1118,24 @@ function TrackerSearchRow({
 function ProjectPicker({
   projects,
   selectedProjectId,
+  selectedProjectName,
   onSelectProject,
 }: {
   projects: TrackerProjectInput[];
   selectedProjectId: string | null;
+  /** Falls back here, not straight to "All projects", when `selectedProjectId`
+   * isn't in `projects` — that list is already filtered down to what the
+   * picker offers (pas-2KY5X.17/.28: an erroring or gated-out project drops
+   * out of it), so a project that's *still selected* despite failing that
+   * filter would otherwise read as if nothing were selected at all, even
+   * though the body below is showing that exact project's own state. */
+  selectedProjectName: string | null;
   onSelectProject: (projectId: string | null) => void;
 }): ReactElement {
   const selectedLabel = selectedProjectId
-    ? (projects.find((p) => p.projectId === selectedProjectId)?.projectName ?? "All projects")
+    ? (projects.find((p) => p.projectId === selectedProjectId)?.projectName ??
+      selectedProjectName ??
+      "All projects")
     : "All projects";
   const handleSelectAll = useCallback(() => onSelectProject(null), [onSelectProject]);
 
@@ -1312,7 +1451,12 @@ function extractProjectDir(message: string): string | null {
 }
 
 function TrackerErrorRow({ error }: { error: TrackerProjectError }): ReactElement {
-  const projectDir = extractProjectDir(error.message);
+  // A gate-derived error (pas-2KY5X.28) carries projectRootPath directly —
+  // no RPC error message to regex-parse, since no request was ever sent.
+  // The regex stays the fallback for everything else: an old daemon that
+  // predates aitProjectInitStatus, or a project that fails for some other
+  // reason after passing the gate (cli_missing, a transient RPC error, ...).
+  const projectDir = error.projectRootPath ?? extractProjectDir(error.message);
   const command = projectDir ? `cd "${projectDir}" && ait init` : "ait init";
   const [copied, setCopied] = useState(false);
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1548,6 +1692,7 @@ function TrackerScreenBody({
   showProjectLabel,
   projects,
   selectedProjectId,
+  selectedProjectName,
   onSelectProject,
   statFilter,
   onStatFilterChange,
@@ -1606,6 +1751,14 @@ function TrackerScreenBody({
   showProjectLabel: boolean;
   projects: TrackerProjectInput[];
   selectedProjectId: string | null;
+  /** The selected project's own name, looked up from the unfiltered project
+   * list — not `projects` above, which is picker-filtered (pas-2KY5X.17/.28)
+   * and may not contain the selection at all (an already-selected project
+   * that starts erroring, or gets gated by aitInitialized === false, drops
+   * out of the picker's own list but stays selected). Lets the toolbar keep
+   * showing the real project name instead of silently reading as "All
+   * projects" while the body still renders that project's own state. */
+  selectedProjectName: string | null;
   onSelectProject: (projectId: string | null) => void;
   statFilter: StatFilter;
   onStatFilterChange: (value: StatFilter) => void;
@@ -1666,6 +1819,7 @@ function TrackerScreenBody({
       statsLoading={statsLoading}
       projects={projects}
       selectedProjectId={selectedProjectId}
+      selectedProjectName={selectedProjectName}
       onSelectProject={onSelectProject}
       statFilter={statFilter}
       onStatFilterChange={onStatFilterChange}
@@ -2101,6 +2255,15 @@ function KanbanPriorityFilterRow({
 // TrackerStatCounts shape — converting TrackerStatsCounts's per-type bucket
 // into that shape here keeps all of them unchanged rather than threading the
 // nested byStatus/byPriority shape through every leaf.
+//
+// `done` is `closed` alone, matching tracker-stats.ts's
+// listVisibleStatusesForFilter("done") (["closed"], not cancelled) and the
+// List section header's own `sectionTotals.closed` — the same "Done means
+// closed, cancelled is its own bucket" convention the Kanban Done lane
+// already settled on (pas-2KY5X.2). Summing cancelled in here was the actual
+// bug behind pas-2KY5X.18: the pill's own number disagreed with what
+// selecting it would show, on top of disagreeing with the section header
+// right below it.
 function toLegacyStatCounts(bucket: TrackerStatsCounts["all"]): TrackerStatCounts {
   return {
     open: bucket.byStatus.open,
@@ -2110,7 +2273,7 @@ function toLegacyStatCounts(bucket: TrackerStatsCounts["all"]): TrackerStatCount
     p2: bucket.byPriority.P2,
     p3: bucket.byPriority.P3,
     p4: bucket.byPriority.P4,
-    done: bucket.byStatus.closed + bucket.byStatus.cancelled,
+    done: bucket.byStatus.closed,
     all: bucket.total,
   };
 }
@@ -2226,6 +2389,7 @@ function TrackersToolbar({
   statsLoading,
   projects,
   selectedProjectId,
+  selectedProjectName,
   onSelectProject,
   statFilter,
   onStatFilterChange,
@@ -2245,6 +2409,8 @@ function TrackersToolbar({
   statsLoading: boolean;
   projects: TrackerProjectInput[];
   selectedProjectId: string | null;
+  /** See ProjectPicker's own doc comment on this same field. */
+  selectedProjectName: string | null;
   onSelectProject: (projectId: string | null) => void;
   statFilter: StatFilter;
   onStatFilterChange: (value: StatFilter) => void;
@@ -2276,6 +2442,7 @@ function TrackersToolbar({
       <ProjectPicker
         projects={projects}
         selectedProjectId={selectedProjectId}
+        selectedProjectName={selectedProjectName}
         onSelectProject={onSelectProject}
       />
     ) : null;

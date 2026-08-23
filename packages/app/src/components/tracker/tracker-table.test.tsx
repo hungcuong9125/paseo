@@ -6,7 +6,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AggregatedTracker } from "@/tracker/aggregated-trackers";
 
-const { theme, mutationMocks, confirmDialogMock } = vi.hoisted(() => ({
+const { theme, mutationMocks, confirmDialogMock, breakpointState } = vi.hoisted(() => ({
+  // Mutable so pas-2KY5X.22's tests can simulate a breakpoint change without
+  // re-mocking the whole module — defaults to "undefined", same as every
+  // other test in this file relied on before those tests existed.
+  breakpointState: { current: undefined as string | undefined },
   theme: {
     colors: {
       surface0: "#000",
@@ -42,7 +46,7 @@ vi.mock("react-native-unistyles", () => ({
       typeof factory === "function" ? (factory as (t: typeof theme) => unknown)(theme) : factory,
   },
   withUnistyles: <T,>(Component: T): T => Component,
-  useUnistyles: () => ({ theme, rt: {}, breakpoint: undefined }),
+  useUnistyles: () => ({ theme, rt: { breakpoint: breakpointState.current } }),
 }));
 
 vi.mock("react-i18next", () => ({
@@ -187,6 +191,7 @@ describe("TrackerTable status grouping", () => {
     container?.remove();
     container = null;
     vi.unstubAllGlobals();
+    breakpointState.current = undefined;
   });
 
   it("renders a section for every status that has at least one item", () => {
@@ -322,13 +327,38 @@ describe("TrackerTable status grouping", () => {
       '[data-testid="tracker-table-section-open-show-more"]',
     );
     expect(showMore).not.toBeNull();
-    expect(showMore?.textContent).toContain("Show 50 more");
+    expect(showMore?.textContent).toContain("Show 30 more");
 
     act(() => {
       showMore?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     });
 
     expect(onLoadMore).toHaveBeenCalledWith("open");
+  });
+
+  // pas-2KY5X.22: the page step's own breakpoint is "xs" only — "sm" (tablet,
+  // or a narrow desktop window) must take the desktop step, not the mobile
+  // one, even though useIsCompactFormFactor (a different, layout-shell
+  // question) would call "sm" compact.
+  it.each([
+    ["xs", "Show 20 more"],
+    ["sm", "Show 30 more"],
+    ["md", "Show 30 more"],
+  ] as const)("at breakpoint %s, Show more reads '%s'", (breakpoint, expectedLabel) => {
+    breakpointState.current = breakpoint;
+    const onLoadMore = vi.fn();
+    const trackers = [tracker({ id: "open-1", status: "open", title: "Open 1" })];
+    const { container: c } = renderTable(trackers, {
+      sectionHasMore: { open: true },
+      sectionLoadingMore: { open: false },
+      onLoadMore,
+    });
+    container = c;
+
+    const showMore = c.querySelector<HTMLElement>(
+      '[data-testid="tracker-table-section-open-show-more"]',
+    );
+    expect(showMore?.textContent).toContain(expectedLabel);
   });
 
   it("reads row hasChildren from tracker.childCount when defined and falls back to hierarchy when undefined", () => {
@@ -399,6 +429,7 @@ describe("TrackerTable mutation patching", () => {
     container?.remove();
     container = null;
     vi.unstubAllGlobals();
+    breakpointState.current = undefined;
   });
 
   it("calls onTrackerPatched with the merged tracker after a row action succeeds", async () => {
