@@ -1,7 +1,9 @@
 /**
  * @vitest-environment jsdom
  */
-import { useEffect, useReducer } from "react";
+import React, { useEffect, useReducer } from "react";
+import { createRoot } from "react-dom/client";
+import { Pressable } from "react-native";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrackerStatus, TrackerSummary } from "@getpaseo/protocol/tracker/types";
@@ -234,6 +236,88 @@ describe("useTrackerProjectData", () => {
     );
     expect(prjAOpenRequests).toHaveLength(2);
     expect(prjBOpenRequests).toHaveLength(1);
+  });
+
+  it("a real press on the Show More button, the instant it lands in the DOM, fetches page 2 on the first click (pas-2KY5X.16)", async () => {
+    // Reproduces the reported "Show more needs two clicks" bug. This has to
+    // render a real Pressable and dispatch a real DOM click with NO act()
+    // wrapping around the resolve/poll/click sequence — renderHook's own
+    // result.current accessor turned out to force a synchronous act()-style
+    // flush that masked the race entirely (verified: a renderHook + `await
+    // act(async () => { resolve(); await Promise.resolve(); result.current.
+    // loadMore(...) })` version of this test passed identically on the
+    // pre-fix code, because act() had already flushed the effect by the time
+    // loadMore ran — a false-negative that would have shipped this bug
+    // uncaught). Only a bare createRoot().render() + a raw
+    // element.dispatchEvent(), matching how the real app actually receives a
+    // click, reproduces it: on the pre-fix code (sectionsRef synced via a
+    // useEffect) this asserts exactly 1 request — the click landed before the
+    // effect flushed, read pre-merge cursors, found no targets, and silently
+    // did nothing; a second, later press worked because the effect had had
+    // more time to catch up by then.
+    let resolveOpenPage: (value: unknown) => void = () => {};
+    const openPagePromise = new Promise((resolve) => {
+      resolveOpenPage = resolve;
+    });
+    const trackerList = vi.fn(
+      async (args: { status?: TrackerStatus; page?: { cursor?: string } }) => {
+        if (args.status === "open" && args.page?.cursor === undefined) {
+          return openPagePromise;
+        }
+        return { trackers: [], hiddenCount: 0, pageInfo: { nextCursor: null, hasMore: false } };
+      },
+    );
+    runtimeState.getClient.mockReturnValue({ trackerList, trackerSearch: vi.fn() });
+
+    function ShowMoreHarness() {
+      const data = useTrackerProjectData({
+        projects: [PROJECT_A],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 1,
+      });
+      return data.sectionHasMore.open
+        ? React.createElement(Pressable, {
+            testID: "show-more",
+            onPress: () => data.loadMore("open"),
+          })
+        : null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    try {
+      act(() => {
+        root.render(React.createElement(ShowMoreHarness));
+      });
+
+      resolveOpenPage({
+        trackers: [makeTracker("a-open-1")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: "1", hasMore: true },
+      });
+
+      let button: HTMLElement | null = null;
+      for (let i = 0; i < 50 && !button; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        button = container.querySelector('[data-testid="show-more"]');
+      }
+      if (!button) {
+        throw new Error("Expected the Show More button to appear");
+      }
+      button.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const openRequests = trackerList.mock.calls.filter(
+        (call) => (call[0] as { status?: TrackerStatus }).status === "open",
+      );
+      expect(openRequests).toHaveLength(2);
+    } finally {
+      act(() => root.unmount());
+      container.remove();
+    }
   });
 
   it("sectionTotals sums pageInfo.totalCount across in-scope projects, and goes null when any project omits it", async () => {

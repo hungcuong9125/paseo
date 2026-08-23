@@ -445,11 +445,17 @@ export function useTrackerProjectData(
   // Mirrors `sections` for loadMore to read without depending on it — keeps
   // loadMore's identity stable across merges instead of churning on every
   // page (memoized consumers of the callback would otherwise re-render on
-  // every merge for no reason).
+  // every merge for no reason). Assigned during render, not in a `useEffect`
+  // (pas-2KY5X.16): a passive effect only flushes after the browser paints,
+  // so the "Show more" button — visible the instant `sections` state carries
+  // `hasMore: true` — could already be clickable while `sectionsRef` still
+  // held the pre-merge cursors. A press landing in that window read
+  // `hasMore: undefined` for every project, found no targets, and returned
+  // without fetching at all; a second press, by then past the effect flush,
+  // worked. Assigning in the render body keeps the ref exactly as current as
+  // the state it mirrors, with no such window.
   const sectionsRef = useRef(sections);
-  useEffect(() => {
-    sectionsRef.current = sections;
-  }, [sections]);
+  sectionsRef.current = sections;
 
   // Appends one resolved page for (project, status) into the live state,
   // re-sorting only the affected section. Never runs unless the caller has

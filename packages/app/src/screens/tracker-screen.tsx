@@ -579,6 +579,28 @@ function TrackerScreenContent(): ReactElement {
     [isProjectFiltered, stats.projectErrors, bellStats.projectErrors],
   );
 
+  // The picker offers only projects the bell hasn't flagged as erroring —
+  // the same signal pas-2KY5X.14 already treats as "no usable data" for that
+  // project (an `ait` RPC failure: no database, cli missing, ...), reused
+  // here instead of a second, driftable check (pas-2KY5X.17). A project
+  // that's merely offline or whose host lacks `aitTrackerStats` contributes
+  // neither an error nor a count (useTrackerStats' own distinction), so it
+  // stays listed — only an active failure hides it. This only trims what the
+  // picker offers; `projectInputs` itself still drives every fetch, since
+  // those are exactly the requests that surface a project's error here in
+  // the first place.
+  const pickerProjectInputs = useMemo(() => {
+    if (bellProjectErrors.length === 0) {
+      return projectInputs;
+    }
+    const erroredKeys = new Set(
+      bellProjectErrors.map((error) => `${error.serverId}:${error.projectId}`),
+    );
+    return projectInputs.filter(
+      (project) => !erroredKeys.has(`${project.serverId}:${project.projectId}`),
+    );
+  }, [projectInputs, bellProjectErrors]);
+
   // Built from the full (unfiltered-by-status) project set project data
   // returns — the List row's delete action needs to know the *real* child
   // count (any status), and is only a fallback now: both TrackerTable and
@@ -935,7 +957,7 @@ function TrackerScreenContent(): ReactElement {
         isLoadingMoreAll={searchState.isLoadingMore}
         isSearchLoading={isListSearch && searchState.isLoading}
         showProjectLabel={selectedProjectId === null}
-        projects={projectInputs}
+        projects={pickerProjectInputs}
         selectedProjectId={selectedProjectId}
         onSelectProject={handleSelectProject}
         statFilter={effectiveStatFilter}
@@ -2133,6 +2155,15 @@ function KanbanPriorityFilterRow({
 // TrackerStatCounts shape — converting TrackerStatsCounts's per-type bucket
 // into that shape here keeps all of them unchanged rather than threading the
 // nested byStatus/byPriority shape through every leaf.
+//
+// `done` is `closed` alone, matching tracker-stats.ts's
+// listVisibleStatusesForFilter("done") (["closed"], not cancelled) and the
+// List section header's own `sectionTotals.closed` — the same "Done means
+// closed, cancelled is its own bucket" convention the Kanban Done lane
+// already settled on (pas-2KY5X.2). Summing cancelled in here was the actual
+// bug behind pas-2KY5X.18: the pill's own number disagreed with what
+// selecting it would show, on top of disagreeing with the section header
+// right below it.
 function toLegacyStatCounts(bucket: TrackerStatsCounts["all"]): TrackerStatCounts {
   return {
     open: bucket.byStatus.open,
@@ -2142,7 +2173,7 @@ function toLegacyStatCounts(bucket: TrackerStatsCounts["all"]): TrackerStatCount
     p2: bucket.byPriority.P2,
     p3: bucket.byPriority.P3,
     p4: bucket.byPriority.P4,
-    done: bucket.byStatus.closed + bucket.byStatus.cancelled,
+    done: bucket.byStatus.closed,
     all: bucket.total,
   };
 }

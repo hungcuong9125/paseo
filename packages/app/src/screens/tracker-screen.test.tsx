@@ -810,6 +810,11 @@ describe("TrackerScreen mutation patching", () => {
     root = createRoot(container);
     setProjectsState({});
     setProjectDataState({ trackers: [taskA] });
+    // statsState isn't reset by anything else here — without this, a test
+    // that sets projectErrors (e.g. to exercise the bell or pas-2KY5X.17's
+    // picker filter) leaks that into whichever test runs next and never
+    // calls setStatsState itself.
+    setStatsState({});
     lastKanbanBoardProps.current = null;
     lastListTableProps.current = null;
     lastFormSheetProps.current = null;
@@ -921,6 +926,29 @@ describe("TrackerScreen mutation patching", () => {
     expect(statsState.current.refetch).toHaveBeenCalled();
   });
 
+  it("the List toolbar's Done pill counts closed alone, not closed+cancelled, matching the section header below it (pas-2KY5X.18)", () => {
+    const bucket: TrackerStatsCounts["all"] = {
+      total: 9,
+      byStatus: { open: 0, in_progress: 0, closed: 3, cancelled: 2 },
+      byPriority: { P0: 0, P1: 0, P2: 9, P3: 0, P4: 0 },
+    };
+    setStatsState({
+      counts: { all: bucket, task: bucket, epic: bucket, initiative: bucket },
+    });
+    render();
+    switchToList();
+
+    const donePill = container?.querySelector<HTMLElement>('[data-testid="trackers-stat-done"]');
+    if (!donePill) throw new Error("Expected the Done stat pill to render");
+    // 3 (closed), never 5 (closed+cancelled) — clicking this pill only ever
+    // surfaces closed rows (listVisibleStatusesForFilter("done") === ["closed"]
+    // in tracker-stats.ts), so a count that included cancelled would disagree
+    // with what selecting the pill actually shows, on top of disagreeing with
+    // the section header's own closed-only total right below it.
+    expect(donePill.textContent).toContain("3");
+    expect(donePill.textContent).not.toContain("5");
+  });
+
   it("patches the shared hook with the transition's own response after a Kanban transition succeeds", async () => {
     render();
     switchToKanban();
@@ -991,6 +1019,10 @@ describe("TrackerScreen mutation patching", () => {
       message: "No ait database",
       code: "uninitialised",
     };
+    // A third, error-free project (prj-c) keeps the picker showing more than
+    // one option after pas-2KY5X.17 hides prj-b from it — without it, the
+    // picker itself wouldn't render at all (see the .17 test below), and
+    // there'd be nothing to click to select prj-a through.
     setProjectsState({
       projects: [
         project({ hosts: [hostEntry({ projectId: "prj-a", projectName: "Project A" })] }),
@@ -998,6 +1030,11 @@ describe("TrackerScreen mutation patching", () => {
           viewKey: "remote:github.com/acme/other",
           projectName: "acme/other",
           hosts: [hostEntry({ projectId: "prj-b", projectName: "Project B" })],
+        }),
+        project({
+          viewKey: "remote:github.com/acme/third",
+          projectName: "acme/third",
+          hosts: [hostEntry({ projectId: "prj-c", projectName: "Project C" })],
         }),
       ],
     });
@@ -1023,6 +1060,71 @@ describe("TrackerScreen mutation patching", () => {
     ).not.toBeNull();
   });
 
+  it("the project picker never offers a project the bell has flagged as erroring (pas-2KY5X.17)", () => {
+    const errorOnProjectB: TrackerProjectError = {
+      serverId: "host-a",
+      serverName: "alpha",
+      projectId: "prj-b",
+      projectName: "Project B",
+      message: "No ait database",
+      code: "uninitialised",
+    };
+    setProjectsState({
+      projects: [
+        project({ hosts: [hostEntry({ projectId: "prj-a", projectName: "Project A" })] }),
+        project({
+          viewKey: "remote:github.com/acme/other",
+          projectName: "acme/other",
+          hosts: [hostEntry({ projectId: "prj-b", projectName: "Project B" })],
+        }),
+        project({
+          viewKey: "remote:github.com/acme/third",
+          projectName: "acme/third",
+          hosts: [hostEntry({ projectId: "prj-c", projectName: "Project C" })],
+        }),
+      ],
+    });
+    setStatsState({ projectErrors: [errorOnProjectB] });
+    render();
+
+    expect(
+      container?.querySelector('[data-testid="trackers-project-picker-prj-a"]'),
+    ).not.toBeNull();
+    expect(
+      container?.querySelector('[data-testid="trackers-project-picker-prj-c"]'),
+    ).not.toBeNull();
+    expect(container?.querySelector('[data-testid="trackers-project-picker-prj-b"]')).toBeNull();
+  });
+
+  it("the project picker doesn't render at all once erroring projects leave only one selectable project (pas-2KY5X.17)", () => {
+    const errorOnProjectB: TrackerProjectError = {
+      serverId: "host-a",
+      serverName: "alpha",
+      projectId: "prj-b",
+      projectName: "Project B",
+      message: "No ait database",
+      code: "uninitialised",
+    };
+    setProjectsState({
+      projects: [
+        project({ hosts: [hostEntry({ projectId: "prj-a", projectName: "Project A" })] }),
+        project({
+          viewKey: "remote:github.com/acme/other",
+          projectName: "acme/other",
+          hosts: [hostEntry({ projectId: "prj-b", projectName: "Project B" })],
+        }),
+      ],
+    });
+    setStatsState({ projectErrors: [errorOnProjectB] });
+    render();
+
+    // Same "only offer a picker when there's something to pick between" rule
+    // the screen already applies to a genuinely single-project workspace —
+    // once prj-b is filtered out, prj-a is the only project left, so the
+    // trigger itself shouldn't render.
+    expect(container?.querySelector('[data-testid="trackers-project-picker-trigger"]')).toBeNull();
+  });
+
   it("the bell doesn't double-fetch or double-report the picker's own selected project (pas-2KY5X.8)", () => {
     const errorOnProjectA: TrackerProjectError = {
       serverId: "host-a",
@@ -1042,7 +1144,11 @@ describe("TrackerScreen mutation patching", () => {
         }),
       ],
     });
-    setStatsState({ projectErrors: [errorOnProjectA] });
+    // Selected while healthy, then it starts erroring — pas-2KY5X.17 hides an
+    // already-erroring project from the picker, so it can no longer be
+    // selected there in the first place; this is the reachable version of
+    // "the selected project is also the one erroring" (e.g. its ait database
+    // disappears mid-session, after selection already happened).
     render();
 
     const projectAOption = container?.querySelector<HTMLElement>(
@@ -1052,6 +1158,9 @@ describe("TrackerScreen mutation patching", () => {
     act(() => {
       projectAOption.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     });
+
+    setStatsState({ projectErrors: [errorOnProjectA] });
+    render();
 
     // The bell's own call excludes prj-a (the picker already covers it), so
     // prj-a's error reaches the bell exactly once — via the picker-scoped
