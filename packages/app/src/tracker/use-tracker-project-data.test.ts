@@ -1532,10 +1532,17 @@ describe("useTrackerProjectData merge mode (pas-2KY5X.15)", () => {
   // months-old rows, and clicking "Show more" then drops genuinely newer rows
   // ABOVE what is already on screen.
   it("fills the window from whichever project owns the recent range, not budget/N from each", async () => {
-    const dense = Array.from(
-      { length: 100 },
-      (_, index) =>
-        `2026-08-${String(20 + Math.floor(index / 50)).padStart(2, "0")}T${String(23 - (index % 24)).padStart(2, "0")}:00:00.000Z`,
+    // Strictly decreasing by the hour, one index at a time — the day-vs-hour
+    // formula this replaced (`23 - (index % 24)` alongside `index / 50` for
+    // the day) wrapped the hour back to 23 every 24 entries without the day
+    // rolling over to match, so index 0 and index 24 both landed on
+    // "2026-08-20T23:00:00.000Z" — a fixture bug that violated
+    // installDatedSortedClient's own "newest-first stream" contract. The old
+    // sortMerged global re-sort silently absorbed that; pas-2KY5X.37 removed
+    // it from the merged path specifically so a genuinely out-of-order
+    // stream is no longer masked.
+    const dense = Array.from({ length: 100 }, (_, index) =>
+      new Date(Date.UTC(2026, 7, 24, 23, 0, 0) - index * 3_600_000).toISOString(),
     );
     const sparse = ["2026-01-05T00:00:00.000Z", "2026-01-04T00:00:00.000Z"];
     const { fetchedRowCounts } = installDatedSortedClient({
@@ -1570,9 +1577,18 @@ describe("useTrackerProjectData merge mode (pas-2KY5X.15)", () => {
     const projectsInWindow = new Set(result.current.trackers.map((t) => t.projectId));
     expect([...projectsInWindow]).toEqual(["prj-0"]);
 
-    // Rows come out in true newest-first order, with no duplicates.
+    // Rows come out in newest-first order (non-increasing createdAt — this
+    // fixture's hourly clock wraps every 24 entries, so real ties are part
+    // of what's being checked here), with no duplicates. A pairwise check
+    // rather than sort().toReversed(): pas-2KY5X.37 stopped re-sorting the
+    // merged path, so tied rows now keep the k-way merge's own emission
+    // order instead of a fresh global sort's tiebreak order — both are
+    // valid "newest-first" orderings for a tie, but only a pairwise check
+    // tolerates either.
     const createdAts = result.current.trackers.map((t) => t.createdAt);
-    expect([...createdAts].sort().toReversed()).toEqual(createdAts);
+    for (let i = 1; i < createdAts.length; i++) {
+      expect(createdAts[i]! <= createdAts[i - 1]!).toBe(true);
+    }
     expect(new Set(result.current.trackers.map((t) => t.id)).size).toBe(30);
 
     // Correctness here costs round-trips (the sparse projects each have to be
@@ -2236,5 +2252,187 @@ describe("useTrackerProjectData sectionTotals partial sum (pas-2KY5X.25)", () =>
     // undercount below the 3 rows actually on screen) or treating prj-b as
     // contributing 0 (same undercount, worse than the un-fixed bug).
     expect(result.current.sectionTotals.open).toBeNull();
+  });
+});
+
+describe("useTrackerProjectData merge-path position stability (pas-2KY5X.37)", () => {
+  beforeEach(() => {
+    connectionStatusState.byServer = {};
+  });
+
+  // created_at has second resolution, so ties are the norm, not the
+  // exception (paseo's own .ait/ait.db: 47 rows over 24 distinct timestamps,
+  // largest tie group 7) — three projects, three rows each, all tied at the
+  // same instant, is a realistic shape, not a contrived edge case.
+  it("a tied row already on screen keeps its exact position when a later page arrives", async () => {
+    const T = "2026-08-24T00:00:00.000Z";
+    const tied = [T, T, T];
+    installDatedSortedClient({ "prj-0": tied, "prj-1": tied, "prj-2": tied });
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: makeProjects(3),
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 4,
+        sections: ["open"],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const firstPage = result.current.trackers.map((t) => t.id);
+    expect(firstPage).toHaveLength(4);
+
+    act(() => {
+      result.current.loadMore("open");
+    });
+    await waitFor(() => expect(result.current.sectionLoadingMore.open).toBe(false));
+
+    // The property: every row from page one keeps the exact array position
+    // it had before page two arrived. Before pas-2KY5X.37, applyMergedResult
+    // re-sorted the WHOLE accumulated array on every page with a comparator
+    // whose tie fallback (id) has no relationship to fetch order — a
+    // same-tied row arriving on page two could rank above (by id) a row
+    // already shown from page one, and visibly jump above it. Fails against
+    // the pre-fix source: this is the "byte-identical position" test.
+    const afterPageTwo = result.current.trackers.map((t) => t.id);
+    expect(afterPageTwo.slice(0, 4)).toEqual(firstPage);
+    // 9 rows total (3 projects x 3), budget 4 per page — the second page
+    // exhausts two projects' remaining tied rows and stops at budget, one
+    // row (the third project's last) still unfetched for a third page.
+    expect(afterPageTwo).toHaveLength(8);
+  });
+});
+
+describe("useTrackerProjectData reconnect retry (pas-2KY5X.38)", () => {
+  beforeEach(() => {
+    connectionStatusState.byServer = {};
+  });
+
+  // Per-project mode throughout (installClient below advertises no
+  // aitTrackerSort): unlike merge mode, whose `mergeMode` flag is itself
+  // baked into scopeKey (so a project's connectivity flipping ALSO flips
+  // `allSupportSort` and forces a full scope reset — a real but separate
+  // behavior, not what this test is about), per-project mode's cursors are
+  // untouched by connectivity changes, which is what isolates the exact
+  // mechanism pas-2KY5X.38 is about.
+  //
+  // Reproduces the bug exactly as found: offlineProjectKeysRef used to be
+  // keyed by project alone, so ONE status (here, "closed") going offline
+  // flagged the whole project — on reconnect, retryReconnectedProjects
+  // retried every status that project had ever been asked for, including
+  // "open", which was never interrupted and still had a perfectly valid
+  // cursor. retryOne also sent no cursor at all, so that retry restarted
+  // "open" from offset 0 and re-fetched a row already on screen.
+  it("reconnect does not re-fetch a status that never went offline, and never duplicates a row", async () => {
+    // PROJECT_C, not PROJECT_B: PROJECT_A and PROJECT_B share `serverId:
+    // "host-a"` (see their definitions above), so connectivity can't be
+    // flipped for one without the other. PROJECT_C is the only other fixture
+    // project on its own host ("host-b"), which this test needs to take
+    // offline independently of PROJECT_A.
+    const trackerList = installClient({
+      "prj-a:open:start": {
+        trackers: [makeTracker("A-o1")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: "a-o-2", hasMore: true },
+      },
+      "prj-c:open:start": {
+        trackers: [makeTracker("C-o1")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: "c-o-2", hasMore: true },
+      },
+      "prj-a:closed:start": {
+        trackers: [makeTracker("A-c1", "closed")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: "a-c-2", hasMore: true },
+      },
+      "prj-c:closed:start": {
+        trackers: [makeTracker("C-c1", "closed")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: "c-c-2", hasMore: true },
+      },
+      "prj-a:closed:a-c-2": {
+        trackers: [makeTracker("A-c2", "closed")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: "a-c-3", hasMore: true },
+      },
+      "prj-c:closed:c-c-2": {
+        trackers: [makeTracker("C-c2", "closed")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false },
+      },
+    });
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A, PROJECT_C],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 1,
+        sections: ["open", "closed"],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.trackers.map((t) => t.id).sort()).toEqual([
+      "A-c1",
+      "A-o1",
+      "C-c1",
+      "C-o1",
+    ]);
+
+    // C's host drops, then "closed" pages again for BOTH projects (per-project
+    // mode fans every relevant project out on one loadMore call) — the only
+    // point in this test where C is asked for anything while offline. C's
+    // "open" cursor (real, hasMore: true) is never touched by this call.
+    setConnectionStatus("host-b", "offline");
+    act(() => {
+      result.current.loadMore("closed");
+    });
+    await waitFor(() => expect(result.current.sectionLoadingMore.closed).toBe(false));
+    // A's own "closed" page advanced normally; C contributed nothing (still
+    // offline) — and C's cursor must have survived, not been reset to
+    // {cursor: null, hasMore: false} (the pas-2KY5X.38 sub-finding): if it
+    // had, `sectionHasMore.closed` would already be wrong here, before
+    // reconnect even enters the picture.
+    expect(result.current.trackers.map((t) => t.id).sort()).toEqual([
+      "A-c1",
+      "A-c2",
+      "A-o1",
+      "C-c1",
+      "C-o1",
+    ]);
+    expect(result.current.sectionHasMore.closed).toBe(true);
+
+    // C reconnects.
+    act(() => {
+      setConnectionStatus("host-b", "online");
+    });
+    const hasCC2 = () => result.current.trackers.some((t) => t.id === "C-c2");
+    await waitFor(() => expect(hasCC2()).toBe(true));
+
+    // The property: C's "closed" resumed from its own real cursor ("c-c-2"),
+    // picking up exactly where the offline attempt left off — not duplicating
+    // C-c1, and not restarting from offset 0.
+    expect(result.current.trackers.map((t) => t.id).sort()).toEqual([
+      "A-c1",
+      "A-c2",
+      "A-o1",
+      "C-c1",
+      "C-c2",
+      "C-o1",
+    ]);
+
+    // DIRECT proof of the specific bug: C's "open" page was requested from
+    // the start (no cursor) exactly once — at mount. "open" was never
+    // interrupted, so the reconnect retry has no legitimate reason to ask
+    // for it again.
+    const openStartCallsForC = trackerList.mock.calls.filter(
+      ([args]) =>
+        args.projectId === "prj-c" && args.status === "open" && args.page?.cursor === undefined,
+    );
+    expect(openStartCallsForC).toHaveLength(1);
   });
 });

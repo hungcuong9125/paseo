@@ -90,6 +90,15 @@ function hasErrorForProject(
   return errors.some((e) => e.serverId === project.serverId && e.projectId === project.projectId);
 }
 
+// offlineProjectKeysRef's key — (project, status), not project alone
+// (pas-2KY5X.38). A project pages each status independently; keying by
+// project only meant one status going offline flagged the whole project, so
+// reconnect retried every status it had ever been asked for, including ones
+// that were never interrupted.
+function offlineKeyOf(projectKey: string, status: TrackerStatus): string {
+  return `${projectKey}::${status}`;
+}
+
 // The k-way merge step: each buffer is one project's rows, already
 // newest-first (guaranteed by the server when sort is active). Shifts off and
 // returns whichever buffer's head is newest, or null when every buffer is
@@ -228,6 +237,19 @@ async function fetchMergedStatusWindow(
         }
         cursors[key] = ERRORED_CURSOR;
         buffers.set(key, []);
+        continue;
+      }
+      if (outcome.wasOfflineAtFetch) {
+        // A transient disconnect produced no real page (fetchTrackerPage's
+        // offline short-circuit) — `cursors[key]` already holds this
+        // stream's last real position (seeded from priorCursors above, or
+        // preserved from an earlier round within this same call), so leave
+        // it untouched instead of overwriting it with the empty/exhausted
+        // shape this outcome carries. Without this, a mid-session drop
+        // permanently mislabels a stream with real remaining rows as
+        // exhausted (hasMore stuck false) instead of "ask again later" —
+        // the pas-2KY5X.38 sub-finding: retrying it later is worthless if
+        // the cursor to resume from was already lost here.
         continue;
       }
       cursors[key] = {
@@ -879,8 +901,18 @@ export function useTrackerProjectData(
   // reconciles offlineProjectKeysRef, and surfaces any fetch errors.
   const applyMergedResult = useCallback((status: TrackerStatus, result: MergedWindowResult) => {
     setSections((current) => {
+      // Append, do NOT re-sort (pas-2KY5X.37): `result.taken` is already a
+      // correct newest-first continuation of whatever this status already
+      // has on screen — that is the k-way merge's own invariant, carried
+      // across calls by the cursors/buffers this same result also returns.
+      // Re-sorting the combined array with compareByCreatedNewest here used
+      // to look harmless (same comparator, same data) but is not: its tie
+      // fallback (id) has no relationship to fetch/reveal order, so a
+      // same-tied row arriving on THIS page can rank above an already-shown
+      // tied row from an earlier page and jump above it — the exact "already
+      // on screen" row movement pas-2KY5X.37 is about. Appending instead
+      // keeps every previously-emitted row's position fixed by construction.
       const trackers = [...current[status].trackers, ...result.taken];
-      sortMerged(trackers);
       return {
         ...current,
         [status]: {
@@ -890,10 +922,11 @@ export function useTrackerProjectData(
       };
     });
     for (const [projectKey, wasOffline] of result.offlineStatusByProject) {
+      const offlineKey = offlineKeyOf(projectKey, status);
       if (wasOffline) {
-        offlineProjectKeysRef.current.add(projectKey);
+        offlineProjectKeysRef.current.add(offlineKey);
       } else {
-        offlineProjectKeysRef.current.delete(projectKey);
+        offlineProjectKeysRef.current.delete(offlineKey);
       }
     }
     if (result.errors.length > 0) {
@@ -926,6 +959,9 @@ export function useTrackerProjectData(
         ): Promise<MergeFetchOutcome[]> =>
           Promise.all(
             targets.map(async ({ project, cursor }) => {
+              // Fallback for the catch branch below, where there is no
+              // `result` to read a real signal from — connectivity rarely
+              // flips between this check and the fetch it precedes.
               const wasOfflineAtFetch =
                 runtime.getSnapshot(project.serverId)?.connectionStatus !== "online";
               try {
@@ -940,13 +976,17 @@ export function useTrackerProjectData(
                   sort: "newest",
                   cursor: cursor ?? undefined,
                 });
+                // `pageInfo === null` is fetchTrackerPage's own offline/
+                // no-client short-circuit signal — more precise than the
+                // pre-fetch connectivity check above, since it reflects
+                // what this specific attempt actually observed.
                 return {
                   project,
                   trackers: result.trackers,
                   cursor: result.pageInfo?.nextCursor ?? null,
                   hasMore: result.pageInfo?.hasMore ?? false,
                   totalCount: result.pageInfo?.totalCount ?? null,
-                  wasOfflineAtFetch,
+                  wasOfflineAtFetch: result.pageInfo === null,
                   error: null as unknown,
                 };
               } catch (error) {
@@ -1146,11 +1186,11 @@ export function useTrackerProjectData(
         return;
       }
       for (const page of pages) {
-        const projectKey = projectKeyOf(page.project);
+        const offlineKey = offlineKeyOf(projectKeyOf(page.project), page.status);
         if (page.wasOfflineAtFetch) {
-          offlineProjectKeysRef.current.add(projectKey);
+          offlineProjectKeysRef.current.add(offlineKey);
         } else {
-          offlineProjectKeysRef.current.delete(projectKey);
+          offlineProjectKeysRef.current.delete(offlineKey);
         }
       }
       setPendingStatuses((current) => {
@@ -1244,29 +1284,73 @@ export function useTrackerProjectData(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syncSections, desiredSectionsKey]);
 
-  // Re-fetches exactly the projects offlineProjectKeysRef marked offline,
-  // for whatever statuses the current scope already has loaded — merged into
-  // the existing sections via mergePage, the same targeted shape `loadMore`
-  // uses, so every other project's already-loaded pages are untouched
-  // (pas-2KY5X.13). A no-op whenever nothing is flagged offline or nothing
-  // just reconnected, so this is safe to call on every trigger.
+  // Re-fetches exactly the (project, status) pairs offlineProjectKeysRef
+  // marked offline, resuming each from its OWN last-known cursor — merged
+  // into the existing sections via mergePage (per-project mode) or buffered
+  // via setProjectCursor (merge mode), the same targeted shape `loadMore`
+  // already uses, so every other (project, status)'s already-loaded pages
+  // are untouched (pas-2KY5X.13). A no-op whenever nothing is flagged
+  // offline or nothing just reconnected, so this is safe to call on every
+  // trigger.
+  //
+  // pas-2KY5X.38: two bugs used to compound here. (1) offlineProjectKeysRef
+  // was keyed by project alone, so ANY one status going offline made every
+  // status that project had ever been asked for eligible for retry here —
+  // including ones that were never interrupted. (2) retryOne sent no cursor
+  // at all, so every retry restarted that (project, status) from offset 0.
+  // Combined, a project whose "closed" section blipped offline would have
+  // its healthy, mid-pagination "open" section re-fetched from scratch on
+  // reconnect, re-adding rows already on screen or already buffered — no
+  // dedup exists anywhere downstream, so they simply doubled. Fixed by
+  // keying offlineProjectKeysRef per (project, status) — so only a status
+  // that actually went offline is ever a retry target — and by having
+  // retryOne resume from that (project, status)'s real cursor, same as
+  // every other fetch call site in this file.
   const retryReconnectedProjects = useCallback(async (): Promise<void> => {
     if (offlineProjectKeysRef.current.size === 0) {
       return;
     }
-    const statuses = [...requestedStatusesRef.current];
-    if (statuses.length === 0) {
-      return;
-    }
     const seq = loadSeqRef.current;
-    const targets = relevantProjects.filter(
-      (project) =>
-        offlineProjectKeysRef.current.has(projectKeyOf(project)) &&
-        runtime.getSnapshot(project.serverId)?.connectionStatus === "online",
-    );
+    // Concurrency guard: reuses loadingMoreRef, the exact ref `loadMore`
+    // already uses per status, so a retry here and a caller-triggered
+    // `loadMore` for the same status can never race each other into fetching
+    // the same cursor twice — whichever claims the status first wins, and
+    // the other becomes a no-op (loadMore returns early; a status this loop
+    // can't claim is simply skipped, left for the next reconnect signal or
+    // the next ordinary loadMore, both of which see the still-set offline
+    // flag / still-true hasMore and try again).
+    const targets: { project: TrackerProjectInput; status: TrackerStatus }[] = [];
+    const touchedStatuses = new Set<TrackerStatus>();
+    for (const project of relevantProjects) {
+      if (runtime.getSnapshot(project.serverId)?.connectionStatus !== "online") {
+        continue;
+      }
+      const projectKey = projectKeyOf(project);
+      for (const status of requestedStatusesRef.current) {
+        if (!offlineProjectKeysRef.current.has(offlineKeyOf(projectKey, status))) {
+          continue;
+        }
+        if (loadingMoreRef.current.has(status)) {
+          continue;
+        }
+        targets.push({ project, status });
+        touchedStatuses.add(status);
+      }
+    }
     if (targets.length === 0) {
       return;
     }
+    for (const status of touchedStatuses) {
+      loadingMoreRef.current.add(status);
+    }
+    setSectionLoadingMore((current) => {
+      const next = { ...current };
+      for (const status of touchedStatuses) {
+        next[status] = true;
+      }
+      return next;
+    });
+
     // Lands a reconnected project's page in its buffer rather than splicing
     // it directly into the displayed window in merge mode — see
     // setProjectCursor — and appends it normally otherwise.
@@ -1299,6 +1383,12 @@ export function useTrackerProjectData(
     };
     const retryOne = async (project: TrackerProjectInput, status: TrackerStatus): Promise<void> => {
       const projectKey = projectKeyOf(project);
+      const offlineKey = offlineKeyOf(projectKey, status);
+      // Resume from this (project, status)'s own real cursor — the same
+      // field every other fetch call site in this file already sends. A
+      // project genuinely offline since its very first fetch has no cursor
+      // yet (`undefined`), which correctly starts it at offset 0.
+      const cursor = sectionsRef.current[status].cursors[projectKey]?.cursor ?? undefined;
       try {
         const result = await fetchTrackerPage({
           project,
@@ -1308,19 +1398,26 @@ export function useTrackerProjectData(
           limit: options.pageSize,
           type: options.type,
           priority: options.priority,
+          cursor,
           ...(allSupportSort ? { sort: "newest" as TrackerSort } : {}),
         });
         if (seq !== loadSeqRef.current) {
           return;
         }
-        offlineProjectKeysRef.current.delete(projectKey);
+        if (result.pageInfo === null) {
+          // Still offline (targets required "online" a moment ago, but
+          // connectivity can flip in between) — leave the flag set so the
+          // next reconnect signal tries again; nothing else to update.
+          return;
+        }
+        offlineProjectKeysRef.current.delete(offlineKey);
         applyReconnectedPage(
           status,
           projectKey,
           result.trackers,
-          result.pageInfo?.nextCursor ?? null,
-          result.pageInfo?.hasMore ?? false,
-          result.pageInfo?.totalCount ?? null,
+          result.pageInfo.nextCursor,
+          result.pageInfo.hasMore,
+          result.pageInfo.totalCount ?? null,
         );
       } catch (error) {
         if (seq !== loadSeqRef.current) {
@@ -1330,7 +1427,7 @@ export function useTrackerProjectData(
         // error is a real RPC failure, not an offline masking — clear the
         // offline flag so a future reconnect doesn't retry a failure that
         // has nothing to do with connectivity.
-        offlineProjectKeysRef.current.delete(projectKey);
+        offlineProjectKeysRef.current.delete(offlineKey);
         setProjectErrors((current) =>
           hasErrorForProject(current, project)
             ? current
@@ -1339,9 +1436,17 @@ export function useTrackerProjectData(
         applyReconnectedError(status, projectKey);
       }
     };
-    await Promise.all(
-      targets.flatMap((project) => statuses.map((status) => retryOne(project, status))),
-    );
+    await Promise.all(targets.map(({ project, status }) => retryOne(project, status)));
+    for (const status of touchedStatuses) {
+      loadingMoreRef.current.delete(status);
+    }
+    setSectionLoadingMore((current) => {
+      const next = { ...current };
+      for (const status of touchedStatuses) {
+        next[status] = false;
+      }
+      return next;
+    });
   }, [
     relevantProjects,
     runtime,
@@ -1451,6 +1556,7 @@ export function useTrackerProjectData(
           return;
         }
         for (const page of results) {
+          const offlineKey = offlineKeyOf(page.projectKey, status);
           if (page.error) {
             setProjectErrors((current) =>
               hasErrorForProject(current, page.project)
@@ -1461,10 +1567,23 @@ export function useTrackerProjectData(
             continue;
           }
           const result = page.result!;
+          if (result.pageInfo === null) {
+            // Offline short-circuit (pas-2KY5X.38 sub-finding): this
+            // project's real cursor/hasMore, seeded above from
+            // `currentCursors`, must survive untouched — mergePage would
+            // otherwise overwrite it with `{cursor: null, hasMore: false}`
+            // and permanently strand whatever this project had left. Flag it
+            // so retryReconnectedProjects heals it proactively once online;
+            // the ordinary next `loadMore` would also naturally retry it,
+            // since it stays "has more" either way.
+            offlineProjectKeysRef.current.add(offlineKey);
+            continue;
+          }
+          offlineProjectKeysRef.current.delete(offlineKey);
           mergePage(status, page.projectKey, result.trackers, {
-            cursor: result.pageInfo?.nextCursor ?? null,
-            hasMore: result.pageInfo?.hasMore ?? false,
-            totalCount: result.pageInfo?.totalCount ?? null,
+            cursor: result.pageInfo.nextCursor,
+            hasMore: result.pageInfo.hasMore,
+            totalCount: result.pageInfo.totalCount ?? null,
             buffer: [],
           });
         }
@@ -1543,16 +1662,24 @@ export function useTrackerProjectData(
     return result;
   }, [sections, relevantProjects]);
 
-  const trackers = useMemo(() => {
-    const merged = [
+  // Concatenated in a fixed status order, NOT globally re-sorted (pas-2KY5X.37)
+  // — each section already holds its own trackers in the right order (either
+  // the merge's own append-only order, or a per-project mergePage resort;
+  // either way, sortMerged-ing this combined array again would move rows
+  // exactly the way applyMergedResult's own comment above explains, just
+  // across statuses instead of across pages. No caller relies on this flat
+  // array being cross-status chronologically interleaved — every consumer
+  // (TrackerTable, buildTrackerBoard) re-buckets by status and orders within
+  // each bucket itself.
+  const trackers = useMemo(
+    () => [
       ...sections.open.trackers,
       ...sections.in_progress.trackers,
       ...sections.closed.trackers,
       ...sections.cancelled.trackers,
-    ];
-    sortMerged(merged);
-    return merged;
-  }, [sections]);
+    ],
+    [sections],
+  );
 
   const patchTracker = useCallback((updated: AggregatedTracker) => {
     const projectKey = projectKeyOf(updated);
