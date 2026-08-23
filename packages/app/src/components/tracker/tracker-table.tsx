@@ -7,7 +7,7 @@ import { TrackerRow, type TrackerRowPending } from "@/components/tracker/tracker
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { useIsMobileBreakpoint } from "@/constants/layout";
 import type { AggregatedTracker } from "@/tracker/aggregated-trackers";
-import type { TrackerHierarchy } from "@/tracker/tracker-hierarchy";
+import { compareByCreatedNewest, type TrackerHierarchy } from "@/tracker/tracker-hierarchy";
 import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { settingsStyles } from "@/styles/settings";
@@ -86,17 +86,18 @@ export function useTrackerPageStep(): number {
 
 /**
  * The trackers list, grouped into one section per real `TrackerStatus` (Open,
- * In progress, Done, Cancelled). Within a section the rows keep the same
- * hierarchical ordering `orderedTrackers` already produces (projectId then id)
- * — grouping only buckets the existing sorted list, it does not re-sort. Rows
- * carry their own `serverId`/`projectId` (from the aggregated fetch), so this
- * table works identically whether it's showing one project or every project.
+ * In progress, Done, Cancelled). Rows sort newest-first across every project
+ * (see `sortedTrackers`), and grouping only buckets that sorted list — it does
+ * not re-sort. Rows carry their own `serverId`/`projectId` (from the
+ * aggregated fetch), so this table works identically whether it's showing one
+ * project or every project.
  *
- * Renders exactly what the shared project-data hook has loaded so far — the
- * background sweep (see use-tracker-project-data.ts) keeps growing it with no
- * client-side slicing or manual "load more" in browse mode. Search mode
- * (`variant="flat"`) is the one exception: search result sets are small and
- * bounded, so it keeps its own whole-result-set "Load more" via `onLoadMoreAll`.
+ * Renders exactly what the shared project-data hook has paged in so far: one
+ * server-side page per status, extended by this table's own per-section "Show
+ * N more" (`onLoadMore`), never a client-side slice of a larger in-memory set.
+ * Search mode (`variant="flat"`) pages the whole result set at once instead,
+ * via `onLoadMoreAll` — search results are small and bounded, with no
+ * per-status split to page independently.
  */
 export function TrackerTable(props: TrackerTableProps): ReactElement {
   const {
@@ -111,13 +112,11 @@ export function TrackerTable(props: TrackerTableProps): ReactElement {
   const { t } = useTranslation();
   const revealStep = useTrackerPageStep();
 
-  const sortedTrackers = useMemo(
-    () =>
-      [...trackers].sort(
-        (a, b) => a.projectId.localeCompare(b.projectId) || a.id.localeCompare(b.id),
-      ),
-    [trackers],
-  );
+  // Newest-first, by the same shared key the data hook merges with and the
+  // Kanban lanes order by (compareByCreatedNewest) — not projectId then id,
+  // which sorted every section by project name and left the oldest project's
+  // rows sitting at the top (pas-2KY5X.29).
+  const sortedTrackers = useMemo(() => [...trackers].sort(compareByCreatedNewest), [trackers]);
 
   // Bucket the already-sorted list by status, preserving the sorted order within
   // each section. A section with zero items is hidden entirely (see below) —

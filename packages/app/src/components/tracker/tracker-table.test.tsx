@@ -245,19 +245,71 @@ describe("TrackerTable status grouping", () => {
     expect(openSection?.querySelector('[data-testid="row-a-ip"]')).toBeNull();
   });
 
-  it("preserves the projectId-then-id ordering within each section", () => {
+  // Ordering is newest-first across every project, by the same shared key the
+  // data hook merges with and the Kanban lanes order by. It used to be
+  // projectId then id, which sorted each section by project NAME — the
+  // alphabetically-first project's rows sat at the top of Done however old
+  // they were, while genuinely recent rows from another project sank below
+  // them (pas-2KY5X.29).
+  it("orders rows newest-first within a section, across projects", () => {
     const { container: c } = renderTable([
-      tracker({ id: "b-open", status: "open", projectId: "proj-b", title: "B open" }),
-      tracker({ id: "a-open", status: "open", projectId: "proj-a", title: "A open" }),
-      tracker({ id: "b-ip", status: "in_progress", projectId: "proj-b", title: "B ip" }),
-      tracker({ id: "a-ip", status: "in_progress", projectId: "proj-a", title: "A ip" }),
+      // Deliberately adversarial to the old comparator: the NEWEST row belongs
+      // to the project that sorts LAST by id, and the oldest to the one that
+      // sorts first, so projectId-then-id ordering produces the exact reverse
+      // of the correct answer.
+      tracker({
+        id: "z-old",
+        status: "open",
+        projectId: "proj-a",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+      tracker({
+        id: "a-new",
+        status: "open",
+        projectId: "proj-z",
+        createdAt: "2026-06-01T00:00:00.000Z",
+      }),
+      tracker({
+        id: "m-mid",
+        status: "open",
+        projectId: "proj-m",
+        createdAt: "2026-03-01T00:00:00.000Z",
+      }),
     ]);
     container = c;
 
     const openSection = c.querySelector('[data-testid="tracker-table-section-open"]');
     const rows = openSection?.querySelectorAll('[data-testid^="row-"]');
-    expect(rows?.[0]?.getAttribute("data-testid")).toBe("row-a-open");
-    expect(rows?.[1]?.getAttribute("data-testid")).toBe("row-b-open");
+    expect(rows?.[0]?.getAttribute("data-testid")).toBe("row-a-new");
+    expect(rows?.[1]?.getAttribute("data-testid")).toBe("row-m-mid");
+    expect(rows?.[2]?.getAttribute("data-testid")).toBe("row-z-old");
+  });
+
+  it("falls back to a stable id order for rows that share a createdAt", () => {
+    const { container: c } = renderTable([
+      tracker({
+        id: "a-tie",
+        status: "open",
+        projectId: "proj-b",
+        createdAt: "2026-05-01T00:00:00.000Z",
+      }),
+      tracker({
+        id: "b-tie",
+        status: "open",
+        projectId: "proj-a",
+        createdAt: "2026-05-01T00:00:00.000Z",
+      }),
+    ]);
+    container = c;
+
+    // Same timestamp, so the shared comparator's id tiebreaker decides — and
+    // it runs in the same direction as the sort (descending), matching what
+    // `ait list --sort newest` would return for the same rows.
+    const rows = c
+      .querySelector('[data-testid="tracker-table-section-open"]')
+      ?.querySelectorAll('[data-testid^="row-"]');
+    expect(rows?.[0]?.getAttribute("data-testid")).toBe("row-b-tie");
+    expect(rows?.[1]?.getAttribute("data-testid")).toBe("row-a-tie");
   });
 
   it("renders only non-empty sections when a toolbar status filter leaves other buckets empty", () => {

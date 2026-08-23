@@ -1182,6 +1182,67 @@ function totalRowsFetched(
 }
 
 /**
+ * Serves each project a fixed, explicitly-dated, newest-first stream — unlike
+ * installGenerousSortedClient, whose rows come off one shared clock that hands
+ * every project a contiguous block, so project N's rows are ALL newer than
+ * project N+1's. That shape can't express the case pas-2KY5X.29 is about: one
+ * project dense in the recent window while others hold only old rows. Cursor
+ * is the numeric offset into that project's own list, matching how the daemon
+ * pages `ait list --sort newest`.
+ */
+function installDatedSortedClient(datesByProjectId: Record<string, readonly string[]>): {
+  trackerList: ReturnType<typeof vi.fn>;
+  fetchedRowCounts: { projectId: string; status: TrackerStatus | undefined; count: number }[];
+} {
+  const fetchedRowCounts: {
+    projectId: string;
+    status: TrackerStatus | undefined;
+    count: number;
+  }[] = [];
+  const trackerList = vi.fn(
+    async (args: {
+      projectId: string;
+      status?: TrackerStatus;
+      page?: { limit: number; cursor?: string };
+    }) => {
+      const all = datesByProjectId[args.projectId] ?? [];
+      const offset = args.page?.cursor ? Number(args.page.cursor) : 0;
+      const limit = args.page?.limit ?? all.length;
+      const slice = all.slice(offset, offset + limit);
+      fetchedRowCounts.push({
+        projectId: args.projectId,
+        status: args.status,
+        count: slice.length,
+      });
+      const nextOffset = offset + slice.length;
+      return {
+        trackers: slice.map((createdAt, index) => ({
+          id: `${args.projectId}-${offset + index}`,
+          title: `${args.projectId} @ ${createdAt}`,
+          type: "task" as const,
+          status: args.status ?? "open",
+          priority: "P2" as const,
+          parentId: null,
+          createdAt,
+        })),
+        hiddenCount: 0,
+        pageInfo: {
+          nextCursor: nextOffset < all.length ? String(nextOffset) : null,
+          hasMore: nextOffset < all.length,
+          totalCount: all.length,
+        },
+      };
+    },
+  );
+  runtimeState.getClient.mockReturnValue({
+    trackerList,
+    trackerSearch: vi.fn(),
+    getLastServerInfoMessage: () => ({ features: { aitTrackerSort: true } }),
+  });
+  return { trackerList, fetchedRowCounts };
+}
+
+/**
  * Same shape as installGenerousSortedClient, but with two knobs pas-2KY5X.24
  * needs and the sort-mock doesn't expose: per-project supply that can differ
  * wildly (a real workspace never has evenly-stocked projects), and whether
@@ -1461,6 +1522,109 @@ describe("useTrackerProjectData merge mode (pas-2KY5X.15)", () => {
     expect(fetched).toBeGreaterThanOrEqual(30);
   });
 
+  // The shape that shipped broken (pas-2KY5X.29), reproduced from real data:
+  // one project owns almost the whole recent window while the others hold only
+  // much older rows. Filling every buffer to `budget` rows and THEN taking the
+  // newest `budget` of them — the old implementation — asks each project for
+  // budget/N and stops, so the window is "the newest few from each project"
+  // and the dense project's rows 6..30, newer than everything the sparse ones
+  // contributed, never get fetched at all. The user sees a page topped by
+  // months-old rows, and clicking "Show more" then drops genuinely newer rows
+  // ABOVE what is already on screen.
+  it("fills the window from whichever project owns the recent range, not budget/N from each", async () => {
+    const dense = Array.from(
+      { length: 100 },
+      (_, index) =>
+        `2026-08-${String(20 + Math.floor(index / 50)).padStart(2, "0")}T${String(23 - (index % 24)).padStart(2, "0")}:00:00.000Z`,
+    );
+    const sparse = ["2026-01-05T00:00:00.000Z", "2026-01-04T00:00:00.000Z"];
+    const { fetchedRowCounts } = installDatedSortedClient({
+      "prj-0": dense,
+      "prj-1": sparse,
+      "prj-2": sparse,
+      "prj-3": sparse,
+      "prj-4": sparse,
+    });
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: makeProjects(5),
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 30,
+        sections: ["open"],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    // A full page, not the 6-per-project the old fill-then-take produced.
+    expect(result.current.trackers).toHaveLength(30);
+
+    // Every row in the window comes from the dense project: the sparse ones'
+    // January rows are older than all 100 of its August rows, so a correct
+    // newest-first window contains none of them. The old code put 8 of them
+    // on screen (2 from each sparse project) and left the dense project's
+    // rows 6..30 unfetched.
+    const projectsInWindow = new Set(result.current.trackers.map((t) => t.projectId));
+    expect([...projectsInWindow]).toEqual(["prj-0"]);
+
+    // Rows come out in true newest-first order, with no duplicates.
+    const createdAts = result.current.trackers.map((t) => t.createdAt);
+    expect([...createdAts].sort().toReversed()).toEqual(createdAts);
+    expect(new Set(result.current.trackers.map((t) => t.id)).size).toBe(30);
+
+    // Correctness here costs round-trips (the sparse projects each have to be
+    // asked once before their absence from the window is provable), but stays
+    // far below what a page-per-project fetch would have cost.
+    const fetched = totalRowsFetched(fetchedRowCounts, "open");
+    expect(fetched).toBeLessThan(5 * 30);
+  });
+
+  it("appends strictly older rows on loadMore, never above what is already shown", async () => {
+    const dense = Array.from({ length: 200 }, (_, index) =>
+      new Date(Date.UTC(2026, 7, 24, 0, 0, 0) - index * 60_000).toISOString(),
+    );
+    installDatedSortedClient({
+      "prj-0": dense,
+      "prj-1": dense.slice(1).filter((_, index) => index % 3 === 0),
+      "prj-2": dense.slice(2).filter((_, index) => index % 5 === 0),
+    });
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: makeProjects(3),
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 30,
+        sections: ["open"],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const firstPage = result.current.trackers.map((t) => t.createdAt);
+    expect(firstPage).toHaveLength(30);
+
+    act(() => {
+      result.current.loadMore("open");
+    });
+    await waitFor(() => expect(result.current.sectionLoadingMore.open).toBe(false));
+
+    // The whole point: page 2's rows are all older than page 1's last row, so
+    // they extend the bottom of the list instead of being interleaved into it.
+    // The old merge could surface a row newer than rows already on screen here,
+    // which is what made "Show more" visibly reshuffle the view.
+    const afterAll = result.current.trackers.map((t) => t.createdAt);
+    expect(afterAll.slice(0, 30)).toEqual(firstPage);
+    const oldestOnFirstPage = firstPage[firstPage.length - 1]!;
+    for (const createdAt of afterAll.slice(30)) {
+      expect(createdAt! <= oldestOnFirstPage).toBe(true);
+    }
+    expect(new Set(result.current.trackers.map((t) => t.id)).size).toBe(afterAll.length);
+  });
+
   it("loadMore in merge mode continues the recency window without skipping or repeating rows", async () => {
     const projects = makeProjects(3);
     const supply: Record<string, number> = {};
@@ -1706,11 +1870,20 @@ describe("useTrackerProjectData sort-capability race (pas-2KY5X.25)", () => {
     });
 
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    // Exactly the merge-mode budget, fetched once, already under the
-    // correct mode — never a per-project-fallback page fetched and thrown
-    // away the instant capability resolved.
+    // Exactly the merge-mode budget, gathered under the correct mode from the
+    // start — never a per-project-fallback page fetched and thrown away the
+    // instant capability resolved. This test is about WHICH mode ran, so it
+    // asserts the rows, plus that the fetch stayed well under what the
+    // fallback would have cost (3 projects x 30 = 90); the exact row count is
+    // pinned by the merge tests above, not here. It is deliberately not "30
+    // fetched for 30 shown": a correct k-way merge cannot know it has the
+    // newest 30 until every stream that drained at the frontier has been
+    // refilled and shown to hold nothing newer, so some over-fetch is the
+    // price of the window being right (pas-2KY5X.29).
     expect(result.current.trackers).toHaveLength(30);
-    expect(totalRowsFetched(fetchedRowCounts, "open")).toBe(30);
+    const helloGatedFetched = totalRowsFetched(fetchedRowCounts, "open");
+    expect(helloGatedFetched).toBeGreaterThanOrEqual(30);
+    expect(helloGatedFetched).toBeLessThan(90);
     expect(trackerList.mock.calls.some(([args]) => args.sort !== undefined)).toBe(true);
   });
 

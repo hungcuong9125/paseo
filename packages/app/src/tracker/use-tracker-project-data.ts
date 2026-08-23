@@ -60,8 +60,16 @@ function createEmptySections(): SectionsState {
   };
 }
 
+// Newest-first, by the one shared "newest" key (compareByCreatedNewest) that
+// the k-way merge selects with and the Kanban lanes order by. This used to
+// sort by projectId then id, which is arbitrary on both axes: it put whichever
+// project sorts first alphabetically at the top of every section regardless of
+// age, and it made a freshly paged-in row land at a position decided by its
+// project name rather than after the rows already on screen. The Kanban board
+// hid that by re-sorting its Done/Cancelled lanes itself; the List rendered
+// this order as-is (pas-2KY5X.29).
 function sortMerged(trackers: AggregatedTracker[]): void {
-  trackers.sort((a, b) => a.projectId.localeCompare(b.projectId) || a.id.localeCompare(b.id));
+  trackers.sort(compareByCreatedNewest);
 }
 
 // Narrower than TrackerProjectInput on purpose (pas-2KY5X.28 added a
@@ -83,39 +91,39 @@ function hasErrorForProject(
 }
 
 // The k-way merge step: each buffer is one project's rows, already
-// newest-first (guaranteed by the server when sort is active). Repeatedly
-// takes whichever buffer's head is newest until `count` rows are taken or
-// every buffer runs dry. Never looks past a buffer's head — a stream being
-// individually sorted is exactly what makes that safe: everything that
-// stream hasn't revealed yet is guaranteed older than what's at its head, so
-// there's never a reason to peek further before taking from a different
-// stream. Mutates `buffers` in place (each taken row is shifted off),
-// leaving whatever's left as this round's carry-over.
-function takeNewest(
+// newest-first (guaranteed by the server when sort is active). Shifts off and
+// returns whichever buffer's head is newest, or null when every buffer is
+// empty. Never looks past a buffer's head — a stream being individually
+// sorted is exactly what makes that safe: everything that stream hasn't
+// revealed yet is guaranteed older than what's at its head, so there's never
+// a reason to peek further before taking from a different stream.
+//
+// Only safe to call when every stream that still has rows on the server has
+// a non-empty buffer. An EMPTY buffer is indistinguishable from an exhausted
+// stream here, so calling this with a stream that is merely un-refilled
+// silently skips it — and its next row may well be newer than the head this
+// returns. Enforcing that precondition is the caller's job; see
+// fetchMergedStatusWindow's merge frontier.
+function shiftNewestRow(
   buffers: ReadonlyMap<string, AggregatedTracker[]>,
-  count: number,
-): AggregatedTracker[] {
-  const taken: AggregatedTracker[] = [];
-  while (taken.length < count) {
-    let bestKey: string | null = null;
-    let bestRow: AggregatedTracker | null = null;
-    for (const [key, rows] of buffers) {
-      const head = rows[0];
-      if (head === undefined) {
-        continue;
-      }
-      if (bestRow === null || compareByCreatedNewest(head, bestRow) < 0) {
-        bestKey = key;
-        bestRow = head;
-      }
+): AggregatedTracker | null {
+  let bestKey: string | null = null;
+  let bestRow: AggregatedTracker | null = null;
+  for (const [key, rows] of buffers) {
+    const head = rows[0];
+    if (head === undefined) {
+      continue;
     }
-    if (bestKey === null) {
-      break;
+    if (bestRow === null || compareByCreatedNewest(head, bestRow) < 0) {
+      bestKey = key;
+      bestRow = head;
     }
-    buffers.get(bestKey)!.shift();
-    taken.push(bestRow!);
   }
-  return taken;
+  if (bestKey === null) {
+    return null;
+  }
+  buffers.get(bestKey)!.shift();
+  return bestRow;
 }
 
 /** One project's outcome from one merge-fetch round. */
@@ -143,24 +151,31 @@ interface MergedWindowResult {
   offlineStatusByProject: ReadonlyMap<string, boolean>;
 }
 
-// A real workspace converges in 1-2 rounds in practice (see this hook's own
-// tests for measured fetch counts): round 1 splits `budget` evenly across
-// every relevant project, and any project that comes up short hands its
-// remaining share to whichever projects are still hungry in round 2. The cap
-// exists only as a safety valve for a pathological spread across many small
-// projects — past it, this returns fewer than `budget` rows rather than
+// Counts REFILLS, not passes: round 1 asks every relevant project for one
+// even share of `budget`, and each later round tops up whichever streams ran
+// dry at the merge frontier mid-emission, one more even share at a time. So
+// this bounds round-TRIPS, and since every round costs the same small page,
+// it bounds total rows fetched too (roughly `budget` + rounds x share). Sized
+// well above the 2-3 a real workspace needs — see this hook's own tests for
+// measured fetch counts — because a project whose rows interleave tightly
+// with another's can drain several times over one window. Past the cap,
+// fetchMergedStatusWindow returns fewer than `budget` rows rather than
 // chaining more round-trips, and the section's own hasMore/loadMore already
 // know how to offer the rest as a partial page.
-const MERGE_MAX_ROUNDS = 4;
+const MERGE_MAX_ROUNDS = 12;
 
 /**
  * Assembles up to `budget` additional rows for one status, newest-first
  * across every relevant project — the client-side half of turning "N per
- * project" into "N total" (pas-2KY5X.15). Each round fetches only the
- * projects whose buffer is currently empty and might still have more
- * (`hasMore !== false`), sized to however many rows are still needed split
- * across just those projects, not a flat per-project page — "only refill the
- * stream that's exhausted at the merge frontier." Safe to call with rows
+ * project" into "N total" (pas-2KY5X.15). Emission and refilling interleave:
+ * a row is emitted only once every stream that might still hold something
+ * newer has a buffered head to compare it against, and any stream that runs
+ * dry at that frontier is refilled before emission continues — "only refill
+ * the stream that's exhausted at the merge frontier", now actually enforced
+ * rather than approximated by pre-filling to a row count (pas-2KY5X.29).
+ * Each refill fetches only the blocked streams, sized to however many rows
+ * are still needed split across just those, not a flat per-project page.
+ * Safe to call with rows
  * already sitting in `priorCursors[key].buffer` from a previous call that
  * over-fetched relative to its own budget: those are consumed first, so a
  * project that already gave more than it needed to doesn't pay for the same
@@ -201,24 +216,7 @@ async function fetchMergedStatusWindow(
   const seenErrorProjects = new Set<string>();
   const offlineStatusByProject = new Map<string, boolean>();
 
-  for (let round = 0; round < MERGE_MAX_ROUNDS; round++) {
-    const bufferedTotal = [...buffers.values()].reduce((sum, rows) => sum + rows.length, 0);
-    if (bufferedTotal >= budget) {
-      break;
-    }
-    const needsFetch = relevantProjects.filter((project) => {
-      const key = projectKeyOf(project);
-      return buffers.get(key)!.length === 0 && cursors[key].hasMore !== false;
-    });
-    if (needsFetch.length === 0) {
-      break;
-    }
-    const chunk = Math.max(1, Math.ceil((budget - bufferedTotal) / needsFetch.length));
-    const targets = needsFetch.map((project) => ({
-      project,
-      cursor: cursors[projectKeyOf(project)].cursor,
-    }));
-    const outcomes = await fetchRound(targets, chunk);
+  const applyOutcomes = (outcomes: readonly MergeFetchOutcome[]): void => {
     for (const outcome of outcomes) {
       const key = projectKeyOf(outcome.project);
       offlineStatusByProject.set(key, outcome.wasOfflineAtFetch);
@@ -240,9 +238,68 @@ async function fetchMergedStatusWindow(
       };
       buffers.get(key)!.push(...outcome.trackers);
     }
+  };
+
+  // Emission is interleaved with refills, not run once after them: a row can
+  // only be emitted while every stream that might still hold something newer
+  // has a buffered head to compare against. A stream whose buffer is empty
+  // while `hasMore !== false` is exactly that unknown — it BLOCKS the merge
+  // frontier and has to be refilled before the next row goes out.
+  //
+  // Filling first and emitting once (what this used to do) is unsound in two
+  // ways, both of which shipped: it stopped filling as soon as `budget` rows
+  // sat in the buffers, so the window was "the newest few from each project"
+  // rather than the newest `budget` overall (with 5 projects and a budget of
+  // 30, every project got asked for exactly 6, no matter that one of them
+  // owned 20 of the true newest 30); and it never refilled a stream that ran
+  // dry partway through emission, so that stream's remaining rows — newer
+  // than plenty of what did get emitted — silently dropped out of the window
+  // and only surfaced on the next "Show more", landing ABOVE rows already on
+  // screen instead of after them (pas-2KY5X.29).
+  const taken: AggregatedTracker[] = [];
+  let rounds = 0;
+  while (taken.length < budget) {
+    const blocked = relevantProjects.filter((project) => {
+      const key = projectKeyOf(project);
+      return buffers.get(key)!.length === 0 && cursors[key].hasMore !== false;
+    });
+    if (blocked.length > 0) {
+      if (rounds >= MERGE_MAX_ROUNDS) {
+        // Out of round-trips with the frontier still blocked. Returning the
+        // rows gathered so far is the honest outcome: they're a correct
+        // newest-first prefix, just a short page, and the section's own
+        // hasMore/loadMore already know how to offer the rest.
+        break;
+      }
+      rounds++;
+      // One even share of the budget, every time — NOT "whatever is still
+      // missing", which is what a blocked stream would get if the remainder
+      // were split across just the (usually one) stream that drained. That
+      // sizing looks smarter and costs far more: the deeper into a window a
+      // stream drains, the bigger its refill, so a handful of drains near the
+      // end pulls close to a full budget each. A flat share keeps every
+      // round-trip the same small page and lets a stream that keeps
+      // contributing simply come back for another one.
+      const chunk = Math.max(1, Math.ceil(budget / Math.max(1, relevantProjects.length)));
+      applyOutcomes(
+        await fetchRound(
+          blocked.map((project) => ({
+            project,
+            cursor: cursors[projectKeyOf(project)].cursor,
+          })),
+          chunk,
+        ),
+      );
+      continue;
+    }
+    const next = shiftNewestRow(buffers);
+    if (next === null) {
+      // Frontier is clear and nothing is buffered: every stream is exhausted.
+      break;
+    }
+    taken.push(next);
   }
 
-  const taken = takeNewest(buffers, budget);
   for (const project of relevantProjects) {
     const key = projectKeyOf(project);
     cursors[key] = { ...cursors[key], buffer: buffers.get(key) ?? [] };
