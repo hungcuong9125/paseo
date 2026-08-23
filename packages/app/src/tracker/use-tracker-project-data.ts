@@ -26,8 +26,11 @@ interface CursorState {
   cursor: string | null;
   hasMore: boolean;
   /** From the page's `pageInfo.totalCount`. `null` when this project's page
-   * didn't report one (old CLI binary, or the fetch failed) — poisons the
-   * section's summed total, matching `sectionTotals`' contract. */
+   * didn't report one — an offline host, a real fetch failure, and a
+   * genuine old-CLI-binary response predating total_count all look
+   * identical here (`{hasMore: false, totalCount: null}`); `sectionTotals`
+   * tells them apart by checking whether this project actually has rows in
+   * `trackers` for the status, not by this field alone. */
   totalCount: number | null;
   /** Rows fetched from this project (server-sorted newest-first) but not yet
    * merged into the displayed window — only ever populated by the merged
@@ -477,11 +480,15 @@ export interface UseTrackerProjectDataResult {
    * value if they were loaded under an earlier value (left in place, not
    * purged — see that option's docstring). */
   trackers: AggregatedTracker[];
-  /** Summed `pageInfo.totalCount` across the in-scope projects, per status.
-   * `null` when any in-scope project did not report one (old CLI binary, an
-   * offline host, a fetch error, or the section was never requested) — the
-   * screen falls back to loaded-so-far counts (`trackers.length`) in that
-   * case. */
+  /** Summed `pageInfo.totalCount` across whichever in-scope projects have
+   * reported one so far, per status (pas-2KY5X.25) — a project that hasn't
+   * answered yet (including "never requested") or whose fetch failed
+   * contributes nothing rather than blanking the whole section. `null` only
+   * when a project answered successfully, may have contributed real rows,
+   * and still didn't report a total (old CLI binary predating total_count)
+   * — the screen falls back to loaded-so-far counts (`trackers.length`) in
+   * that one case, since skipping it could otherwise undercount below what's
+   * on screen. */
   sectionTotals: Record<TrackerStatus, number | null>;
   /** True while any in-scope project still has more pages for that status. */
   sectionHasMore: Record<TrackerStatus, boolean>;
@@ -569,25 +576,61 @@ export function useTrackerProjectData(
       .join("|"),
   );
   // Whether every relevant project's host currently advertises
-  // aitTrackerSort. Checked per project rather than assumed workspace-wide,
-  // since each project can sit on a different daemon. All-projects mode
+  // aitTrackerSort, and whether that answer is even known yet.
+  // getLastServerInfoMessage() is undefined until a host's hello resolves —
+  // reading it before then and treating "undefined" as "false" (the bug this
+  // memo now avoids) picks per-project-fallback mode immediately, then flips
+  // to merged/budgeted mode the instant every hello lands. mergeMode is
+  // baked into scopeKey (below), so that flip is a full isNewScope reset —
+  // exactly the "164 rows, then a reset to 20" flap this hook shipped with
+  // (pas-2KY5X.25). Checked per project rather than assumed workspace-wide,
+  // since each project can sit on a different daemon: all-projects mode
   // needs every relevant project sorted server-side, or the merge below
   // (fetchMergedStatusWindow) would be silently wrong for whichever one
-  // isn't: it only ever reads a stream's buffered head, which is only a
+  // isn't — it only ever reads a stream's buffered head, which is only a
   // valid "next newest" candidate when the stream really is sorted.
-  const allSupportSort = useMemo(
-    () =>
-      relevantProjects.length > 0 &&
-      relevantProjects.every(
-        (project) =>
-          runtime.getClient(project.serverId)?.getLastServerInfoMessage()?.features
-            ?.aitTrackerSort === true,
-      ),
+  //
+  // `connectionStatuses` distinguishes "genuinely don't know yet" from
+  // "know it's false": daemon-client.ts sets the client's own
+  // lastServerInfoMessage synchronously, one call before it flips
+  // connectionState (and thus this host's connectionStatus snapshot) to
+  // "online" — so a "connecting" host's undefined read really is unresolved,
+  // while an "online" host's read is guaranteed final, never a pre-hello
+  // miss. "offline"/"error" are deliberately NOT treated as pending: a host
+  // cycles those with "connecting" forever on its own reconnect/probe
+  // backoff (never a permanent give-up), so waiting on them here would let
+  // one unreachable project block every other project's data indefinitely.
+  // They resolve to "doesn't support" immediately instead — the same
+  // fallback the fetch itself already takes for an offline host — and
+  // retryReconnectedProjects re-fetches under the right mode once that host
+  // actually comes back.
+  const { sortSupportPending, allSupportSort } = useMemo(() => {
+    if (relevantProjects.length === 0) {
+      return { sortSupportPending: false, allSupportSort: false };
+    }
+    let pending = false;
+    let everySupports = true;
+    for (const project of relevantProjects) {
+      const status = connectionStatuses.get(project.serverId);
+      if (status === undefined || status === "connecting") {
+        pending = true;
+        everySupports = false;
+        continue;
+      }
+      if (
+        status !== "online" ||
+        runtime.getClient(project.serverId)?.getLastServerInfoMessage()?.features
+          ?.aitTrackerSort !== true
+      ) {
+        everySupports = false;
+      }
+    }
+    return { sortSupportPending: pending, allSupportSort: everySupports };
     // sortSupportKey is the reactive trigger for the imperative
-    // getLastServerInfoMessage reads above.
+    // getLastServerInfoMessage reads above; connectionStatuses is the
+    // reactive trigger for connectionStatus.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [relevantProjects, runtime, sortSupportKey],
-  );
+  }, [relevantProjects, runtime, sortSupportKey, connectionStatuses]);
   // "All projects" (nothing selected) with every relevant project sorted:
   // budget the fetch across all of them via fetchMergedStatusWindow instead
   // of pageSize-per-project (pas-2KY5X.15). A single project selected has
@@ -623,6 +666,11 @@ export function useTrackerProjectData(
   // would leave stale cursors in the shape the other scheme doesn't expect,
   // so a capability change (rare — a daemon upgrading mid-session) resets
   // and re-fetches from scratch, same as any other scope-defining option.
+  // This does NOT by itself stop mergeMode's mount-time race (undefined
+  // capability reading as false, then flipping true once every hello lands)
+  // from bouncing scopeKey — syncSections is what actually closes that gap,
+  // by deferring the first fetch of a new scope until sortSupportPending
+  // clears, so mergeMode is never guessed-then-corrected in the first place.
   const scopeKey = useMemo(
     () =>
       [
@@ -671,6 +719,22 @@ export function useTrackerProjectData(
   // the current scope — checked before firing a new fetch so growing
   // desiredSections only ever fetches what's actually new.
   const requestedStatusesRef = useRef<Set<TrackerStatus>>(new Set());
+  // True while the current scope (lastScopeKeyRef) has been reset but is
+  // still withholding its first real fetch, waiting on sortSupportPending to
+  // clear. Deliberately separate from the isNewScope check itself: syncSections
+  // can end up invoked many times for the exact same scope while this is
+  // true — desiredSectionsKey is stable, but syncSections' own identity
+  // isn't guaranteed to be, since it depends (via runMergedFetch) on
+  // relevantProjects, which is only reference-stable if the caller memoizes
+  // `options.projects` — plenty of real call sites don't. Gating the actual
+  // reset (setSections/setPendingStatuses/etc., all of which allocate fresh
+  // objects) behind isNewScope, and gating the wait itself behind this ref
+  // instead of re-deriving it from scopeKey equality, is what makes a repeat
+  // call while still pending a true no-op (no setState at all) rather than
+  // re-running the reset with fresh references on every invocation — the
+  // "Maximum update depth exceeded" render loop an earlier version of this
+  // fix produced when combined with an unmemoized caller.
+  const awaitingSortCapabilityRef = useRef(false);
   // Guards loadMore against being fired again for a status while its fetch is
   // still in flight — sectionLoadingMore state exists for the same purpose
   // but is not readable synchronously inside the same tick loadMore is called.
@@ -851,29 +915,86 @@ export function useTrackerProjectData(
     [relevantProjects, runtime, options.all, options.type, options.priority],
   );
 
+  // Pulled out of syncSections purely to keep its own complexity under the
+  // lint threshold — this piece is a straight-line reset with no branching
+  // of its own worth reasoning about separately from the isNewScope check
+  // that calls it.
+  const resetScopeState = useCallback(
+    (nextScopeKey: string, statuses: readonly TrackerStatus[], willFetch: boolean) => {
+      lastScopeKeyRef.current = nextScopeKey;
+      // Bumped unconditionally, even if this scope ends up deferred by the
+      // capability check right after this returns — any fetch still in
+      // flight from the *previous* scope must be rejected as stale the
+      // moment it resolves, deferred or not.
+      loadSeqRef.current += 1;
+      loadingMoreRef.current.clear();
+      requestedStatusesRef.current = new Set();
+      offlineProjectKeysRef.current = new Set();
+      setSections(createEmptySections());
+      setSectionLoadingMore(createEmptyStatusRecord(false));
+      setProjectErrors([]);
+      setPendingStatuses(willFetch ? new Set(statuses) : new Set());
+    },
+    [],
+  );
+
   // Ensures the first page of every (project, status) pair in `statuses` has
   // been requested for the current scope, merging results into whatever is
   // already loaded rather than replacing it. A scope change (scopeKey)
   // resets everything first — every already-loaded status is invalidated and
   // has to be re-requested, exactly like a fresh mount; a `statuses` change
   // alone (same scope) only fetches whichever of them haven't been requested
-  // yet.
+  // yet. A brand-new scope whose mergeMode is still undetermined
+  // (sortSupportPending) resets display state but withholds the actual fetch
+  // until every relevant project's capability is known — see the isNewScope
+  // block below.
   const syncSections = useCallback(
     async (statuses: readonly TrackerStatus[]): Promise<void> => {
       const isNewScope = lastScopeKeyRef.current !== scopeKey;
-      lastScopeKeyRef.current = scopeKey;
-      let seq = loadSeqRef.current;
       const willFetch = options.enabled && relevantProjects.length > 0;
       if (isNewScope) {
-        seq = ++loadSeqRef.current;
-        loadingMoreRef.current.clear();
-        requestedStatusesRef.current = new Set();
-        offlineProjectKeysRef.current = new Set();
-        setSections(createEmptySections());
-        setSectionLoadingMore(createEmptyStatusRecord(false));
-        setProjectErrors([]);
-        setPendingStatuses(willFetch ? new Set(statuses) : new Set());
+        // Recognized (and lastScopeKeyRef updated) immediately, before the
+        // capability check below — a repeat call for this same scope, from
+        // any cause, must see isNewScope as false and skip straight past
+        // this whole block without touching state again. syncSections isn't
+        // guaranteed to be invoked exactly once per logical scope change: its
+        // own identity depends (via runMergedFetch) on relevantProjects,
+        // which is only reference-stable across renders if the caller
+        // memoizes `options.projects` — not guaranteed. Re-running this
+        // reset on every such call would allocate fresh
+        // sections/pendingStatuses objects each time, each one a genuine
+        // state change that forces another render — an infinite render loop
+        // whenever combined with an unmemoized caller and a still-pending
+        // capability below (caught by this fix's own tests as "Maximum
+        // update depth exceeded").
+        resetScopeState(scopeKey, statuses, willFetch);
+        awaitingSortCapabilityRef.current = willFetch && sortSupportPending;
       }
+      if (awaitingSortCapabilityRef.current) {
+        // Every relevant project's aitTrackerSort support must be known
+        // before picking merge vs per-project mode — mode is baked into
+        // scopeKey, so guessing now (undefined reads as unsupported) and
+        // correcting once the last hello lands would mean a second
+        // isNewScope reset right after the first paint: a page of rows
+        // under the wrong strategy, thrown away and re-fetched under the
+        // right one (pas-2KY5X.25). "Pending" only means "still mid
+        // handshake" — bounded by the client's own connect timeout, never
+        // permanent, see the allSupportSort memo above — so this can't
+        // strand the scope in a loading state forever. mergeMode/
+        // allSupportSort/sortSupportPending are this callback's own
+        // dependencies, so the capability resolving later gives syncSections
+        // a new identity, which re-fires the mount effect below — this time
+        // with isNewScope already false (lastScopeKeyRef was set above) and
+        // sortSupportPending false, so it falls through past this check and
+        // actually fetches. pendingStatuses was already set on the isNewScope
+        // pass, so isLoading stays true for the whole wait instead of
+        // settling on an empty page.
+        if (sortSupportPending) {
+          return;
+        }
+        awaitingSortCapabilityRef.current = false;
+      }
+      const seq = loadSeqRef.current;
       if (!willFetch) {
         return;
       }
@@ -975,8 +1096,27 @@ export function useTrackerProjectData(
         }
         return next;
       });
+      // Computed from `pages` (already fully resolved — a plain array, not
+      // React state) before setSections rather than inside its updater: a
+      // functional setState updater is not guaranteed to run synchronously
+      // within this call — React can (and in practice does, per this fix's
+      // own tests) defer invoking it until the next reconciliation — so an
+      // `errors` array only ever populated *inside* that updater reads back
+      // empty here, right after the setSections call, every single time.
+      // That was pre-existing pas-2KY5X.25 discovered as a byproduct of
+      // testing sectionTotals' own error handling: projectErrors was never
+      // populated at all for a project that failed during this initial
+      // per-project-fallback fetch, unlike the merge-mode and loadMore
+      // fetch paths, which both already compute their error list outside
+      // any updater and don't have this problem.
       const seenErrorProjects = new Set<string>();
       const errors: TrackerProjectError[] = [];
+      for (const page of pages) {
+        if (page.error && !seenErrorProjects.has(projectKeyOf(page.project))) {
+          seenErrorProjects.add(projectKeyOf(page.project));
+          errors.push(toTrackerProjectError(page.project, page.error));
+        }
+      }
       setSections((current) => {
         const next = { ...current };
         for (const status of toFetch) {
@@ -988,11 +1128,6 @@ export function useTrackerProjectData(
         for (const page of pages) {
           const projectKey = projectKeyOf(page.project);
           if (page.error) {
-            // Dedup — each status fetches independently and fails the same way.
-            if (!seenErrorProjects.has(projectKey)) {
-              seenErrorProjects.add(projectKey);
-              errors.push(toTrackerProjectError(page.project, page.error));
-            }
             next[page.status].cursors[projectKey] = ERRORED_CURSOR;
             continue;
           }
@@ -1018,9 +1153,20 @@ export function useTrackerProjectData(
       }
     },
     // scopeKey covers every project/type/priority/enabled option this
-    // closure reads.
+    // closure reads. sortSupportPending resolving is what re-fires this
+    // callback (and the mount effect below) to actually run a deferred
+    // isNewScope fetch — see the isNewScope block above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [scopeKey, runtime, mergeMode, allSupportSort, runMergedFetch, applyMergedResult],
+    [
+      scopeKey,
+      runtime,
+      mergeMode,
+      allSupportSort,
+      sortSupportPending,
+      runMergedFetch,
+      applyMergedResult,
+      resetScopeState,
+    ],
   );
 
   useEffect(() => {
@@ -1282,21 +1428,50 @@ export function useTrackerProjectData(
     return result;
   }, [sections]);
 
+  // Sums whichever in-scope projects have actually reported a total, per
+  // status — the counterpart to useTrackerStats' pas-2KY5X.14 fix, applied
+  // here for the same reason: a project that simply hasn't answered yet (no
+  // cursorState) contributes nothing rather than blanking the whole section.
+  //
+  // A project whose cursorState exists but totalCount is null needs one more
+  // check before it can be skipped the same way: did it actually contribute
+  // rows to `trackers` for this status? An offline host or a real fetch
+  // failure both resolve with zero rows AND totalCount: null (fetchTrackerPage
+  // returns an empty page rather than throwing for an offline host, so this
+  // can't be told apart from a genuine error by the cursorState shape alone
+  // — checking rows instead sidesteps that entirely) — safe to skip, exactly
+  // like "hasn't answered yet", since the sum can't end up lower than what's
+  // on screen when the project in question isn't on screen at all. A project
+  // that answered successfully AND has rows in `trackers` but still didn't
+  // report a total (old CLI binary predating total_count) is different:
+  // treating it as a silent zero here could sum to less than the row count
+  // already rendered — worse than the bug this is fixing. That case keeps
+  // the pre-pas-2KY5X.25 behavior: it poisons the whole section to `null`,
+  // and the caller (tracker-table.tsx) falls back to the loaded row count,
+  // which is never smaller than what's displayed.
   const sectionTotals = useMemo(() => {
     const result = createEmptyStatusRecord<number | null>(0);
     for (const status of LIST_SECTION_STATUSES) {
       const cursors = sections[status].cursors;
+      const trackers = sections[status].trackers;
       let sum = 0;
-      let allReported = true;
+      let poisoned = false;
       for (const project of relevantProjects) {
-        const cursorState = cursors[projectKeyOf(project)];
-        if (!cursorState || cursorState.totalCount === null) {
-          allReported = false;
+        const projectKey = projectKeyOf(project);
+        const cursorState = cursors[projectKey];
+        if (!cursorState) {
+          continue;
+        }
+        if (cursorState.totalCount !== null) {
+          sum += cursorState.totalCount;
+          continue;
+        }
+        if (trackers.some((tracker) => projectKeyOf(tracker) === projectKey)) {
+          poisoned = true;
           break;
         }
-        sum += cursorState.totalCount;
       }
-      result[status] = allReported ? sum : null;
+      result[status] = poisoned ? null : sum;
     }
     return result;
   }, [sections, relevantProjects]);

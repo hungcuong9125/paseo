@@ -4,8 +4,8 @@
 import React, { useEffect, useReducer } from "react";
 import { createRoot } from "react-dom/client";
 import { Pressable } from "react-native";
-import { act, renderHook, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrackerStatus, TrackerSummary } from "@getpaseo/protocol/tracker/types";
 import type { AggregatedTracker, TrackerProjectInput } from "@/tracker/aggregated-trackers";
 import type { HostRuntimeConnectionStatus } from "@/runtime/host-runtime";
@@ -58,6 +58,24 @@ function setConnectionStatus(serverId: string, status: HostRuntimeConnectionStat
 }
 
 import { useTrackerProjectData } from "./use-tracker-project-data";
+
+// vitest.config.ts doesn't set `globals: true`, so @testing-library/react's
+// own auto-cleanup (which detects a global `afterEach`) never engages here —
+// every renderHook() in this file stayed mounted for the rest of the run
+// without this. That's normally harmless (a stale hook with nothing left to
+// do), but connectionStatusState.listeners (module-level, shared by every
+// test via the mocked useHostRuntimeConnectionStatuses above) is never
+// pruned without unmounting, so a later test's setConnectionStatus call
+// notifies every earlier test's still-registered listener too — each one
+// forces its long-dead component to re-render against the CURRENT test's
+// runtime mocks, and if that stale render fires a fetch, it pollutes the
+// current test's shared call-count assertions (pas-2KY5X.25 caught this via
+// a merge-mode row count that only came out wrong running the full suite,
+// never in isolation). cleanup() unmounts every rendered tree, which runs
+// each effect's own teardown — including the listener's removal above.
+afterEach(() => {
+  cleanup();
+});
 
 const PROJECT_A: TrackerProjectInput = {
   serverId: "host-a",
@@ -898,7 +916,13 @@ describe("useTrackerProjectData", () => {
     act(() => {
       result.current.removeTrackers(["a-2"]);
     });
-    expect(result.current.sectionTotals.open).toBe(null);
+    // "open" now has zero of prj-a's rows left (a-1 moved to "closed" above,
+    // a-2 just removed) — sectionTotals (pas-2KY5X.25) no longer poisons a
+    // project with an unknown total once it has no visible rows left to
+    // hide, since summing 0 for it can't undercount below the (also zero)
+    // row count on screen. Renders identically to the pre-fix null, which
+    // fell back to the same zero via `trackers.length`.
+    expect(result.current.sectionTotals.open).toBe(0);
   });
 
   it("changing the type filter reloads first pages instead of appending to the previous filter's results", async () => {
@@ -993,12 +1017,14 @@ describe("useTrackerProjectData", () => {
     );
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(result.current.trackers.map((t) => t.id)).toEqual(["a-open-1"]);
-    // The other three statuses were never requested at all — their totals
-    // stay null (never-reported), the same degraded shape an offline
-    // project or a fetch error produces, not zero.
-    expect(result.current.sectionTotals.in_progress).toBeNull();
-    expect(result.current.sectionTotals.closed).toBeNull();
-    expect(result.current.sectionTotals.cancelled).toBeNull();
+    // The other three statuses were never requested at all, so no project
+    // has a cursorState for them — sectionTotals (pas-2KY5X.25) treats that
+    // the same as "hasn't answered yet" and sums to 0 rather than poisoning
+    // to null; tracker-table.tsx's `total ?? items.length` renders the same
+    // "0" either way here since zero rows are loaded for them regardless.
+    expect(result.current.sectionTotals.in_progress).toBe(0);
+    expect(result.current.sectionTotals.closed).toBe(0);
+    expect(result.current.sectionTotals.cancelled).toBe(0);
     const requestedStatuses = new Set(trackerList.mock.calls.map(([args]) => args.status));
     expect(requestedStatuses).toEqual(new Set(["open"]));
   });
@@ -1552,5 +1578,480 @@ describe("useTrackerProjectData merge mode (pas-2KY5X.15)", () => {
     const openCalls = trackerList.mock.calls.filter(([args]) => args.status === "open");
     expect(openCalls).toHaveLength(1);
     expect(openCalls[0]?.[0]?.sort).toBe("newest");
+  });
+});
+
+// pas-2KY5X.25 root cause #1: allSupportSort used to read
+// getLastServerInfoMessage() with no regard for connectionStatus, so
+// "hello not landed yet" (undefined) and "hello landed, capability
+// genuinely false" both read as false. On a fresh mount that fetched
+// per-project-fallback immediately, then flipped every relevant project's
+// capability to `true` the instant every hello resolved, that flip changed
+// scopeKey (mergeMode is baked into it) and wiped+refetched everything
+// under merge/budget mode — a big-number-to-small-number reset right after
+// first paint. These tests drive `getLastServerInfoMessage` off
+// `connectionStatus` the same way the real daemon-client guarantees it
+// (server_info is set one call before connectionState flips to
+// "connected" — verified in packages/client/src/daemon-client.ts), so
+// "connecting" genuinely means "don't know yet", not "known false".
+describe("useTrackerProjectData sort-capability race (pas-2KY5X.25)", () => {
+  beforeEach(() => {
+    connectionStatusState.byServer = {};
+  });
+
+  /** Mirrors installGenerousSortedClient, but getLastServerInfoMessage
+   * answers based on `serverId`'s live connectionStatus instead of a fixed
+   * value — undefined while not "online", the real feature flag once
+   * "online" — matching the guarantee this fix depends on. */
+  function installHelloGatedSortedClient(
+    serverId: string,
+    supplyByProjectId: Record<string, number>,
+  ): {
+    trackerList: ReturnType<typeof vi.fn>;
+    fetchedRowCounts: { projectId: string; status: TrackerStatus | undefined; count: number }[];
+  } {
+    let clock = 1_000_000;
+    const remainingByKey = new Map<string, number>();
+    const fetchedRowCounts: {
+      projectId: string;
+      status: TrackerStatus | undefined;
+      count: number;
+    }[] = [];
+    const trackerList = vi.fn(
+      async (args: {
+        projectId: string;
+        status?: TrackerStatus;
+        page?: { limit: number; cursor?: string };
+      }) => {
+        const key = `${args.projectId}:${args.status}`;
+        const total = supplyByProjectId[args.projectId] ?? 0;
+        const remaining = remainingByKey.get(key) ?? total;
+        const limit = args.page?.limit ?? total;
+        const take = Math.max(0, Math.min(remaining, limit));
+        fetchedRowCounts.push({ projectId: args.projectId, status: args.status, count: take });
+        const trackers: TrackerSummary[] = [];
+        for (let i = 0; i < take; i++) {
+          clock -= 1;
+          trackers.push({
+            id: `${args.projectId}-${clock}`,
+            title: `Tracker ${clock}`,
+            type: "task",
+            status: args.status ?? "open",
+            priority: "P2",
+            parentId: null,
+            createdAt: String(clock).padStart(10, "0"),
+          });
+        }
+        const nextRemaining = remaining - take;
+        remainingByKey.set(key, nextRemaining);
+        return {
+          trackers,
+          hiddenCount: 0,
+          pageInfo: {
+            nextCursor: nextRemaining > 0 ? `cursor-${nextRemaining}` : null,
+            hasMore: nextRemaining > 0,
+            totalCount: total,
+          },
+        };
+      },
+    );
+    runtimeState.getClient.mockReturnValue({
+      trackerList,
+      trackerSearch: vi.fn(),
+      getLastServerInfoMessage: () =>
+        (connectionStatusState.byServer[serverId] ?? "online") === "online"
+          ? { features: { aitTrackerSort: true } }
+          : undefined,
+    });
+    return { trackerList, fetchedRowCounts };
+  }
+
+  it("defers the first fetch while a relevant host's hello is still in flight, instead of fetching per-project-fallback then discarding it once merge mode resolves", async () => {
+    const projects = makeProjects(3); // makeProjects puts every project on "host-a"
+    setConnectionStatus("host-a", "connecting");
+    const { trackerList, fetchedRowCounts } = installHelloGatedSortedClient("host-a", {
+      "prj-0": 50,
+      "prj-1": 50,
+      "prj-2": 50,
+    });
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects,
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 30,
+        sections: ["open"],
+      }),
+    );
+
+    // Nothing fetched, and no premature "done, zero rows" resolution, while
+    // the hello is still in flight — isLoading stays true instead of
+    // settling on an empty page that a reset would later overwrite.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(trackerList).not.toHaveBeenCalled();
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.trackers).toEqual([]);
+
+    act(() => {
+      setConnectionStatus("host-a", "online");
+    });
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // Exactly the merge-mode budget, fetched once, already under the
+    // correct mode — never a per-project-fallback page fetched and thrown
+    // away the instant capability resolved.
+    expect(result.current.trackers).toHaveLength(30);
+    expect(totalRowsFetched(fetchedRowCounts, "open")).toBe(30);
+    expect(trackerList.mock.calls.some(([args]) => args.sort !== undefined)).toBe(true);
+  });
+
+  // Hoisted out of the test body (rather than defined inline inside
+  // mockImplementation's callback) purely to keep max-nested-callbacks
+  // happy: describe > it > mockImplementation > vi.fn is already 4 deep.
+  function installHelloGatedSingleTrackerClient(
+    trackerListByHost: Map<string, ReturnType<typeof vi.fn>>,
+  ): void {
+    runtimeState.getClient.mockImplementation((serverId: string) => {
+      const trackerList = vi.fn(async () => ({
+        trackers: [makeTracker(`${serverId}-open-1`)],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount: 1 },
+      }));
+      trackerListByHost.set(serverId, trackerList);
+      return {
+        trackerList,
+        trackerSearch: vi.fn(),
+        getLastServerInfoMessage: () =>
+          (connectionStatusState.byServer[serverId] ?? "online") === "online"
+            ? { features: { aitTrackerSort: true } }
+            : undefined,
+      };
+    });
+  }
+
+  it("waits for every relevant host, not just the first to resolve, before picking a fetch strategy", async () => {
+    const projectOnHostA: TrackerProjectInput = {
+      serverId: "host-a",
+      serverName: "Host A",
+      projectId: "prj-a",
+      projectName: "Project A",
+    };
+    const projectOnHostB: TrackerProjectInput = {
+      serverId: "host-b",
+      serverName: "Host B",
+      projectId: "prj-b",
+      projectName: "Project B",
+    };
+    setConnectionStatus("host-a", "online");
+    setConnectionStatus("host-b", "connecting");
+
+    const trackerListByHost = new Map<string, ReturnType<typeof vi.fn>>();
+    installHelloGatedSingleTrackerClient(trackerListByHost);
+
+    const { result } = renderHook(() =>
+      // `projects` is a fresh array literal on every render on purpose (not
+      // hoisted to a stable `const` like other tests in this file) — this
+      // caught a real infinite-render-loop bug in the first version of the
+      // pas-2KY5X.25 fix: syncSections' own identity depends (via
+      // runMergedFetch) on relevantProjects, which is only reference-stable
+      // if the caller memoizes `options.projects`, so a deferred-fetch
+      // implementation that redid its reset on every repeat call (instead of
+      // a true no-op) looped forever the moment a caller didn't.
+      useTrackerProjectData({
+        projects: [projectOnHostA, projectOnHostB],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 30,
+        sections: ["open"],
+      }),
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // host-a resolved but host-b hasn't — the whole scope waits rather than
+    // fetching host-a alone under a guessed mode. getClient("host-a") may
+    // still be called (to check its own capability while deciding whether
+    // every relevant project has resolved), so the real invariant is that
+    // its trackerList is never actually invoked to fetch data, not that the
+    // client was never looked up.
+    expect(result.current.isLoading).toBe(true);
+    expect(trackerListByHost.get("host-a")?.mock.calls ?? []).toHaveLength(0);
+
+    act(() => {
+      setConnectionStatus("host-b", "online");
+    });
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.trackers.map((t) => t.id).sort()).toEqual([
+      "host-a-open-1",
+      "host-b-open-1",
+    ]);
+  });
+
+  // Same hoist-to-avoid-4-deep-nesting reasoning as
+  // installHelloGatedSingleTrackerClient above.
+  function makeOnlineSingleTrackerClient(trackerId: string): {
+    trackerList: ReturnType<typeof vi.fn>;
+    trackerSearch: ReturnType<typeof vi.fn>;
+    getLastServerInfoMessage: () => { features: { aitTrackerSort: boolean } };
+  } {
+    return {
+      trackerList: vi.fn(async () => ({
+        trackers: [makeTracker(trackerId)],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount: 1 },
+      })),
+      trackerSearch: vi.fn(),
+      getLastServerInfoMessage: () => ({ features: { aitTrackerSort: true } }),
+    };
+  }
+  function makeUnreachableClient(): {
+    trackerList: ReturnType<typeof vi.fn>;
+    trackerSearch: ReturnType<typeof vi.fn>;
+    getLastServerInfoMessage: () => undefined;
+  } {
+    return {
+      trackerList: vi.fn(),
+      trackerSearch: vi.fn(),
+      getLastServerInfoMessage: () => undefined,
+    };
+  }
+
+  it("an offline (not merely connecting) relevant project resolves to 'doesn't support' immediately, instead of blocking every other project's fetch", async () => {
+    const projectOnHostA: TrackerProjectInput = {
+      serverId: "host-a",
+      serverName: "Host A",
+      projectId: "prj-a",
+      projectName: "Project A",
+    };
+    const projectOnHostB: TrackerProjectInput = {
+      serverId: "host-b",
+      serverName: "Host B",
+      projectId: "prj-b",
+      projectName: "Project B",
+    };
+    setConnectionStatus("host-a", "online");
+    setConnectionStatus("host-b", "offline");
+
+    // host-b is offline — it never got a hello.
+    runtimeState.getClient.mockImplementation((serverId: string) =>
+      serverId === "host-a" ? makeOnlineSingleTrackerClient("a-open-1") : makeUnreachableClient(),
+    );
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [projectOnHostA, projectOnHostB],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 30,
+        // Narrowed to one status — host-a's mock ignores args.status and
+        // always returns the same "open" tracker, so fetching all four
+        // statuses would file that same row under every section.
+        sections: ["open"],
+      }),
+    );
+
+    // host-a's data loads right away — an offline host-b (which will keep
+    // cycling offline/connecting on its own reconnect backoff, never a
+    // permanent state) does not stall the whole scope waiting for a hello
+    // that may not land for a while.
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.trackers.map((t) => t.id)).toEqual(["a-open-1"]);
+  });
+});
+
+// pas-2KY5X.25 root cause #2: sectionTotals used to blank the whole status
+// section to `null` the instant ANY in-scope project's cursorState was
+// missing or errored — including simply "hasn't answered yet", the normal
+// state of most projects for most of a fresh load. tracker-table.tsx falls
+// back to `trackers.length` (the loaded-so-far row count) whenever total is
+// null, so while a merge-mode/budgeted fetch was still resolving across N
+// projects, the badge showed a small, growing "rows loaded so far" number
+// instead of the real (larger) total — the pas-2KY5X.14 anti-pattern the
+// toolbar pills were already fixed for, never applied here. These tests
+// mirror that fix: a project that hasn't answered yet or whose fetch failed
+// contributes nothing (never poisons), same as useTrackerStats.
+describe("useTrackerProjectData sectionTotals partial sum (pas-2KY5X.25)", () => {
+  beforeEach(() => {
+    connectionStatusState.byServer = {};
+  });
+
+  // A single syncSections call applies its whole batch to state atomically
+  // (one setSections/applyMergedResult call after every targeted project's
+  // Promise.all settles, not one per project as each resolves) — so a
+  // project "still in flight" is never visible mid-fetch via
+  // result.current within one such call, in either merge or per-project
+  // mode. retryReconnectedProjects is the one path that genuinely applies
+  // one project's result independently of another's (pas-2KY5X.13): each
+  // reconnecting project calls mergePage/setProjectCursor for itself the
+  // moment its own fetch resolves. This test uses that path to exercise a
+  // real (not simulated) partial-sum window.
+  // Hoisted out of the test body to keep max-nested-callbacks under its
+  // limit (describe > it > mockImplementation > vi.fn is already 4 deep).
+  function makeReportedTotalClient(
+    trackerId: string,
+    totalCount: number,
+  ): {
+    trackerList: ReturnType<typeof vi.fn>;
+    trackerSearch: ReturnType<typeof vi.fn>;
+    getLastServerInfoMessage: () => { features: { aitTrackerSort: boolean } };
+  } {
+    return {
+      trackerList: vi.fn(async () => ({
+        trackers: [makeTracker(trackerId)],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount },
+      })),
+      trackerSearch: vi.fn(),
+      getLastServerInfoMessage: () => ({ features: { aitTrackerSort: false } }),
+    };
+  }
+  function makePendingReconnectClient(pending: Promise<ListResponse>): {
+    trackerList: ReturnType<typeof vi.fn>;
+    trackerSearch: ReturnType<typeof vi.fn>;
+    getLastServerInfoMessage: () => { features: { aitTrackerSort: boolean } };
+  } {
+    return {
+      trackerList: vi.fn(async () => pending),
+      trackerSearch: vi.fn(),
+      getLastServerInfoMessage: () => ({ features: { aitTrackerSort: false } }),
+    };
+  }
+
+  it("sums whichever projects have reported so far instead of blanking the whole section while another is still catching up after a reconnect", async () => {
+    const projectOnHostA: TrackerProjectInput = {
+      serverId: "host-a",
+      serverName: "Host A",
+      projectId: "prj-a",
+      projectName: "Project A",
+    };
+    const projectOnHostB: TrackerProjectInput = {
+      serverId: "host-b",
+      serverName: "Host B",
+      projectId: "prj-b",
+      projectName: "Project B",
+    };
+    setConnectionStatus("host-a", "online");
+    setConnectionStatus("host-b", "offline");
+
+    let resolveReconnect: ((value: ListResponse) => void) | null = null;
+    const reconnectPromise = new Promise<ListResponse>((resolve) => {
+      resolveReconnect = resolve;
+    });
+    runtimeState.getClient.mockImplementation((serverId: string) =>
+      serverId === "host-a"
+        ? makeReportedTotalClient("a-open-1", 5)
+        : makePendingReconnectClient(reconnectPromise),
+    );
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [projectOnHostA, projectOnHostB],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 50,
+        sections: ["open"],
+      }),
+    );
+
+    // prj-a (online) loaded normally; prj-b's host is offline, contributing
+    // nothing (matches the "an offline project" test above — 0 rows, safe
+    // to skip, no poison) so the total already reflects prj-a alone.
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.sectionTotals.open).toBe(5);
+
+    act(() => {
+      setConnectionStatus("host-b", "online");
+    });
+
+    // host-b's reconnect retry is now in flight but hasn't resolved — the
+    // total must not dip to null (and fall back to a smaller
+    // trackers.length) while it's pending.
+    expect(result.current.sectionTotals.open).toBe(5);
+
+    await act(async () => {
+      resolveReconnect?.({
+        trackers: [makeTracker("b-open-1")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount: 3 },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const loadedIds = () => result.current.trackers.map((t) => t.id).sort();
+    await waitFor(() => expect(loadedIds()).toEqual(["a-open-1", "b-open-1"]));
+    expect(result.current.sectionTotals.open).toBe(8);
+  });
+
+  it("a project whose fetch errors contributes nothing to the sum, instead of blanking the whole section (mirrors useTrackerStats' pas-2KY5X.14 fix)", async () => {
+    installClient({
+      "prj-a:open:start": {
+        trackers: [makeTracker("a-open-1")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount: 5 },
+      },
+      "prj-b:open:start": () => Promise.reject(new Error("boom")),
+    });
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A, PROJECT_B],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 50,
+        sections: ["open"],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.sectionTotals.open).toBe(5);
+    expect(result.current.projectErrors).toHaveLength(1);
+  });
+
+  it("a project that responds successfully but omits totalCount still poisons the section to null, since it may have contributed real rows (unlike a missing or errored project)", async () => {
+    installClient({
+      "prj-a:open:start": {
+        trackers: [makeTracker("a-open-1")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount: 5 },
+      },
+      "prj-b:open:start": {
+        trackers: [makeTracker("b-open-1"), makeTracker("b-open-2")],
+        hiddenCount: 0,
+        // No totalCount — an old CLI binary predating total_count, still
+        // very much a real page of rows.
+        pageInfo: { nextCursor: null, hasMore: false },
+      },
+    });
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A, PROJECT_B],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 50,
+        sections: ["open"],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.trackers).toHaveLength(3);
+    // Poisoned to null rather than summing prj-a's 5 alone (which would
+    // undercount below the 3 rows actually on screen) or treating prj-b as
+    // contributing 0 (same undercount, worse than the un-fixed bug).
+    expect(result.current.sectionTotals.open).toBeNull();
   });
 });
