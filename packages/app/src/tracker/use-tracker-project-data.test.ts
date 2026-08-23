@@ -2436,3 +2436,86 @@ describe("useTrackerProjectData reconnect retry (pas-2KY5X.38)", () => {
     expect(openStartCallsForC).toHaveLength(1);
   });
 });
+
+describe("useTrackerProjectData per-project sort gate (pas-2KY5X.36)", () => {
+  beforeEach(() => {
+    connectionStatusState.byServer = {};
+  });
+
+  // PROJECT_A and PROJECT_B share `serverId: "host-a"` (capable), PROJECT_C
+  // is the only fixture project on a different host ("host-b", incapable) —
+  // exactly "two projects with the capability, one without" without adding a
+  // fourth project. One incapable project already forces mergeMode off
+  // (allSupportSort requires EVERY relevant project), landing every fetch on
+  // the per-project path this bug lived in.
+  it("still requests sort:newest for projects whose own host supports it, when one relevant project's host does not", async () => {
+    const responses: Record<string, ListResponse> = {
+      "prj-a:open:start": {
+        trackers: [makeTracker("a-open-1")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount: 1 },
+      },
+      "prj-b:open:start": {
+        trackers: [makeTracker("b-open-1")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount: 1 },
+      },
+      "prj-c:open:start": {
+        trackers: [makeTracker("c-open-1")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount: 1 },
+      },
+    };
+    const trackerList = vi.fn(
+      async (args: {
+        projectId: string;
+        status?: TrackerStatus;
+        sort?: string;
+        page?: { cursor?: string };
+      }) => {
+        const key = `${args.projectId}:${args.status}:${args.page?.cursor ?? "start"}`;
+        return responses[key] ?? EMPTY_PAGE;
+      },
+    );
+    runtimeState.getClient.mockImplementation((serverId: string) => ({
+      trackerList,
+      trackerSearch: vi.fn(),
+      // host-a (prj-a, prj-b) supports aitTrackerSort; host-b (prj-c) does
+      // not — the two-hosts-one-incapable shape pas-2KY5X.36 is about.
+      getLastServerInfoMessage: () => ({ features: { aitTrackerSort: serverId === "host-a" } }),
+    }));
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A, PROJECT_B, PROJECT_C],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 50,
+        sections: ["open"],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // One relevant project (prj-c) lacks the capability, so mergeMode never
+    // engages — every fetch here goes through the per-project path.
+    expect(result.current.trackers.map((t) => t.id).sort()).toEqual([
+      "a-open-1",
+      "b-open-1",
+      "c-open-1",
+    ]);
+
+    const sortArgFor = (projectId: string): string | undefined =>
+      trackerList.mock.calls.find(([args]) => args.projectId === projectId)?.[0]?.sort;
+    // CLAIM: prj-a and prj-b's own host supports sort — they must still get
+    // it even though prj-c's host doesn't. Before pas-2KY5X.36, `sort` was
+    // gated on `allSupportSort` (workspace-wide), so prj-c's missing
+    // capability silenced it for prj-a and prj-b too, and every project
+    // (including the two capable ones) fell back to `ait`'s
+    // `--sort oldest` default.
+    expect(sortArgFor("prj-a")).toBe("newest");
+    expect(sortArgFor("prj-b")).toBe("newest");
+    // prj-c genuinely doesn't support it — must not be sent regardless.
+    expect(sortArgFor("prj-c")).toBeUndefined();
+  });
+});

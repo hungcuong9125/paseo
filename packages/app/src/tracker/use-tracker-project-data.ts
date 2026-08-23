@@ -693,28 +693,48 @@ export function useTrackerProjectData(
   // fallback the fetch itself already takes for an offline host — and
   // retryReconnectedProjects re-fetches under the right mode once that host
   // actually comes back.
-  const { sortSupportPending, allSupportSort } = useMemo(() => {
+  // `allSupportSort` answers "can every relevant project be merged" — the
+  // right (and only) gate for mergeMode below. It is the wrong gate for
+  // whether any ONE fetch should carry `sort: "newest"`: that question is
+  // per project, not workspace-wide. `sortSupportByProject` answers it per
+  // project (pas-2KY5X.36) — every per-project fetch call site (syncSections,
+  // loadMore, retryOne) reads its OWN project's entry instead of the
+  // workspace-wide `allSupportSort`, so one project on an old host, or one
+  // host merely offline, no longer silences `sort` for every OTHER project
+  // that supports it perfectly.
+  const { sortSupportPending, allSupportSort, sortSupportByProject } = useMemo(() => {
     if (relevantProjects.length === 0) {
-      return { sortSupportPending: false, allSupportSort: false };
+      return {
+        sortSupportPending: false,
+        allSupportSort: false,
+        sortSupportByProject: new Map<string, boolean>(),
+      };
     }
     let pending = false;
     let everySupports = true;
+    const byProject = new Map<string, boolean>();
     for (const project of relevantProjects) {
       const status = connectionStatuses.get(project.serverId);
       if (status === undefined || status === "connecting") {
         pending = true;
         everySupports = false;
+        byProject.set(projectKeyOf(project), false);
         continue;
       }
-      if (
-        status !== "online" ||
+      const projectSupports =
+        status === "online" &&
         runtime.getClient(project.serverId)?.getLastServerInfoMessage()?.features
-          ?.aitTrackerSort !== true
-      ) {
+          ?.aitTrackerSort === true;
+      if (!projectSupports) {
         everySupports = false;
       }
+      byProject.set(projectKeyOf(project), projectSupports);
     }
-    return { sortSupportPending: pending, allSupportSort: everySupports };
+    return {
+      sortSupportPending: pending,
+      allSupportSort: everySupports,
+      sortSupportByProject: byProject,
+    };
     // sortSupportKey is the reactive trigger for the imperative
     // getLastServerInfoMessage reads above; connectionStatuses is the
     // reactive trigger for connectionStatus.
@@ -724,14 +744,18 @@ export function useTrackerProjectData(
   // budget the fetch across all of them via fetchMergedStatusWindow instead
   // of pageSize-per-project (pas-2KY5X.15). A single project selected has
   // nothing to interleave, so it stays on the per-project path below even
-  // when sorted — but still requests `sort: "newest"` there, since a real
-  // order beats an arbitrary id order for one project too. Any relevant
-  // project lacking the capability falls the whole scope back to the
-  // per-project path: a partial merge (some projects sorted, one not) can't
+  // when sorted — but still requests `sort: "newest"` for that one project
+  // (via sortSupportByProject, pas-2KY5X.36), since a real order beats an
+  // arbitrary id order for one project too. Any relevant project lacking the
+  // capability falls the WHOLE SCOPE back to the per-project path for
+  // MERGING purposes: a partial merge (some projects sorted, one not) can't
   // be done correctly without fetching that one project's entire dataset —
   // exactly the sweep this batch already rejected — so an honest "N per
   // project, but N is now smaller" beats a merge that's silently wrong for
-  // one contributor.
+  // one contributor. That gate is deliberately workspace-wide (`allSupportSort`)
+  // even though the per-project path's own `sort` flag isn't: merging needs
+  // every stream sorted to be safe, one project's own page doesn't need any
+  // other project's capability at all.
   const mergeMode = options.selectedProjectId === null && allSupportSort;
 
   const desiredSections = useMemo(
@@ -1149,9 +1173,14 @@ export function useTrackerProjectData(
 
       // Per-project pagination — a single project selected, or a relevant
       // project's host not (yet) advertising aitTrackerSort (see mergeMode
-      // above). Still requests `sort: "newest"` whenever every relevant
-      // project supports it, even without the merge: a real order beats an
-      // arbitrary id order for a single project too.
+      // above, which gates on EVERY relevant project). Each fetch here still
+      // requests `sort: "newest"` whenever THAT SPECIFIC project supports it
+      // (pas-2KY5X.36) — one project lacking the capability, or one host
+      // merely offline, must not silence `sort` for every OTHER project that
+      // supports it: `ait` defaults to `--sort oldest` when the flag is
+      // omitted, so withholding it here was serving oldest-first pages under
+      // a newest-first UI for every capable project too, not just the
+      // incapable one.
       const pages = await Promise.all(
         relevantProjects.flatMap((project) => {
           // Checked once per project, before its statuses fan out — cheap,
@@ -1170,7 +1199,9 @@ export function useTrackerProjectData(
                 limit: options.pageSize,
                 type: options.type,
                 priority: options.priority,
-                ...(allSupportSort ? { sort: "newest" as TrackerSort } : {}),
+                ...(sortSupportByProject.get(projectKeyOf(project))
+                  ? { sort: "newest" as TrackerSort }
+                  : {}),
               });
               return { project, status, result, error: null as unknown, wasOfflineAtFetch };
             } catch (error) {
@@ -1268,7 +1299,7 @@ export function useTrackerProjectData(
       scopeKey,
       runtime,
       mergeMode,
-      allSupportSort,
+      sortSupportByProject,
       sortSupportPending,
       runMergedFetch,
       applyMergedResult,
@@ -1399,7 +1430,11 @@ export function useTrackerProjectData(
           type: options.type,
           priority: options.priority,
           cursor,
-          ...(allSupportSort ? { sort: "newest" as TrackerSort } : {}),
+          // This (project, status)'s own capability, not the workspace-wide
+          // `allSupportSort` (pas-2KY5X.36) — a reconnecting project's own
+          // sort support has nothing to do with whether every OTHER relevant
+          // project also has it.
+          ...(sortSupportByProject.get(projectKey) ? { sort: "newest" as TrackerSort } : {}),
         });
         if (seq !== loadSeqRef.current) {
           return;
@@ -1455,7 +1490,7 @@ export function useTrackerProjectData(
     options.type,
     options.priority,
     mergeMode,
-    allSupportSort,
+    sortSupportByProject,
     mergePage,
     setProjectCursor,
   ]);
@@ -1538,7 +1573,10 @@ export function useTrackerProjectData(
                 type: options.type,
                 priority: options.priority,
                 cursor,
-                ...(allSupportSort ? { sort: "newest" as TrackerSort } : {}),
+                // This project's own capability, not the workspace-wide
+                // `allSupportSort` (pas-2KY5X.36) — see the per-project
+                // pagination comment in syncSections above.
+                ...(sortSupportByProject.get(projectKey) ? { sort: "newest" as TrackerSort } : {}),
               });
               return { project, projectKey, result, error: null as unknown };
             } catch (error) {
@@ -1597,7 +1635,7 @@ export function useTrackerProjectData(
       options.type,
       options.priority,
       mergeMode,
-      allSupportSort,
+      sortSupportByProject,
       runMergedFetch,
       applyMergedResult,
       mergePage,

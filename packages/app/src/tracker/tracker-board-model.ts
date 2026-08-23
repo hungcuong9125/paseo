@@ -1,5 +1,5 @@
 import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
-import { compareByCreatedNewest, compareTrackers } from "@/tracker/tracker-hierarchy";
+import { compareTrackers } from "@/tracker/tracker-hierarchy";
 import { matchesTrackerStatFilter, type TrackerStatFilter } from "@/tracker/tracker-stats";
 
 // Same domain as the toolbar's filter, reused directly. Only the priority
@@ -122,11 +122,16 @@ export function buildTrackerBoard(
   ready.sort((a, b) => compareTrackers(a.tracker, b.tracker));
   open.sort((a, b) => compareTrackers(a.tracker, b.tracker));
   inProgress.sort((a, b) => compareTrackers(a.tracker, b.tracker));
-  // pas-2KY5X.23: createdAt is the single recency key across selection, lane
-  // order, and the card label — this used to re-sort by updatedAt, which
-  // disagreed with both.
-  done.sort((a, b) => compareByCreatedNewest(a.tracker, b.tracker));
-  cancelled.sort((a, b) => compareByCreatedNewest(a.tracker, b.tracker));
+  // Done/Cancelled deliberately do NOT re-sort (pas-2KY5X.37's sibling
+  // defect at this layer): the loop above already pushed each lane's cards
+  // in `trackers`' own relative order, and `trackers` (use-tracker-project-data's
+  // shared hook) already hands them newest-first, position-stable within each
+  // status — the k-way merge appends its already-correct window instead of
+  // re-sorting, specifically so an already-shown row never moves. Sorting
+  // here with compareByCreatedNewest on every render undid that: its tie
+  // fallback (id) has no relationship to fetch order, so a same-tied card
+  // arriving on a later page could rank above an already-shown one and jump
+  // above it in the Done lane — the exact surface the human reported.
 
   return { visibleLanes: ALL_LANES, ready, open, in_progress: inProgress, done, cancelled };
 }
