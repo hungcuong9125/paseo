@@ -141,7 +141,11 @@ export interface ListReadyIdsOptions {
 }
 
 export interface AitService {
-  /** Probe the installed binary's current list help for --sort support. */
+  /** Probe the installed binary's current list help for --sort support.
+   * Resolves `false` when no binary is found at all (an expected, non-error
+   * outcome). Rejects if a found binary fails to run the probe — the caller
+   * must not treat that the same as "found, but no --sort"; it means the
+   * answer is unknown, and the caller decides how to log/report it. */
   supportsSort?: () => Promise<boolean>;
   listTrackers(options: ListTrackersOptions): Promise<ListTrackersResult>;
   searchTrackers(options: SearchTrackersOptions): Promise<SearchTrackersResult>;
@@ -385,31 +389,27 @@ export function createAitService(): AitService {
   async function supportsSort(): Promise<boolean> {
     // Re-resolve the executable for every capability probe so replacing the
     // binary or changing PATH can take effect without restarting the daemon.
+    // A missing binary is a legitimate, expected `false` — plenty of hosts
+    // never have `ait` installed. A FOUND binary that then fails to run is
+    // not: that's a probe malfunction, and it must not be swallowed here.
+    // The caller (refreshAitTrackerSortCapability) already has a catch wired
+    // to its own structured pino logger — this used to catch internally and
+    // resolve `false` instead of rejecting, which made that catch dead code
+    // and let a probe malfunction advertise aitTrackerSort:false with no
+    // signal anywhere that the probe itself was the thing that failed
+    // (pas-2KY5X.35 shipped invisibly for a whole release this way).
+    // Letting the rejection propagate is what makes the two layers agree.
     const cliPath = await findExecutable("ait");
     if (!cliPath) {
       return false;
     }
-    try {
-      mkdirSync(SORT_PROBE_CWD, { recursive: true });
-      const { stdout } = await execCommand(cliPath, ["--db", ":memory:", "list", "--help"], {
-        cwd: SORT_PROBE_CWD,
-        maxBuffer: 64 * 1024,
-        timeout: AIT_TIMEOUT_MS,
-      });
-      return stdout.split(/\s+/).includes("--sort");
-    } catch (error) {
-      // Silently latching to `false` here is what let pas-2KY5X.35 ship
-      // invisibly for a whole release: server_info advertised
-      // aitTrackerSort:false with no signal anywhere that the probe itself
-      // was failing rather than the binary genuinely lacking `--sort`.
-      const failure = toExecFailure(error);
-      const detail =
-        bufferOrStringToString(failure.stderr).trim() || failure.message || String(error);
-      console.warn(
-        `ait --sort capability probe failed, advertising aitTrackerSort: false — ${detail}`,
-      );
-      return false;
-    }
+    mkdirSync(SORT_PROBE_CWD, { recursive: true });
+    const { stdout } = await execCommand(cliPath, ["--db", ":memory:", "list", "--help"], {
+      cwd: SORT_PROBE_CWD,
+      maxBuffer: 64 * 1024,
+      timeout: AIT_TIMEOUT_MS,
+    });
+    return stdout.split(/\s+/).includes("--sort");
   }
 
   async function getTrackerSummary(cwd: string, trackerId: string): Promise<TrackerSummary> {
