@@ -71,7 +71,7 @@ const LIST_SECTIONS: ReadonlyArray<{ status: TrackerStatus; labelKey: string }> 
 // Page size for the server-side pagination hooks that feed this table — the
 // same sizing convention the old client-side reveal used (50 desktop / 20
 // compact), now applied at the RPC boundary instead of as an in-memory slice.
-export const REVEAL_STEP_DESKTOP = 50;
+export const REVEAL_STEP_DESKTOP = 30;
 export const REVEAL_STEP_COMPACT = 20;
 
 export function useTrackerPageStep(): number {

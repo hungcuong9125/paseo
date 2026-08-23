@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { TrackerPriority, TrackerStatus, TrackerType } from "@getpaseo/protocol/tracker/types";
+import type {
+  TrackerPriority,
+  TrackerSort,
+  TrackerStatus,
+  TrackerType,
+} from "@getpaseo/protocol/tracker/types";
 import {
   fetchTrackerPage,
   toTrackerProjectError,
@@ -10,6 +15,7 @@ import {
 } from "@/tracker/aggregated-trackers";
 import { getHostRuntimeStore, useHostRuntimeConnectionStatuses } from "@/runtime/host-runtime";
 import { MAX_TREE_DEPTH, isDone } from "@/tracker/tracker-hierarchy";
+import { useSessionStore } from "@/stores/session-store";
 
 // Same four sections, same order, as TrackerTable's LIST_SECTIONS and
 // tracker-board-model.ts's buildTrackerBoard — kept as a plain status tuple
@@ -23,9 +29,16 @@ interface CursorState {
    * didn't report one (old CLI binary, or the fetch failed) — poisons the
    * section's summed total, matching `sectionTotals`' contract. */
   totalCount: number | null;
+  /** Rows fetched from this project (server-sorted newest-first) but not yet
+   * merged into the displayed window — only ever populated by the merged
+   * "All projects" budget fetch (pas-2KY5X.15); always empty otherwise.
+   * Drained before this project is asked for another page, so a project
+   * that was over-fetched relative to the current budget doesn't pay for
+   * the same rows twice on the next "Show more". */
+  buffer: AggregatedTracker[];
 }
 
-const ERRORED_CURSOR: CursorState = { cursor: null, hasMore: false, totalCount: null };
+const ERRORED_CURSOR: CursorState = { cursor: null, hasMore: false, totalCount: null, buffer: [] };
 
 interface SectionPageState {
   trackers: AggregatedTracker[];
@@ -54,6 +67,194 @@ function projectKeyOf(project: TrackerProjectInput): string {
 
 function hasErrorForProject(errors: TrackerProjectError[], project: TrackerProjectInput): boolean {
   return errors.some((e) => e.serverId === project.serverId && e.projectId === project.projectId);
+}
+
+// Mirrors `ait list --sort newest`'s own order (pas-2KY5X.19): createdAt
+// descending, id descending as the tiebreaker — the tiebreaker follows the
+// sort direction there, so it has to here too, or the client-side merge
+// picks a different "next" row than the server would have for a single
+// stream. A row missing createdAt (a response from before sort support
+// existed) sorts after everything that has one rather than crashing the
+// comparison.
+function compareNewestFirst(a: AggregatedTracker, b: AggregatedTracker): number {
+  if (a.createdAt !== undefined && b.createdAt !== undefined && a.createdAt !== b.createdAt) {
+    return a.createdAt < b.createdAt ? 1 : -1;
+  }
+  if (a.createdAt !== undefined && b.createdAt === undefined) {
+    return -1;
+  }
+  if (a.createdAt === undefined && b.createdAt !== undefined) {
+    return 1;
+  }
+  return a.id < b.id ? 1 : -1;
+}
+
+// The k-way merge step: each buffer is one project's rows, already
+// newest-first (guaranteed by the server when sort is active). Repeatedly
+// takes whichever buffer's head is newest until `count` rows are taken or
+// every buffer runs dry. Never looks past a buffer's head — a stream being
+// individually sorted is exactly what makes that safe: everything that
+// stream hasn't revealed yet is guaranteed older than what's at its head, so
+// there's never a reason to peek further before taking from a different
+// stream. Mutates `buffers` in place (each taken row is shifted off),
+// leaving whatever's left as this round's carry-over.
+function takeNewest(
+  buffers: ReadonlyMap<string, AggregatedTracker[]>,
+  count: number,
+): AggregatedTracker[] {
+  const taken: AggregatedTracker[] = [];
+  while (taken.length < count) {
+    let bestKey: string | null = null;
+    let bestRow: AggregatedTracker | null = null;
+    for (const [key, rows] of buffers) {
+      const head = rows[0];
+      if (head === undefined) {
+        continue;
+      }
+      if (bestRow === null || compareNewestFirst(head, bestRow) < 0) {
+        bestKey = key;
+        bestRow = head;
+      }
+    }
+    if (bestKey === null) {
+      break;
+    }
+    buffers.get(bestKey)!.shift();
+    taken.push(bestRow!);
+  }
+  return taken;
+}
+
+/** One project's outcome from one merge-fetch round. */
+interface MergeFetchOutcome {
+  project: TrackerProjectInput;
+  trackers: AggregatedTracker[];
+  cursor: string | null;
+  hasMore: boolean;
+  totalCount: number | null;
+  wasOfflineAtFetch: boolean;
+  error: unknown;
+}
+
+interface MergedWindowResult {
+  /** Up to `budget` rows, newest-first across every relevant project. */
+  taken: AggregatedTracker[];
+  /** Every relevant project's updated cursor, including whatever's left in
+   * its buffer after `taken` was drawn from it. */
+  cursors: Record<string, CursorState>;
+  errors: TrackerProjectError[];
+  /** Every project actually queried this call, keyed by whether that
+   * specific fetch found it offline — a project whose buffer already had
+   * enough leftover to satisfy the whole budget never appears here, since it
+   * was never queried this round. */
+  offlineStatusByProject: ReadonlyMap<string, boolean>;
+}
+
+// A real workspace converges in 1-2 rounds in practice (see this hook's own
+// tests for measured fetch counts): round 1 splits `budget` evenly across
+// every relevant project, and any project that comes up short hands its
+// remaining share to whichever projects are still hungry in round 2. The cap
+// exists only as a safety valve for a pathological spread across many small
+// projects — past it, this returns fewer than `budget` rows rather than
+// chaining more round-trips, and the section's own hasMore/loadMore already
+// know how to offer the rest as a partial page.
+const MERGE_MAX_ROUNDS = 4;
+
+/**
+ * Assembles up to `budget` additional rows for one status, newest-first
+ * across every relevant project — the client-side half of turning "N per
+ * project" into "N total" (pas-2KY5X.15). Each round fetches only the
+ * projects whose buffer is currently empty and might still have more
+ * (`hasMore !== false`), sized to however many rows are still needed split
+ * across just those projects, not a flat per-project page — "only refill the
+ * stream that's exhausted at the merge frontier." Safe to call with rows
+ * already sitting in `priorCursors[key].buffer` from a previous call that
+ * over-fetched relative to its own budget: those are consumed first, so a
+ * project that already gave more than it needed to doesn't pay for the same
+ * rows twice on the next "Show more".
+ *
+ * Relies on each project's own stream being sorted newest-first server-side
+ * (`fetchRound` is expected to request that) — `takeNewest` only ever reads
+ * a stream's buffered head, and that's only a valid stand-in for "the
+ * newest row this project hasn't revealed yet" when the stream is actually
+ * sorted; an unsorted project would make the merge silently wrong instead of
+ * merely degraded, which is why the caller must not invoke this at all for a
+ * project whose host doesn't advertise `aitTrackerSort`.
+ */
+async function fetchMergedStatusWindow(
+  relevantProjects: readonly TrackerProjectInput[],
+  budget: number,
+  priorCursors: Readonly<Record<string, CursorState>>,
+  fetchRound: (
+    targets: readonly { project: TrackerProjectInput; cursor: string | null }[],
+    limit: number,
+  ) => Promise<MergeFetchOutcome[]>,
+): Promise<MergedWindowResult> {
+  const cursors: Record<string, CursorState> = {};
+  const buffers = new Map<string, AggregatedTracker[]>();
+  for (const project of relevantProjects) {
+    const key = projectKeyOf(project);
+    const prior = priorCursors[key] ?? {
+      cursor: null,
+      hasMore: true,
+      totalCount: null,
+      buffer: [],
+    };
+    cursors[key] = prior;
+    buffers.set(key, [...prior.buffer]);
+  }
+
+  const errors: TrackerProjectError[] = [];
+  const seenErrorProjects = new Set<string>();
+  const offlineStatusByProject = new Map<string, boolean>();
+
+  for (let round = 0; round < MERGE_MAX_ROUNDS; round++) {
+    const bufferedTotal = [...buffers.values()].reduce((sum, rows) => sum + rows.length, 0);
+    if (bufferedTotal >= budget) {
+      break;
+    }
+    const needsFetch = relevantProjects.filter((project) => {
+      const key = projectKeyOf(project);
+      return buffers.get(key)!.length === 0 && cursors[key].hasMore !== false;
+    });
+    if (needsFetch.length === 0) {
+      break;
+    }
+    const chunk = Math.max(1, Math.ceil((budget - bufferedTotal) / needsFetch.length));
+    const targets = needsFetch.map((project) => ({
+      project,
+      cursor: cursors[projectKeyOf(project)].cursor,
+    }));
+    const outcomes = await fetchRound(targets, chunk);
+    for (const outcome of outcomes) {
+      const key = projectKeyOf(outcome.project);
+      offlineStatusByProject.set(key, outcome.wasOfflineAtFetch);
+      if (outcome.error) {
+        // Dedup — a project that errors does so the same way every round.
+        if (!seenErrorProjects.has(key)) {
+          seenErrorProjects.add(key);
+          errors.push(toTrackerProjectError(outcome.project, outcome.error));
+        }
+        cursors[key] = ERRORED_CURSOR;
+        buffers.set(key, []);
+        continue;
+      }
+      cursors[key] = {
+        cursor: outcome.cursor,
+        hasMore: outcome.hasMore,
+        totalCount: outcome.totalCount,
+        buffer: [],
+      };
+      buffers.get(key)!.push(...outcome.trackers);
+    }
+  }
+
+  const taken = takeNewest(buffers, budget);
+  for (const project of relevantProjects) {
+    const key = projectKeyOf(project);
+    cursors[key] = { ...cursors[key], buffer: buffers.get(key) ?? [] };
+  }
+  return { taken, cursors, errors, offlineStatusByProject };
 }
 
 function findTrackerStatus(sections: SectionsState, id: string): TrackerStatus | null {
@@ -375,6 +576,52 @@ export function useTrackerProjectData(
   // project gets real data.
   const offlineProjectKeysRef = useRef<Set<string>>(new Set());
 
+  // Reactive trigger for the imperative getLastServerInfoMessage reads below
+  // — same shape as useTrackerStats' featureSupportKey (pas-2KY5X.1).
+  const sortSupportKey = useSessionStore((state) =>
+    relevantProjects
+      .map(
+        (project) =>
+          `${project.serverId}:${
+            state.sessions[project.serverId]?.serverInfo?.features?.aitTrackerSort === true
+          }`,
+      )
+      .join("|"),
+  );
+  // Whether every relevant project's host currently advertises
+  // aitTrackerSort. Checked per project rather than assumed workspace-wide,
+  // since each project can sit on a different daemon. All-projects mode
+  // needs every relevant project sorted server-side, or the merge below
+  // (fetchMergedStatusWindow) would be silently wrong for whichever one
+  // isn't: it only ever reads a stream's buffered head, which is only a
+  // valid "next newest" candidate when the stream really is sorted.
+  const allSupportSort = useMemo(
+    () =>
+      relevantProjects.length > 0 &&
+      relevantProjects.every(
+        (project) =>
+          runtime.getClient(project.serverId)?.getLastServerInfoMessage()?.features
+            ?.aitTrackerSort === true,
+      ),
+    // sortSupportKey is the reactive trigger for the imperative
+    // getLastServerInfoMessage reads above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [relevantProjects, runtime, sortSupportKey],
+  );
+  // "All projects" (nothing selected) with every relevant project sorted:
+  // budget the fetch across all of them via fetchMergedStatusWindow instead
+  // of pageSize-per-project (pas-2KY5X.15). A single project selected has
+  // nothing to interleave, so it stays on the per-project path below even
+  // when sorted — but still requests `sort: "newest"` there, since a real
+  // order beats an arbitrary id order for one project too. Any relevant
+  // project lacking the capability falls the whole scope back to the
+  // per-project path: a partial merge (some projects sorted, one not) can't
+  // be done correctly without fetching that one project's entire dataset —
+  // exactly the sweep this batch already rejected — so an honest "N per
+  // project, but N is now smaller" beats a merge that's silently wrong for
+  // one contributor.
+  const mergeMode = options.selectedProjectId === null && allSupportSort;
+
   const desiredSections = useMemo(
     () => (options.sections ? [...options.sections] : [...LIST_SECTION_STATUSES]),
     [options.sections],
@@ -391,7 +638,11 @@ export function useTrackerProjectData(
   // including which sections are currently desired. Growing or shrinking
   // that set (below) fetches or leaves-in-place sections without discarding
   // the rest; only a change here invalidates already-loaded data and forces
-  // a full reset.
+  // a full reset. mergeMode is included: switching between the per-project
+  // cursor scheme and the merged-budget one (buffers included) mid-flight
+  // would leave stale cursors in the shape the other scheme doesn't expect,
+  // so a capability change (rare — a daemon upgrading mid-session) resets
+  // and re-fetches from scratch, same as any other scope-defining option.
   const scopeKey = useMemo(
     () =>
       [
@@ -401,6 +652,7 @@ export function useTrackerProjectData(
         String(options.pageSize),
         options.type ?? "any-type",
         options.priority ?? "any-priority",
+        mergeMode ? "merged" : "per-project",
         ...relevantProjects.map((p) => `${p.serverId}:${p.projectId}`).sort(),
       ].join("|"),
     [
@@ -410,6 +662,7 @@ export function useTrackerProjectData(
       options.pageSize,
       options.type,
       options.priority,
+      mergeMode,
       relevantProjects,
     ],
   );
@@ -486,6 +739,138 @@ export function useTrackerProjectData(
     [],
   );
 
+  // Updates one project's cursor for `status` without touching the
+  // displayed trackers — merge mode's retryReconnectedProjects uses this
+  // instead of mergePage, since a reconnect's rows land in that project's
+  // buffer (picked up by the next "Show more") rather than being spliced
+  // into what's already on screen, which would reshuffle a window the user
+  // is already looking at.
+  const setProjectCursor = useCallback(
+    (status: TrackerStatus, projectKey: string, cursor: CursorState) => {
+      setSections((current) => {
+        const section = current[status];
+        return {
+          ...current,
+          [status]: {
+            trackers: section.trackers,
+            cursors: { ...section.cursors, [projectKey]: cursor },
+          },
+        };
+      });
+    },
+    [],
+  );
+
+  // Applies one status's MergedWindowResult — shared by syncSections (one
+  // call per newly-requested status) and loadMore (one call for the status
+  // being paged). Appends `taken` to the displayed trackers, replaces every
+  // touched project's cursor (including its leftover buffer) in one write,
+  // reconciles offlineProjectKeysRef, and surfaces any fetch errors.
+  const applyMergedResult = useCallback((status: TrackerStatus, result: MergedWindowResult) => {
+    setSections((current) => {
+      const trackers = [...current[status].trackers, ...result.taken];
+      sortMerged(trackers);
+      return {
+        ...current,
+        [status]: {
+          trackers,
+          cursors: { ...current[status].cursors, ...result.cursors },
+        },
+      };
+    });
+    for (const [projectKey, wasOffline] of result.offlineStatusByProject) {
+      if (wasOffline) {
+        offlineProjectKeysRef.current.add(projectKey);
+      } else {
+        offlineProjectKeysRef.current.delete(projectKey);
+      }
+    }
+    if (result.errors.length > 0) {
+      setProjectErrors((current) => {
+        const additions = result.errors.filter((error) => !hasErrorForProject(current, error));
+        return additions.length > 0 ? [...current, ...additions] : current;
+      });
+    }
+  }, []);
+
+  // Runs fetchMergedStatusWindow for every status in `statuses`, one status
+  // per parallel branch (each status's own rounds still run in sequence
+  // within itself, since round N needs round N-1's results to know which
+  // projects are still hungry). Shared by syncSections (always calls with
+  // empty priorCursorsByStatus — a status is only ever synced once per
+  // scope, so there's nothing to carry over yet) and loadMore (passes the
+  // live cursors, so leftover buffer from an earlier over-fetch is consumed
+  // before anything new is requested).
+  const runMergedFetch = useCallback(
+    async (
+      statuses: readonly TrackerStatus[],
+      priorCursorsByStatus: Readonly<Partial<Record<TrackerStatus, Record<string, CursorState>>>>,
+      budget: number,
+    ): Promise<Record<TrackerStatus, MergedWindowResult>> => {
+      const fetchRoundFor =
+        (status: TrackerStatus) =>
+        async (
+          targets: readonly { project: TrackerProjectInput; cursor: string | null }[],
+          limit: number,
+        ): Promise<MergeFetchOutcome[]> =>
+          Promise.all(
+            targets.map(async ({ project, cursor }) => {
+              const wasOfflineAtFetch =
+                runtime.getSnapshot(project.serverId)?.connectionStatus !== "online";
+              try {
+                const result = await fetchTrackerPage({
+                  project,
+                  runtime,
+                  status,
+                  all: options.all,
+                  limit,
+                  type: options.type,
+                  priority: options.priority,
+                  sort: "newest",
+                  cursor: cursor ?? undefined,
+                });
+                return {
+                  project,
+                  trackers: result.trackers,
+                  cursor: result.pageInfo?.nextCursor ?? null,
+                  hasMore: result.pageInfo?.hasMore ?? false,
+                  totalCount: result.pageInfo?.totalCount ?? null,
+                  wasOfflineAtFetch,
+                  error: null as unknown,
+                };
+              } catch (error) {
+                return {
+                  project,
+                  trackers: [],
+                  cursor: null,
+                  hasMore: false,
+                  totalCount: null,
+                  wasOfflineAtFetch,
+                  error,
+                };
+              }
+            }),
+          );
+
+      const results = await Promise.all(
+        statuses.map((status) =>
+          fetchMergedStatusWindow(
+            relevantProjects,
+            budget,
+            priorCursorsByStatus[status] ?? {},
+            fetchRoundFor(status),
+          ),
+        ),
+      );
+      const byStatus = {} as Record<TrackerStatus, MergedWindowResult>;
+      statuses.forEach((status, index) => {
+        byStatus[status] = results[index]!;
+      });
+      return byStatus;
+    },
+    [relevantProjects, runtime, options.all, options.type, options.priority],
+  );
+
   // Ensures the first page of every (project, status) pair in `statuses` has
   // been requested for the current scope, merging results into whatever is
   // already loaded rather than replacing it. A scope change (scopeKey)
@@ -522,6 +907,43 @@ export function useTrackerProjectData(
       if (!isNewScope) {
         setPendingStatuses((current) => new Set([...current, ...toFetch]));
       }
+
+      // Budgeted across every relevant project instead of pageSize-per, and
+      // routed through fetchMergedStatusWindow (pas-2KY5X.15) — see mergeMode
+      // above for when this applies. Always called with empty prior cursors:
+      // syncSections only ever fetches a status the first time it's
+      // requested for the current scope (toFetch already excludes anything
+      // requestedStatusesRef has seen), so there is never leftover buffer to
+      // carry over here — that only happens on a later loadMore.
+      if (mergeMode) {
+        const merged = await runMergedFetch(toFetch, {}, options.pageSize);
+        if (seq !== loadSeqRef.current) {
+          // Stale — a newer scope reset already reseeded pendingStatuses and
+          // sections for the current scope; this batch belongs to an
+          // abandoned one and must not touch either.
+          return;
+        }
+        setPendingStatuses((current) => {
+          if (current.size === 0) {
+            return current;
+          }
+          const next = new Set(current);
+          for (const status of toFetch) {
+            next.delete(status);
+          }
+          return next;
+        });
+        for (const status of toFetch) {
+          applyMergedResult(status, merged[status]!);
+        }
+        return;
+      }
+
+      // Per-project pagination — a single project selected, or a relevant
+      // project's host not (yet) advertising aitTrackerSort (see mergeMode
+      // above). Still requests `sort: "newest"` whenever every relevant
+      // project supports it, even without the merge: a real order beats an
+      // arbitrary id order for a single project too.
       const pages = await Promise.all(
         relevantProjects.flatMap((project) => {
           // Checked once per project, before its statuses fan out — cheap,
@@ -540,6 +962,7 @@ export function useTrackerProjectData(
                 limit: options.pageSize,
                 type: options.type,
                 priority: options.priority,
+                ...(allSupportSort ? { sort: "newest" as TrackerSort } : {}),
               });
               return { project, status, result, error: null as unknown, wasOfflineAtFetch };
             } catch (error) {
@@ -599,6 +1022,7 @@ export function useTrackerProjectData(
             cursor: result.pageInfo?.nextCursor ?? null,
             hasMore: result.pageInfo?.hasMore ?? false,
             totalCount: result.pageInfo?.totalCount ?? null,
+            buffer: [],
           };
         }
         for (const status of toFetch) {
@@ -616,7 +1040,7 @@ export function useTrackerProjectData(
     // scopeKey covers every project/type/priority/enabled option this
     // closure reads.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [scopeKey, runtime],
+    [scopeKey, runtime, mergeMode, allSupportSort, runMergedFetch, applyMergedResult],
   );
 
   useEffect(() => {
@@ -650,7 +1074,38 @@ export function useTrackerProjectData(
     if (targets.length === 0) {
       return;
     }
+    // Lands a reconnected project's page in its buffer rather than splicing
+    // it directly into the displayed window in merge mode — see
+    // setProjectCursor — and appends it normally otherwise.
+    const applyReconnectedPage = (
+      status: TrackerStatus,
+      projectKey: string,
+      trackers: AggregatedTracker[],
+      cursor: string | null,
+      hasMore: boolean,
+      totalCount: number | null,
+    ): void => {
+      if (mergeMode) {
+        const priorBuffer = sectionsRef.current[status].cursors[projectKey]?.buffer ?? [];
+        setProjectCursor(status, projectKey, {
+          cursor,
+          hasMore,
+          totalCount,
+          buffer: [...priorBuffer, ...trackers],
+        });
+      } else {
+        mergePage(status, projectKey, trackers, { cursor, hasMore, totalCount, buffer: [] });
+      }
+    };
+    const applyReconnectedError = (status: TrackerStatus, projectKey: string): void => {
+      if (mergeMode) {
+        setProjectCursor(status, projectKey, ERRORED_CURSOR);
+      } else {
+        mergePage(status, projectKey, [], ERRORED_CURSOR);
+      }
+    };
     const retryOne = async (project: TrackerProjectInput, status: TrackerStatus): Promise<void> => {
+      const projectKey = projectKeyOf(project);
       try {
         const result = await fetchTrackerPage({
           project,
@@ -660,16 +1115,20 @@ export function useTrackerProjectData(
           limit: options.pageSize,
           type: options.type,
           priority: options.priority,
+          ...(allSupportSort ? { sort: "newest" as TrackerSort } : {}),
         });
         if (seq !== loadSeqRef.current) {
           return;
         }
-        offlineProjectKeysRef.current.delete(projectKeyOf(project));
-        mergePage(status, projectKeyOf(project), result.trackers, {
-          cursor: result.pageInfo?.nextCursor ?? null,
-          hasMore: result.pageInfo?.hasMore ?? false,
-          totalCount: result.pageInfo?.totalCount ?? null,
-        });
+        offlineProjectKeysRef.current.delete(projectKey);
+        applyReconnectedPage(
+          status,
+          projectKey,
+          result.trackers,
+          result.pageInfo?.nextCursor ?? null,
+          result.pageInfo?.hasMore ?? false,
+          result.pageInfo?.totalCount ?? null,
+        );
       } catch (error) {
         if (seq !== loadSeqRef.current) {
           return;
@@ -678,13 +1137,13 @@ export function useTrackerProjectData(
         // error is a real RPC failure, not an offline masking — clear the
         // offline flag so a future reconnect doesn't retry a failure that
         // has nothing to do with connectivity.
-        offlineProjectKeysRef.current.delete(projectKeyOf(project));
+        offlineProjectKeysRef.current.delete(projectKey);
         setProjectErrors((current) =>
           hasErrorForProject(current, project)
             ? current
             : [...current, toTrackerProjectError(project, error)],
         );
-        mergePage(status, projectKeyOf(project), [], ERRORED_CURSOR);
+        applyReconnectedError(status, projectKey);
       }
     };
     await Promise.all(
@@ -697,7 +1156,10 @@ export function useTrackerProjectData(
     options.pageSize,
     options.type,
     options.priority,
+    mergeMode,
+    allSupportSort,
     mergePage,
+    setProjectCursor,
   ]);
 
   useEffect(() => {
@@ -719,6 +1181,42 @@ export function useTrackerProjectData(
       }
       const seq = loadSeqRef.current;
       const currentCursors = sectionsRef.current[status].cursors;
+
+      if (mergeMode) {
+        // "More to load" includes leftover buffer, not just hasMore — a
+        // project can already be sitting on rows this section over-fetched
+        // last time (see fetchMergedStatusWindow), which this call should
+        // spend before requesting anything new.
+        const hasMoreToLoad = relevantProjects.some((project) => {
+          const cursor = currentCursors[projectKeyOf(project)];
+          return cursor?.hasMore === true || (cursor?.buffer.length ?? 0) > 0;
+        });
+        if (!hasMoreToLoad) {
+          return;
+        }
+        loadingMoreRef.current.add(status);
+        setSectionLoadingMore((current) => ({ ...current, [status]: true }));
+        void (async () => {
+          const merged = await runMergedFetch(
+            [status],
+            { [status]: currentCursors },
+            options.pageSize,
+          );
+          loadingMoreRef.current.delete(status);
+          // Clear the in-flight flag unconditionally, before the staleness
+          // bail — otherwise a scope change mid-fetch strands this status's
+          // spinner on forever, since the scope reset resets it once up
+          // front but nothing clears it again once this branch returns
+          // early.
+          setSectionLoadingMore((current) => ({ ...current, [status]: false }));
+          if (seq !== loadSeqRef.current) {
+            return;
+          }
+          applyMergedResult(status, merged[status]!);
+        })();
+        return;
+      }
+
       const targets = relevantProjects.filter(
         (project) => currentCursors[projectKeyOf(project)]?.hasMore === true,
       );
@@ -742,6 +1240,7 @@ export function useTrackerProjectData(
                 type: options.type,
                 priority: options.priority,
                 cursor,
+                ...(allSupportSort ? { sort: "newest" as TrackerSort } : {}),
               });
               return { project, projectKey, result, error: null as unknown };
             } catch (error) {
@@ -773,6 +1272,7 @@ export function useTrackerProjectData(
             cursor: result.pageInfo?.nextCursor ?? null,
             hasMore: result.pageInfo?.hasMore ?? false,
             totalCount: result.pageInfo?.totalCount ?? null,
+            buffer: [],
           });
         }
       })();
@@ -784,6 +1284,10 @@ export function useTrackerProjectData(
       options.pageSize,
       options.type,
       options.priority,
+      mergeMode,
+      allSupportSort,
+      runMergedFetch,
+      applyMergedResult,
       mergePage,
     ],
   );
@@ -792,7 +1296,7 @@ export function useTrackerProjectData(
     const result = createEmptyStatusRecord(false);
     for (const status of LIST_SECTION_STATUSES) {
       result[status] = Object.values(sections[status].cursors).some(
-        (cursorState) => cursorState.hasMore,
+        (cursorState) => cursorState.hasMore || cursorState.buffer.length > 0,
       );
     }
     return result;

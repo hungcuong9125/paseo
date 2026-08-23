@@ -127,8 +127,86 @@ function installClient(
       return typeof entry === "function" ? entry() : entry;
     },
   );
-  runtimeState.getClient.mockReturnValue({ trackerList, trackerSearch: vi.fn() });
+  runtimeState.getClient.mockReturnValue({
+    trackerList,
+    trackerSearch: vi.fn(),
+    // Defaults every test onto the per-project path (aitTrackerSort
+    // unsupported) unless a test explicitly overrides this — see
+    // installGenerousSortedClient for pas-2KY5X.15's merge-mode tests.
+    getLastServerInfoMessage: () => ({ features: { aitTrackerSort: false } }),
+  });
   return trackerList;
+}
+
+/**
+ * A trackerList mock standing in for a real, generously-stocked ait project:
+ * every call returns exactly `limit` items (or fewer once that
+ * project+status's configured supply runs out), newest-first via a single
+ * clock shared across every project so createdAt stays globally consistent
+ * no matter which project's call happens to resolve first — the same
+ * guarantee a real merge of independently-sorted streams relies on.
+ * Advertises `aitTrackerSort: true`, so useTrackerProjectData takes the
+ * merge path (pas-2KY5X.15). Returns the trackerList mock plus a
+ * `fetchedRowCounts` log (recorded synchronously, unlike `mock.results` —
+ * an async mock's captured "value" is the pending Promise, not its
+ * resolution) so tests can measure exactly how many rows each request
+ * actually served.
+ */
+function installGenerousSortedClient(supplyByProjectId: Record<string, number>): {
+  trackerList: ReturnType<typeof vi.fn>;
+  fetchedRowCounts: { projectId: string; status: TrackerStatus | undefined; count: number }[];
+} {
+  let clock = 1_000_000;
+  const remainingByKey = new Map<string, number>();
+  const fetchedRowCounts: {
+    projectId: string;
+    status: TrackerStatus | undefined;
+    count: number;
+  }[] = [];
+  const trackerList = vi.fn(
+    async (args: {
+      projectId: string;
+      status?: TrackerStatus;
+      page?: { limit: number; cursor?: string };
+    }) => {
+      const key = `${args.projectId}:${args.status}`;
+      const total = supplyByProjectId[args.projectId] ?? 0;
+      const remaining = remainingByKey.get(key) ?? total;
+      const limit = args.page?.limit ?? total;
+      const take = Math.max(0, Math.min(remaining, limit));
+      fetchedRowCounts.push({ projectId: args.projectId, status: args.status, count: take });
+      const trackers: TrackerSummary[] = [];
+      for (let i = 0; i < take; i++) {
+        clock -= 1;
+        trackers.push({
+          id: `${args.projectId}-${clock}`,
+          title: `Tracker ${clock}`,
+          type: "task",
+          status: args.status ?? "open",
+          priority: "P2",
+          parentId: null,
+          createdAt: String(clock).padStart(10, "0"),
+        });
+      }
+      const nextRemaining = remaining - take;
+      remainingByKey.set(key, nextRemaining);
+      return {
+        trackers,
+        hiddenCount: 0,
+        pageInfo: {
+          nextCursor: nextRemaining > 0 ? `cursor-${nextRemaining}` : null,
+          hasMore: nextRemaining > 0,
+          totalCount: total,
+        },
+      };
+    },
+  );
+  runtimeState.getClient.mockReturnValue({
+    trackerList,
+    trackerSearch: vi.fn(),
+    getLastServerInfoMessage: () => ({ features: { aitTrackerSort: true } }),
+  });
+  return { trackerList, fetchedRowCounts };
 }
 
 describe("useTrackerProjectData", () => {
@@ -267,7 +345,14 @@ describe("useTrackerProjectData", () => {
         return { trackers: [], hiddenCount: 0, pageInfo: { nextCursor: null, hasMore: false } };
       },
     );
-    runtimeState.getClient.mockReturnValue({ trackerList, trackerSearch: vi.fn() });
+    runtimeState.getClient.mockReturnValue({
+      trackerList,
+      trackerSearch: vi.fn(),
+      // Defaults every test onto the per-project path (aitTrackerSort
+      // unsupported) unless a test explicitly overrides this — see
+      // installGenerousSortedClient for pas-2KY5X.15's merge-mode tests.
+      getLastServerInfoMessage: () => ({ features: { aitTrackerSort: false } }),
+    });
 
     function ShowMoreHarness() {
       const data = useTrackerProjectData({
@@ -847,7 +932,14 @@ describe("useTrackerProjectData", () => {
         };
       },
     );
-    runtimeState.getClient.mockReturnValue({ trackerList, trackerSearch: vi.fn() });
+    runtimeState.getClient.mockReturnValue({
+      trackerList,
+      trackerSearch: vi.fn(),
+      // Defaults every test onto the per-project path (aitTrackerSort
+      // unsupported) unless a test explicitly overrides this — see
+      // installGenerousSortedClient for pas-2KY5X.15's merge-mode tests.
+      getLastServerInfoMessage: () => ({ features: { aitTrackerSort: false } }),
+    });
 
     const { result, rerender } = renderHook(
       ({ type }: { type: "task" | "epic" }) =>
@@ -1038,5 +1130,211 @@ describe("useTrackerProjectData", () => {
     expect(prjAOpenRequests).toHaveLength(1);
     // prj-a's paging state survived the reconnect untouched.
     expect(result.current.sectionHasMore.open).toBe(true);
+  });
+});
+
+function makeProjects(count: number): TrackerProjectInput[] {
+  return Array.from({ length: count }, (_, index) => ({
+    serverId: "host-a",
+    serverName: "Host A",
+    projectId: `prj-${index}`,
+    projectName: `Project ${index}`,
+  }));
+}
+
+function totalRowsFetched(
+  fetchedRowCounts: { projectId: string; status: TrackerStatus | undefined; count: number }[],
+  status: TrackerStatus,
+): number {
+  return fetchedRowCounts
+    .filter((entry) => entry.status === status)
+    .reduce((sum, entry) => sum + entry.count, 0);
+}
+
+describe("useTrackerProjectData merge mode (pas-2KY5X.15)", () => {
+  beforeEach(() => {
+    connectionStatusState.byServer = {};
+  });
+
+  it("a single project in All-projects mode fetches exactly the budget, zero over-fetch", async () => {
+    const { fetchedRowCounts } = installGenerousSortedClient({ "prj-0": 1000 });
+    const projects = makeProjects(1);
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects,
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 30,
+        sections: ["open"],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.trackers).toHaveLength(30);
+    expect(totalRowsFetched(fetchedRowCounts, "open")).toBe(30);
+  });
+
+  it("nine generously-stocked projects in All-projects mode fetch close to the budget, nowhere near budget-per-project (pas-2KY5X.15)", async () => {
+    const projects = makeProjects(9);
+    const supply: Record<string, number> = {};
+    for (const project of projects) {
+      supply[project.projectId] = 1000;
+    }
+    const { trackerList, fetchedRowCounts } = installGenerousSortedClient(supply);
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects,
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 30,
+        sections: ["open"],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // The budget itself is exact regardless of project count.
+    expect(result.current.trackers).toHaveLength(30);
+
+    const fetched = totalRowsFetched(fetchedRowCounts, "open");
+    const requestCount = trackerList.mock.calls.filter(([args]) => args.status === "open").length;
+    // eslint-disable-next-line no-console
+    console.log(
+      `pas-2KY5X.15 measured: 9 projects, budget 30 -> ${fetched} rows fetched over ${requestCount} requests` +
+        ` (old per-project behaviour would have fetched 9 * 30 = 270)`,
+    );
+    // The old per-project design fetched 270 here (30 per project); this
+    // asserts the fix stays well clear of that, not a specific number, since
+    // the exact figure depends on how evenly this mock's shared clock
+    // happens to interleave — see the console.log above for the actual
+    // measured count on this run.
+    expect(fetched).toBeLessThan(90);
+    expect(fetched).toBeGreaterThanOrEqual(30);
+  });
+
+  it("loadMore in merge mode continues the recency window without skipping or repeating rows", async () => {
+    const projects = makeProjects(3);
+    const supply: Record<string, number> = {};
+    for (const project of projects) {
+      supply[project.projectId] = 1000;
+    }
+    installGenerousSortedClient(supply);
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects,
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 5,
+        sections: ["open"],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    const firstWindow = result.current.trackers.map((t) => t.id);
+    expect(firstWindow).toHaveLength(5);
+
+    act(() => {
+      result.current.loadMore("open");
+    });
+    await waitFor(() => expect(result.current.sectionLoadingMore.open).toBe(false));
+    const combined = result.current.trackers.map((t) => t.id);
+    expect(combined).toHaveLength(10);
+
+    // No repeats between the two windows...
+    const combinedSet = new Set(combined);
+    expect(combinedSet.size).toBe(10);
+    // ...and no gap: this mock hands out a strictly decreasing, globally
+    // shared clock as each row's createdAt, so a genuinely contiguous top-10
+    // window (no row skipped in between) has a max-min span of exactly 9 —
+    // a skip would widen it, a repeat would already have failed the Set-size
+    // check above. Not asserting the hook's own array order here: the
+    // exported `trackers` are kept in projectId/id order for internal
+    // bookkeeping (TrackerTable/Kanban each impose their own display order),
+    // not recency order.
+    const combinedClocks = result.current.trackers
+      .map((t) => Number(t.createdAt))
+      .sort((a, b) => a - b);
+    expect(combinedClocks).toHaveLength(10);
+    expect(combinedClocks[9]! - combinedClocks[0]!).toBe(9);
+  });
+
+  it("falls back to per-project pagination (budget per project, not shared) when a relevant project's host doesn't advertise aitTrackerSort", async () => {
+    const trackerList = installClient({
+      "prj-a:open:start": {
+        trackers: [makeTracker("a-1"), makeTracker("a-2")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount: 2 },
+      },
+      "prj-b:open:start": {
+        trackers: [makeTracker("b-1"), makeTracker("b-2")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount: 2 },
+      },
+    });
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A, PROJECT_B],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 30,
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // Both projects' full (small) result sets came through — the fallback
+    // never narrowed a project's own page below what it had, it only
+    // dropped pageSize from 50 to 30 (a separate, tracker-screen.tsx-level
+    // change) rather than sharing one budget across projects.
+    expect(result.current.trackers.map((t) => t.id).sort()).toEqual(["a-1", "a-2", "b-1", "b-2"]);
+    expect(trackerList.mock.calls.some(([args]) => args.sort !== undefined)).toBe(false);
+  });
+
+  it("sectionTotals still sums pageInfo.totalCount per project under the merged fetch shape (pas-2KY5X.15)", async () => {
+    const projects = makeProjects(3);
+    installGenerousSortedClient({ "prj-0": 12, "prj-1": 7, "prj-2": 3 });
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects,
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 5,
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // 12 + 7 + 3 = 22 total matches, independent of the 5-row budget window
+    // actually displayed — sectionTotals is never bounded by the budget.
+    expect(result.current.sectionTotals.open).toBe(22);
+  });
+
+  it("a single selected project still requests sort: newest when its host supports it, budgeted at pageSize as before", async () => {
+    const { trackerList } = installGenerousSortedClient({ "prj-0": 1000 });
+    const projects = makeProjects(1);
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects,
+        selectedProjectId: "prj-0",
+        all: true,
+        enabled: true,
+        pageSize: 30,
+        sections: ["open"],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.trackers).toHaveLength(30);
+    const openCalls = trackerList.mock.calls.filter(([args]) => args.status === "open");
+    expect(openCalls).toHaveLength(1);
+    expect(openCalls[0]?.[0]?.sort).toBe("newest");
   });
 });

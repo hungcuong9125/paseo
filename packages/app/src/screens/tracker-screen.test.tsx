@@ -319,7 +319,7 @@ vi.mock("@/components/tracker/tracker-table", () => ({
     lastListTableProps.current = props;
     return React.createElement("div", { "data-testid": "mock-tracker-table" });
   },
-  useTrackerPageStep: () => 50,
+  useTrackerPageStep: () => 30,
 }));
 
 vi.mock("@/components/tracker/tracker-kanban-board", () => ({
@@ -681,6 +681,17 @@ describe("TrackerScreen kanban type filter", () => {
     });
     // "all" means no type constraint at all — undefined, not the string "all".
     expect(lastProjectDataOptions.current?.type).toBeUndefined();
+  });
+
+  it("fetches the same page step the Show-more label promises, 30 on desktop (pas-2KY5X.15)", () => {
+    render();
+    switchToKanban();
+
+    // One number for the whole screen: useTrackerPageStep drives the fetch
+    // budget, the label, and search alike, so a section can never load 30
+    // rows under a button offering 50. Mocked to 30 above, matching
+    // REVEAL_STEP_DESKTOP.
+    expect(lastProjectDataOptions.current?.pageSize).toBe(30);
   });
 
   it("a List status filter reaches the query as options.sections instead of narrowing an all-four fetch in memory (pas-2KY5X.4)", () => {

@@ -525,13 +525,18 @@ function TrackerScreenContent(): ReactElement {
   // narrowing `sectionsOption` stops the hook fetching a section, but it
   // deliberately keeps sections it already loaded rather than discarding
   // them, so a section can outlive the filter that asked for it.
-  const pageStep = useTrackerPageStep();
+  // One page step for the whole screen: what a section fetches, what the
+  // "Show N more" label promises, and what search pages by. In All-projects
+  // mode this is a shared budget across every relevant project — a k-way
+  // merge over each project's newest-first stream, gated on
+  // `server_info.features.aitTrackerSort` — rather than a page per project.
+  const browsePageSize = useTrackerPageStep();
   const projectData = useTrackerProjectData({
     projects: projectInputs,
     selectedProjectId,
     all: true,
     enabled: hasAnyProject,
-    pageSize: pageStep,
+    pageSize: browsePageSize,
     type: typeFilter === "all" ? undefined : typeFilter,
     priority: priorityOption,
     sections: sectionsOption,

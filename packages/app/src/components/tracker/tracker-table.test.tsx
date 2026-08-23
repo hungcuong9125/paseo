@@ -322,7 +322,7 @@ describe("TrackerTable status grouping", () => {
       '[data-testid="tracker-table-section-open-show-more"]',
     );
     expect(showMore).not.toBeNull();
-    expect(showMore?.textContent).toContain("Show 50 more");
+    expect(showMore?.textContent).toContain("Show 30 more");
 
     act(() => {
       showMore?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
