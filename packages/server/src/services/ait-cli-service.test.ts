@@ -127,6 +127,22 @@ esac
     }
   });
 
+  it("probes sort support correctly even when the daemon's own cwd has no valid ait prefix (pas-2KY5X.35)", async () => {
+    // A GUI-launched daemon's process cwd is `/` — an empty basename that
+    // fails ait's project-prefix validation even for `--db :memory:`. Real
+    // binary, no faking (same posture as every other test in this file):
+    // this only proves anything if the probe stops depending on whatever
+    // directory happens to be current when it runs.
+    const originalCwd = process.cwd();
+    try {
+      process.chdir("/");
+      const probeService = createAitService();
+      await expect(probeService.supportsSort!()).resolves.toBe(true);
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
   it("creates, shows, and lists an tracker", async () => {
     await service.initTracker({ cwd });
 

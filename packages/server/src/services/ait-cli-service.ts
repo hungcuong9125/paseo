@@ -1,3 +1,6 @@
+import { mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import { findExecutable } from "../executable-resolution/executable-resolution.js";
 import { execCommand } from "../utils/spawn.js";
@@ -25,6 +28,15 @@ import type {
 const AIT_TIMEOUT_MS = 15_000;
 const AIT_MAX_BUFFER = 10 * 1024 * 1024;
 const KNOWN_ERROR_CODES = new Set<string>(TrackerErrorCodeSchema.options);
+// `ait` derives a project prefix from cwd's basename even for `--db :memory:`,
+// and rejects a basename that isn't all lowercase letters/numbers/hyphens.
+// The sort-capability probe below must not inherit the daemon process's own
+// cwd for this reason — a GUI-launched daemon's cwd is `/` (empty basename),
+// which fails that validation and makes the probe report unsupported no
+// matter what the binary actually supports (pas-2KY5X.35). A fixed directory
+// keeps the probe's answer a fact about the binary, not about whatever
+// directory the daemon happened to start in.
+const SORT_PROBE_CWD = join(tmpdir(), "paseo-ait-sort-probe");
 
 export class AitCliError extends Error {
   readonly code: TrackerErrorCode;
@@ -378,12 +390,24 @@ export function createAitService(): AitService {
       return false;
     }
     try {
+      mkdirSync(SORT_PROBE_CWD, { recursive: true });
       const { stdout } = await execCommand(cliPath, ["--db", ":memory:", "list", "--help"], {
+        cwd: SORT_PROBE_CWD,
         maxBuffer: 64 * 1024,
         timeout: AIT_TIMEOUT_MS,
       });
       return stdout.split(/\s+/).includes("--sort");
-    } catch {
+    } catch (error) {
+      // Silently latching to `false` here is what let pas-2KY5X.35 ship
+      // invisibly for a whole release: server_info advertised
+      // aitTrackerSort:false with no signal anywhere that the probe itself
+      // was failing rather than the binary genuinely lacking `--sort`.
+      const failure = toExecFailure(error);
+      const detail =
+        bufferOrStringToString(failure.stderr).trim() || failure.message || String(error);
+      console.warn(
+        `ait --sort capability probe failed, advertising aitTrackerSort: false — ${detail}`,
+      );
       return false;
     }
   }
