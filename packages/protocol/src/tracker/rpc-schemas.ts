@@ -3,6 +3,7 @@ import {
   TrackerDetailSchema,
   TrackerNoteSchema,
   TrackerPrioritySchema,
+  TrackerSortSchema,
   TrackerStatusSchema,
   TrackerSummarySchema,
   TrackerTypeSchema,
@@ -57,6 +58,7 @@ export const ProjectTrackerListRequestSchema = z.object({
   status: TrackerStatusSchema.optional(),
   trackerType: TrackerTypeSchema.optional(),
   priority: TrackerPrioritySchema.optional(),
+  sort: TrackerSortSchema.optional(),
   page: TrackerPageRequestSchema.optional(),
 });
 

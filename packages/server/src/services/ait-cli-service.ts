@@ -15,6 +15,7 @@ import type {
   TrackerDetail,
   TrackerNote,
   TrackerPriority,
+  TrackerSort,
   TrackerStatus,
   TrackerSummary,
   TrackerType,
@@ -41,6 +42,7 @@ export interface ListTrackersOptions {
   status?: TrackerStatus;
   type?: TrackerType;
   priority?: TrackerPriority;
+  sort?: TrackerSort;
   limit?: number;
   // Only ever sent together with `limit` — the CLI rejects a bare `--offset`
   // with a usage error.
@@ -127,6 +129,8 @@ export interface ListReadyIdsOptions {
 }
 
 export interface AitService {
+  /** Probe the installed binary's current list help for --sort support. */
+  supportsSort?: () => Promise<boolean>;
   listTrackers(options: ListTrackersOptions): Promise<ListTrackersResult>;
   searchTrackers(options: SearchTrackersOptions): Promise<SearchTrackersResult>;
   showTracker(options: ShowTrackerOptions): Promise<TrackerDetail>;
@@ -366,6 +370,24 @@ export function createAitService(): AitService {
     });
   }
 
+  async function supportsSort(): Promise<boolean> {
+    // Re-resolve the executable for every capability probe so replacing the
+    // binary or changing PATH can take effect without restarting the daemon.
+    const cliPath = await findExecutable("ait");
+    if (!cliPath) {
+      return false;
+    }
+    try {
+      const { stdout } = await execCommand(cliPath, ["--db", ":memory:", "list", "--help"], {
+        maxBuffer: 64 * 1024,
+        timeout: AIT_TIMEOUT_MS,
+      });
+      return stdout.split(/\s+/).includes("--sort");
+    } catch {
+      return false;
+    }
+  }
+
   async function getTrackerSummary(cwd: string, trackerId: string): Promise<TrackerSummary> {
     const raw = await run(["show", trackerId], cwd, AitShowResponseSchema);
     return toTrackerSummary(raw.issue);
@@ -406,6 +428,7 @@ export function createAitService(): AitService {
     status,
     type,
     priority,
+    sort,
     limit,
     offset,
   }: ListTrackersOptions): Promise<ListTrackersResult> {
@@ -416,6 +439,7 @@ export function createAitService(): AitService {
       ...(status ? ["--status", status] : []),
       ...(type ? ["--type", type] : []),
       ...(priority ? ["--priority", priority] : []),
+      ...(sort ? ["--sort", sort] : []),
     ];
     const raw = await run(
       [...baseArgs, ...paginationArgs(limit, offset)],
@@ -552,6 +576,7 @@ export function createAitService(): AitService {
   }
 
   return {
+    supportsSort,
     listTrackers,
     searchTrackers,
     showTracker,

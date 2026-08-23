@@ -581,6 +581,7 @@ export class VoiceAssistantWebSocketServer {
   private acceptingConnections = true;
   private readonly advertiseDaemonStatusRpc: boolean;
   private readonly advertiseRelayConfig: boolean;
+  private aitTrackerSort: boolean | undefined;
 
   constructor(
     server: HTTPServer,
@@ -1427,11 +1428,11 @@ export class VoiceAssistantWebSocketServer {
     return pending;
   }
 
-  private handleHello(params: {
+  private async handleHello(params: {
     ws: WebSocketLike;
     message: WSHelloMessage;
     pending: PendingConnection;
-  }): void {
+  }): Promise<void> {
     const { ws, message, pending } = params;
 
     if (message.protocolVersion !== WS_PROTOCOL_VERSION) {
@@ -1460,6 +1461,11 @@ export class VoiceAssistantWebSocketServer {
       } catch {
         // ignore close errors
       }
+      return;
+    }
+
+    await this.refreshAitTrackerSortCapability();
+    if (!this.pendingConnections.has(ws)) {
       return;
     }
 
@@ -1532,6 +1538,22 @@ export class VoiceAssistantWebSocketServer {
     );
   }
 
+  private async refreshAitTrackerSortCapability(): Promise<void> {
+    const previous = this.aitTrackerSort;
+    let supported = false;
+    if (this.aitService.supportsSort) {
+      try {
+        supported = await this.aitService.supportsSort();
+      } catch (error) {
+        this.logger.warn({ err: error }, "Failed to probe ait --sort capability");
+      }
+    }
+    this.aitTrackerSort = supported;
+    if (previous !== undefined && previous !== supported) {
+      this.broadcastCapabilitiesUpdate();
+    }
+  }
+
   private buildServerInfoStatusPayload(): ServerInfoStatusPayload {
     return {
       status: "server_info",
@@ -1548,6 +1570,8 @@ export class VoiceAssistantWebSocketServer {
         providersSnapshotCwd: true,
         // COMPAT(aitTrackerStats): added in v0.4.0, remove after 2027-02-19.
         aitTrackerStats: true,
+        // COMPAT(aitTrackerSort): added in v0.4.1, remove gate after 2027-02-19.
+        ...(this.aitTrackerSort !== undefined ? { aitTrackerSort: this.aitTrackerSort } : {}),
         // COMPAT(checkoutForgeSetAutoMerge): added in v0.1.106, remove old
         // checkoutGithubSetAutoMerge fallback after 2026-12-28.
         checkoutForgeSetAutoMerge: true,
@@ -2007,14 +2031,14 @@ export class VoiceAssistantWebSocketServer {
     return true;
   }
 
-  private handlePendingConnectionMessage(params: {
+  private async handlePendingConnectionMessage(params: {
     ws: WebSocketLike;
     message: WSInboundMessage;
     pendingConnection: PendingConnection;
-  }): void {
+  }): Promise<void> {
     const { ws, message, pendingConnection } = params;
     if (message.type === "hello") {
-      this.handleHello({
+      await this.handleHello({
         ws,
         message,
         pending: pendingConnection,
@@ -2092,10 +2116,12 @@ export class VoiceAssistantWebSocketServer {
       }
 
       if (pendingConnection) {
-        this.handlePendingConnectionMessage({
+        void this.handlePendingConnectionMessage({
           ws,
           message,
           pendingConnection,
+        }).catch((error: unknown) => {
+          this.handleRawMessageError({ ws, data, error, log: pendingConnection.connectionLogger });
         });
         return;
       }

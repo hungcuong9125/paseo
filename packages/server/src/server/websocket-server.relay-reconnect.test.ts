@@ -8,6 +8,7 @@ import type { DaemonConfigStore } from "./daemon-config-store.js";
 import type { ScheduleService } from "./schedule/service.js";
 import type { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import type { WorkspaceAutoName } from "./workspace-auto-name.js";
+import type { AitService } from "../services/ait-cli-service.js";
 import { asInternals, createStub } from "./test-utils/class-mocks.js";
 import { createProviderSnapshotManagerStub } from "./test-utils/session-stubs.js";
 import {
@@ -220,6 +221,7 @@ function createWorkspaceAutoNameStub(): WorkspaceAutoName {
 function createServer(options?: {
   speechReadiness?: SpeechReadinessSnapshot | null;
   logger?: ReturnType<typeof createLogger>;
+  aitService?: AitService;
 }) {
   const speechReadiness = options?.speechReadiness ?? null;
   const daemonConfigStore = {
@@ -293,6 +295,12 @@ function createServer(options?: {
     undefined,
     undefined,
     createProviderSnapshotManagerStub().manager,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    options?.aitService,
   );
 }
 
@@ -403,7 +411,7 @@ async function attachRelayAndHello(params: {
 }) {
   await params.server.attachExternalSocket(params.socket, { transport: "relay" });
   params.socket.emit("message", JSON.stringify(createHelloMessage(params.clientId)));
-  expect(params.socket.sent.length).toBeGreaterThan(0);
+  await vi.waitFor(() => expect(params.socket.sent.length).toBeGreaterThan(0));
   const envelope = parseSentEnvelope(params.socket.sent[0]);
   expect(envelope.type).toBe("session");
   const serverInfo = parseServerInfoStatusPayload(envelope.message?.payload);
@@ -422,7 +430,7 @@ async function attachDirectAndHello(params: {
     createDirectRequest(),
   );
   params.socket.emit("message", JSON.stringify(createHelloMessage(params.clientId)));
-  expect(params.socket.sent.length).toBeGreaterThan(0);
+  await vi.waitFor(() => expect(params.socket.sent.length).toBeGreaterThan(0));
   const envelope = parseSentEnvelope(params.socket.sent[0]);
   expect(envelope.type).toBe("session");
   const serverInfo = parseServerInfoStatusPayload(envelope.message?.payload);
@@ -515,7 +523,7 @@ describe("relay external socket reconnect behavior", () => {
         }),
       ),
     );
-    expect(sessionMock.instances).toHaveLength(1);
+    await vi.waitFor(() => expect(sessionMock.instances).toHaveLength(1));
     const session = sessionMock.instances[0];
     expect(session.args.clientCapabilities).toEqual({
       [CLIENT_CAPS.reasoningMergeEnum]: true,
@@ -657,6 +665,7 @@ describe("relay external socket reconnect behavior", () => {
       relayConnectionId: "relay-conn-1",
     });
     socket.emit("message", JSON.stringify(createHelloMessage("cid-control-log")));
+    await vi.waitFor(() => expect(sessionMock.instances).toHaveLength(1));
     socket.emit(
       "message",
       JSON.stringify({
@@ -925,6 +934,24 @@ describe("relay external socket reconnect behavior", () => {
     expect(serverInfo.features?.["terminal-input-mode-replay"]).toBe(true);
     expect(serverInfo.features?.["terminal-size-ownership"]).toBe(true);
     expect(serverInfo.features?.agentTurnIdentity).toBeUndefined();
+    await server.close();
+  });
+
+  test("advertises the installed ait sort capability", async () => {
+    const supportsSort = vi.fn(async () => true);
+    const server = createServer({
+      aitService: createStub<AitService>({ supportsSort }),
+    });
+    const socket = new MockSocket();
+
+    const serverInfo = await attachRelayAndHello({
+      server,
+      socket,
+      clientId: "cid-ait-sort-capability",
+    });
+
+    expect(serverInfo.features?.aitTrackerSort).toBe(true);
+    expect(supportsSort).toHaveBeenCalledTimes(1);
     await server.close();
   });
 

@@ -3087,6 +3087,8 @@ export const ServerInfoStatusPayloadSchema = z
         providersSnapshotCwd: z.boolean().optional(),
         // COMPAT(aitTrackerStats): added in v0.4.0, remove after 2027-02-19.
         aitTrackerStats: z.boolean().optional(),
+        // COMPAT(aitTrackerSort): added in v0.4.1, remove gate after 2027-02-19.
+        aitTrackerSort: z.boolean().optional(),
         // COMPAT(checkoutForgeSetAutoMerge): added in v0.1.106, remove old
         // checkoutGithubSetAutoMerge fallback after 2026-12-28.
         checkoutForgeSetAutoMerge: z.boolean().optional(),

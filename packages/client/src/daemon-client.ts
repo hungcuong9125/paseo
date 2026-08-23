@@ -20,6 +20,7 @@ import type {
   TrackerDetail,
   TrackerNote,
   TrackerPriority,
+  TrackerSort,
   TrackerStatus,
   TrackerSummary,
   TrackerType,
@@ -5230,6 +5231,7 @@ export class DaemonClient {
     status?: TrackerStatus;
     trackerType?: TrackerType;
     priority?: TrackerPriority;
+    sort?: TrackerSort;
     page?: { limit: number; cursor?: string };
     requestId?: string;
   }): Promise<{
@@ -5247,6 +5249,7 @@ export class DaemonClient {
           ...(options.status !== undefined ? { status: options.status } : {}),
           ...(options.trackerType !== undefined ? { trackerType: options.trackerType } : {}),
           ...(options.priority !== undefined ? { priority: options.priority } : {}),
+          ...(options.sort !== undefined ? { sort: options.sort } : {}),
           ...(options.page !== undefined
             ? {
                 page: {

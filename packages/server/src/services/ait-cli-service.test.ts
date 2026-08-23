@@ -46,6 +46,16 @@ describe("createAitService", () => {
     expect(result.pageInfo).toMatchObject({ totalCount: 2, hasMore: true });
   });
 
+  it("passes the creation-time sort to ait list", async () => {
+    await service.initTracker({ cwd });
+    const first = await service.createTracker({ cwd, input: { title: "First" } });
+    const second = await service.createTracker({ cwd, input: { title: "Second" } });
+
+    const result = await service.listTrackers({ cwd, all: true, sort: "newest" });
+
+    expect(result.trackers.map((tracker) => tracker.id)).toEqual([second.id, first.id]);
+  });
+
   it("filters list arguments by priority", async () => {
     await service.initTracker({ cwd });
     const p0 = await service.createTracker({
@@ -79,6 +89,38 @@ describe("createAitService", () => {
         code: "unknown",
         message: "flag provided but not defined: --limit",
       });
+    } finally {
+      process.env.PATH = originalPath;
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("probes the current binary for sort support without latching the result", async () => {
+    const binDir = mkdtempSync(join(tmpdir(), "ait-sort-probe-test-"));
+    const fakeAit = join(binDir, "ait");
+    const writeFakeAit = (supportsSort: boolean) => {
+      writeFileSync(
+        fakeAit,
+        `#!/bin/sh
+case " $* " in
+  *" --version "*) printf '%s\\n' 'dev';;
+  *" list --help "*) printf '%s\\n' 'Usage: ait list [flags]${supportsSort ? " --sort <order>" : ""}';;
+  *) printf '%s\\n' '{"issues":[],"hidden_count":0}';;
+esac
+`,
+      );
+      chmodSync(fakeAit, 0o755);
+    };
+    writeFakeAit(false);
+    const originalPath = process.env.PATH;
+    process.env.PATH = binDir;
+    try {
+      const probeService = createAitService();
+      expect(probeService.supportsSort).toBeDefined();
+      await expect(probeService.supportsSort!()).resolves.toBe(false);
+
+      writeFakeAit(true);
+      await expect(probeService.supportsSort!()).resolves.toBe(true);
     } finally {
       process.env.PATH = originalPath;
       rmSync(binDir, { recursive: true, force: true });
