@@ -7,6 +7,7 @@ import {
   type TrackersRuntime,
 } from "@/tracker/aggregated-trackers";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
+import { compareByCreatedNewest } from "@/tracker/tracker-hierarchy";
 
 export interface UseTrackerSearchOptions {
   projects: readonly TrackerProjectInput[];
@@ -31,8 +32,13 @@ interface ProjectCursorState {
   hasMore: boolean;
 }
 
+// Newest-first, by the one shared "newest" key (compareByCreatedNewest) that
+// use-tracker-project-data.ts's k-way merge selects with and the Kanban
+// lanes order by — not projectId then id, which put whichever project sorts
+// first alphabetically at the top of every result regardless of age
+// (pas-2KY5X.39, the same defect pas-2KY5X.29 fixed for browse).
 function sortMerged(trackers: AggregatedTracker[]): void {
-  trackers.sort((a, b) => a.projectId.localeCompare(b.projectId) || a.id.localeCompare(b.id));
+  trackers.sort(compareByCreatedNewest);
 }
 
 function projectKeyOf(project: TrackerProjectInput): string {

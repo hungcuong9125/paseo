@@ -25,13 +25,26 @@ export function compareTrackers(left: TrackerSummary, right: TrackerSummary): nu
   return left.priority.localeCompare(right.priority) || left.id.localeCompare(right.id);
 }
 
-// Mirrors `ait list --sort newest`'s own order (pas-2KY5X.19): createdAt
-// descending, id descending as the tiebreaker — the tiebreaker follows the
-// sort direction there, so it has to here too, or a client-side sort or merge
-// picks a different "next" row than the server would have for the same
-// stream. A row missing createdAt (a response from before sort support
-// existed) sorts after everything that has one rather than crashing the
-// comparison.
+// Newest createdAt first. Ties (the norm, not the exception — created_at has
+// second resolution; paseo's own .ait/ait.db has 47 rows over 24 distinct
+// timestamps, largest tie group 7) fall back to `id` — which does NOT mirror
+// `ait`'s own tiebreak. `ait` breaks ties by `i.id`, the INTEGER PRIMARY KEY
+// AUTOINCREMENT row id (insertion order); `TrackerSummary.id` is the
+// separate, randomly-generated `public_id` column, which has no relationship
+// to insertion order at all. The wire gives no monotonic key this pass
+// (pas-2KY5X.37) — `id` is the only field available for a *deterministic*
+// tiebreak, not a *correct* one. A row missing createdAt (a response from
+// before sort support existed) sorts after everything that has one rather
+// than crashing the comparison.
+//
+// Because the tiebreak has no relationship to fetch/reveal order, a caller
+// that re-sorts a growing, previously-displayed collection with this
+// comparator on every page can still move an already-shown tied row when a
+// same-tied row with a "larger" id arrives later — this function alone
+// cannot prevent that; see use-tracker-project-data.ts's k-way merge (which
+// appends newly-taken rows instead of re-sorting the whole accumulated array,
+// specifically to avoid it) for the pattern a paginated, position-stable
+// caller needs.
 //
 // The single shared "newest" key across selection (use-tracker-project-data's
 // k-way merge), lane ordering (tracker-board-model's Done/Cancelled lanes),

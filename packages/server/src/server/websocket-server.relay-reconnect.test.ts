@@ -955,6 +955,36 @@ describe("relay external socket reconnect behavior", () => {
     await server.close();
   });
 
+  test("logs to the daemon's own logger when the ait sort probe fails, and still advertises aitTrackerSort:false (pas-2KY5X.35 correction)", async () => {
+    // supportsSort() used to swallow a probe failure internally and resolve
+    // false, which made this catch dead code — the daemon's structured pino
+    // logger never saw it. Proves the catch is reachable now that the
+    // service lets a probe malfunction propagate instead.
+    const logger = createLogger();
+    const probeError = new Error("boom: probe malfunction");
+    const supportsSort = vi.fn(async () => {
+      throw probeError;
+    });
+    const server = createServer({
+      logger,
+      aitService: createStub<AitService>({ supportsSort }),
+    });
+    const socket = new MockSocket();
+
+    const serverInfo = await attachRelayAndHello({
+      server,
+      socket,
+      clientId: "cid-ait-sort-probe-failure",
+    });
+
+    expect(serverInfo.features?.aitTrackerSort).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: probeError }),
+      "Failed to probe ait --sort capability",
+    );
+    await server.close();
+  });
+
   test("includes voice capabilities in initial server_info when speech readiness exists", async () => {
     const speechReadiness = createReadySpeechReadinessSnapshot();
     const server = createServer({ speechReadiness });

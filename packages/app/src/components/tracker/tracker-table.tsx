@@ -86,11 +86,16 @@ export function useTrackerPageStep(): number {
 
 /**
  * The trackers list, grouped into one section per real `TrackerStatus` (Open,
- * In progress, Done, Cancelled). Rows sort newest-first across every project
- * (see `sortedTrackers`), and grouping only buckets that sorted list — it does
- * not re-sort. Rows carry their own `serverId`/`projectId` (from the
- * aggregated fetch), so this table works identically whether it's showing one
- * project or every project.
+ * In progress, Done, Cancelled). The sectioned variant buckets `trackers` by
+ * status AS RECEIVED, with no re-sort of its own (pas-2KY5X.37): the shared
+ * data hook already hands it newest-first, position-stable order within each
+ * status, and a fresh global sort here would re-introduce exactly the "later
+ * page overtakes an already-shown row" defect that hook fix removed. The
+ * `flat` (search) variant is different — `sortedTrackers` re-sorts on every
+ * change, since search's own hook isn't proven position-stable the same way.
+ * Rows carry their own `serverId`/`projectId` (from the aggregated fetch), so
+ * this table works identically whether it's showing one project or every
+ * project.
  *
  * Renders exactly what the shared project-data hook has paged in so far: one
  * server-side page per status, extended by this table's own per-section "Show
@@ -112,28 +117,41 @@ export function TrackerTable(props: TrackerTableProps): ReactElement {
   const { t } = useTranslation();
   const revealStep = useTrackerPageStep();
 
-  // Newest-first, by the same shared key the data hook merges with and the
-  // Kanban lanes order by (compareByCreatedNewest) — not projectId then id,
-  // which sorted every section by project name and left the oldest project's
-  // rows sitting at the top (pas-2KY5X.29).
+  // `flat` (search) only: newest-first by the same shared key the data hook
+  // merges with and the Kanban lanes order by (compareByCreatedNewest) — not
+  // projectId then id, which sorted by project name and left the oldest
+  // project's rows sitting at the top (pas-2KY5X.29). use-tracker-search.ts
+  // isn't proven position-stable the way the browse hook is (pas-2KY5X.37),
+  // so this variant keeps re-deriving a fresh sort on every change rather
+  // than trusting incoming order.
   const sortedTrackers = useMemo(() => [...trackers].sort(compareByCreatedNewest), [trackers]);
 
-  // Bucket the already-sorted list by status, preserving the sorted order within
-  // each section. A section with zero items is hidden entirely (see below) —
-  // this is how a toolbar status filter removes the other sections from view.
+  // `sections` (browse) only: bucket `trackers` BY STATUS DIRECTLY, without
+  // an intervening global re-sort (pas-2KY5X.37's sibling defect at this
+  // layer). `trackers` already arrives newest-first within each status —
+  // use-tracker-project-data's k-way merge appends its already-correct
+  // window, and mergePage resorts each status's own array — so bucketing
+  // preserves that order instead of re-deriving it. Re-sorting the WHOLE
+  // list here, the way this used to, undid the hook's own fix: a same-tied
+  // row arriving on a later page ranks by `id` in a full re-sort with no
+  // relationship to fetch order, so it could jump above an already-shown
+  // tied row — exactly the row movement the hook's own append-only merge
+  // exists to prevent. A section with zero items is hidden entirely (see
+  // below) — this is how a toolbar status filter removes the other sections
+  // from view.
   const trackersByStatus = useMemo(() => {
     const buckets = new Map<TrackerStatus, AggregatedTracker[]>();
     for (const section of LIST_SECTIONS) {
       buckets.set(section.status, []);
     }
-    for (const tracker of sortedTrackers) {
+    for (const tracker of trackers) {
       const bucket = buckets.get(tracker.status);
       if (bucket) {
         bucket.push(tracker);
       }
     }
     return buckets;
-  }, [sortedTrackers]);
+  }, [trackers]);
 
   if (props.variant === "flat") {
     const { hasMoreAll, onLoadMoreAll, isLoadingMoreAll } = props;
@@ -181,9 +199,6 @@ export function TrackerTable(props: TrackerTableProps): ReactElement {
 
   const { sectionTotals, sectionHasMore, sectionLoadingMore, onLoadMore } = props;
 
-  // Bucket the already-sorted list by status, preserving the sorted order within
-  // each section. A section with zero items is hidden entirely (see below) —
-  // this is how a toolbar status filter removes the other sections from view.
   return (
     <View style={styles.listContent} testID="tracker-table">
       {LIST_SECTIONS.map((section) => {

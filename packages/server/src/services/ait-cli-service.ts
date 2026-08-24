@@ -1,3 +1,6 @@
+import { mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import { findExecutable } from "../executable-resolution/executable-resolution.js";
 import { execCommand } from "../utils/spawn.js";
@@ -25,6 +28,15 @@ import type {
 const AIT_TIMEOUT_MS = 15_000;
 const AIT_MAX_BUFFER = 10 * 1024 * 1024;
 const KNOWN_ERROR_CODES = new Set<string>(TrackerErrorCodeSchema.options);
+// `ait` derives a project prefix from cwd's basename even for `--db :memory:`,
+// and rejects a basename that isn't all lowercase letters/numbers/hyphens.
+// The sort-capability probe below must not inherit the daemon process's own
+// cwd for this reason — a GUI-launched daemon's cwd is `/` (empty basename),
+// which fails that validation and makes the probe report unsupported no
+// matter what the binary actually supports (pas-2KY5X.35). A fixed directory
+// keeps the probe's answer a fact about the binary, not about whatever
+// directory the daemon happened to start in.
+const SORT_PROBE_CWD = join(tmpdir(), "paseo-ait-sort-probe");
 
 export class AitCliError extends Error {
   readonly code: TrackerErrorCode;
@@ -129,7 +141,11 @@ export interface ListReadyIdsOptions {
 }
 
 export interface AitService {
-  /** Probe the installed binary's current list help for --sort support. */
+  /** Probe the installed binary's current list help for --sort support.
+   * Resolves `false` when no binary is found at all (an expected, non-error
+   * outcome). Rejects if a found binary fails to run the probe — the caller
+   * must not treat that the same as "found, but no --sort"; it means the
+   * answer is unknown, and the caller decides how to log/report it. */
   supportsSort?: () => Promise<boolean>;
   listTrackers(options: ListTrackersOptions): Promise<ListTrackersResult>;
   searchTrackers(options: SearchTrackersOptions): Promise<SearchTrackersResult>;
@@ -373,19 +389,27 @@ export function createAitService(): AitService {
   async function supportsSort(): Promise<boolean> {
     // Re-resolve the executable for every capability probe so replacing the
     // binary or changing PATH can take effect without restarting the daemon.
+    // A missing binary is a legitimate, expected `false` — plenty of hosts
+    // never have `ait` installed. A FOUND binary that then fails to run is
+    // not: that's a probe malfunction, and it must not be swallowed here.
+    // The caller (refreshAitTrackerSortCapability) already has a catch wired
+    // to its own structured pino logger — this used to catch internally and
+    // resolve `false` instead of rejecting, which made that catch dead code
+    // and let a probe malfunction advertise aitTrackerSort:false with no
+    // signal anywhere that the probe itself was the thing that failed
+    // (pas-2KY5X.35 shipped invisibly for a whole release this way).
+    // Letting the rejection propagate is what makes the two layers agree.
     const cliPath = await findExecutable("ait");
     if (!cliPath) {
       return false;
     }
-    try {
-      const { stdout } = await execCommand(cliPath, ["--db", ":memory:", "list", "--help"], {
-        maxBuffer: 64 * 1024,
-        timeout: AIT_TIMEOUT_MS,
-      });
-      return stdout.split(/\s+/).includes("--sort");
-    } catch {
-      return false;
-    }
+    mkdirSync(SORT_PROBE_CWD, { recursive: true });
+    const { stdout } = await execCommand(cliPath, ["--db", ":memory:", "list", "--help"], {
+      cwd: SORT_PROBE_CWD,
+      maxBuffer: 64 * 1024,
+      timeout: AIT_TIMEOUT_MS,
+    });
+    return stdout.split(/\s+/).includes("--sort");
   }
 
   async function getTrackerSummary(cwd: string, trackerId: string): Promise<TrackerSummary> {
