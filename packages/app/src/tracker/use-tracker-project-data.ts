@@ -166,16 +166,20 @@ interface MergeFetchOutcome {
 }
 
 interface MergedWindowResult {
-  /** Up to `budget` rows, newest-first across every relevant project — a
-   * genuine prefix, never a project silently dropped from the ordering
-   * guarantee. A project that errors mid-window does NOT get treated as
-   * exhausted (pas-2KY5X.4x): its cursor is left exactly as it was, so
-   * `taken` may come back shorter than `budget` (the same honest partial
-   * page the round cap already returns) rather than risk emitting rows
-   * older than something the errored project still holds but hasn't
-   * revealed. The errored project stays blocked — buffer empty, `hasMore`
-   * unchanged — so the next `loadMore` retries it on its own; no separate
-   * retry mechanism needed. */
+  /** Up to `budget` rows, newest-first across every relevant project that
+   * ANSWERED this call. A project that errors mid-window is excluded from
+   * this window's ordering guarantee — it drops out of the merge frontier
+   * for the rest of THIS call rather than blocking every other (healthy)
+   * project from rendering anything, or being minted exhausted and silently
+   * losing whatever it still held (both shipped, in two different earlier
+   * versions of this fix — pas-2KY5X.4x). Concretely: if project B errors
+   * while project A has rows ready, `taken` is A's rows in correct order:
+   * B's true position among them is unknown and unresolved this call, not
+   * "correctly placed below everything". Its cursor and `hasMore` are left
+   * exactly as they were (not reset, not marked exhausted), so the very next
+   * `loadMore` or reconnect retry treats it as a normal blocked stream and
+   * tries again — no separate retry mechanism, and no permanent data loss —
+   * and its error still reaches `errors` below every time it happens. */
   taken: AggregatedTracker[];
   /** Every relevant project's updated cursor, including whatever's left in
    * its buffer after `taken` was drawn from it. */
@@ -258,12 +262,17 @@ async function fetchMergedStatusWindow(
   const errors: TrackerProjectError[] = [];
   const seenErrorProjects = new Set<string>();
   const offlineStatusByProject = new Map<string, boolean>();
-
-  // Set when any outcome this round errored — the caller (the emission loop
-  // below) stops refilling once it sees this, instead of looping back and
-  // immediately re-attempting the same doomed fetch up to MERGE_MAX_ROUNDS
-  // times.
-  let erroredThisRound = false;
+  // Projects that errored during THIS call — scoped to this one
+  // fetchMergedStatusWindow invocation, never persisted (pas-2KY5X.4x
+  // correction). Excluded from the merge frontier below for the rest of
+  // this call: the frontier can't prove they don't hold something newer, so
+  // it stops waiting on them rather than either (a) blocking every OTHER
+  // healthy stream behind a project that may never answer, or (b) minting
+  // them exhausted and silently losing whatever they still hold. `cursors`
+  // is never touched for a key in this set, so on the NEXT loadMore/retry —
+  // a fresh call, a fresh empty set — the project is simply "blocked" again
+  // like any other unrefilled stream, and gets a normal chance to answer.
+  const erroredThisCall = new Set<string>();
   const applyOutcomes = (outcomes: readonly MergeFetchOutcome[]): void => {
     for (const outcome of outcomes) {
       const key = projectKeyOf(outcome.project);
@@ -274,18 +283,12 @@ async function fetchMergedStatusWindow(
           seenErrorProjects.add(key);
           errors.push(toTrackerProjectError(outcome.project, outcome.error));
         }
-        // Do NOT mint ERRORED_CURSOR (hasMore: false) here (pas-2KY5X.4x):
-        // an error is not evidence this stream is exhausted. Minting it
-        // anyway let the frontier stop waiting on this project and keep
-        // emitting from the others — silently dropping whatever newer rows
-        // it might still hold, on the append-only merge path with no way to
-        // correct that once emitted. `cursors[key]` already holds this
-        // stream's last real position (seeded from priorCursors, or
-        // preserved from an earlier round within this same call); leaving it
-        // untouched keeps `hasMore`/an empty buffer exactly as they were, so
-        // this project is naturally "blocked" again on the very next
-        // loadMore — its own retry, no separate mechanism needed.
-        erroredThisRound = true;
+        // Do NOT mint ERRORED_CURSOR (hasMore: false) here: an error is not
+        // evidence this stream is exhausted. `cursors[key]` already holds
+        // its last real position (seeded from priorCursors, or preserved
+        // from an earlier round within this same call) — left untouched, so
+        // a later call sees it exactly as it was before this error.
+        erroredThisCall.add(key);
         continue;
       }
       if (outcome.wasOfflineAtFetch) {
@@ -316,7 +319,16 @@ async function fetchMergedStatusWindow(
   // only be emitted while every stream that might still hold something newer
   // has a buffered head to compare against. A stream whose buffer is empty
   // while `hasMore !== false` is exactly that unknown — it BLOCKS the merge
-  // frontier and has to be refilled before the next row goes out.
+  // frontier and has to be refilled before the next row goes out. A stream
+  // in `erroredThisCall` is excluded from that check for the rest of this
+  // call (pas-2KY5X.4x correction): it errored, not merely un-refilled, so
+  // it can't be safely compared against — but it also can't be allowed to
+  // block every OTHER healthy stream from rendering anything, which is what
+  // an earlier version of this fix did (one project erroring on round 1
+  // blanked the whole section, forever, since the frontier never advances
+  // past a permanently-blocked stream). `taken` is a correct newest-first
+  // prefix ACROSS THE STREAMS THAT ANSWERED THIS CALL, not literally every
+  // relevant project — see MergedWindowResult's docstring.
   //
   // Filling first and emitting once (what this used to do) is unsound in two
   // ways, both of which shipped: it stopped filling as soon as `budget` rows
@@ -333,7 +345,11 @@ async function fetchMergedStatusWindow(
   while (taken.length < budget) {
     const blocked = relevantProjects.filter((project) => {
       const key = projectKeyOf(project);
-      return buffers.get(key)!.length === 0 && cursors[key].hasMore !== false;
+      return (
+        buffers.get(key)!.length === 0 &&
+        cursors[key].hasMore !== false &&
+        !erroredThisCall.has(key)
+      );
     });
     if (blocked.length > 0) {
       if (rounds >= MERGE_MAX_ROUNDS) {
@@ -362,25 +378,12 @@ async function fetchMergedStatusWindow(
           chunk,
         ),
       );
-      if (erroredThisRound) {
-        // Fail closed (pas-2KY5X.4x): at least one still-blocking project
-        // errored instead of answering, so the frontier can no longer prove
-        // `taken` extends correctly — that project might still hold rows
-        // newer than anything another stream would emit next. `taken` so
-        // far is a correct prefix (every row in it was validly compared
-        // against every stream that could still beat it); returning it now,
-        // short of `budget`, is the same honest partial-page outcome the
-        // round cap above already returns, and it stops this call from
-        // burning the rest of MERGE_MAX_ROUNDS re-attempting the same
-        // doomed fetch — the project stays blocked (buffer empty, hasMore
-        // preserved above), so the very next loadMore retries it on its own.
-        break;
-      }
       continue;
     }
     const next = shiftNewestRow(buffers);
     if (next === null) {
-      // Frontier is clear and nothing is buffered: every stream is exhausted.
+      // Frontier is clear and nothing is buffered: every un-errored stream
+      // is exhausted.
       break;
     }
     taken.push(next);

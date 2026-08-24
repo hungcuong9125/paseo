@@ -2625,12 +2625,12 @@ describe("useTrackerProjectData cursor survives a sort-order change (pas-2KY5X.4
   });
 });
 
-describe("useTrackerProjectData errored stream fails closed (pas-2KY5X.4x)", () => {
+describe("useTrackerProjectData errored stream excluded from its window, not exhausted (pas-2KY5X.4x)", () => {
   beforeEach(() => {
     connectionStatusState.byServer = {};
   });
 
-  it("stops the window rather than treating a mid-refill error as exhaustion, and lets the next loadMore retry it", async () => {
+  it("an error on a later refill does not treat the project as exhausted, and lets the next loadMore retry it", async () => {
     // prj-0 owns the true newest 2 rows and nothing else — one page, done.
     const prj0Page: ListResponse = {
       trackers: [
@@ -2723,5 +2723,85 @@ describe("useTrackerProjectData errored stream fails closed (pas-2KY5X.4x)", () 
       "b-4",
     ]);
     expect(result.current.sectionHasMore.open).toBe(false);
+  });
+
+  // The regression the round-2 test above did not catch: on round 1 EVERY
+  // relevant project is blocked (a fresh scope, no buffers yet), so they are
+  // all fetched together. If one errors while another answers fine, the
+  // errored one must not stop the healthy one from rendering — a version of
+  // this fix that broke the whole `while` loop as soon as ANY outcome
+  // errored did exactly that: `taken` stayed empty forever, since the
+  // healthy project's buffer (filled that same round) was never drained
+  // before the break, and on every subsequent loadMore the healthy project
+  // was no longer "blocked" (its buffer had rows) so was never re-fetched
+  // either — one broken project blanked the whole section for every OTHER
+  // project too, permanently.
+  it("a round-1 error alongside a healthy project does not blank the section — the healthy project's rows still render", async () => {
+    const prjARound1Page: ListResponse = {
+      trackers: [
+        { ...makeTracker("a-0"), createdAt: "2000-01-01T00:00:09Z" },
+        { ...makeTracker("a-1"), createdAt: "2000-01-01T00:00:08Z" },
+      ],
+      hiddenCount: 0,
+      pageInfo: { nextCursor: "a-2", hasMore: true, totalCount: 3 },
+    };
+    const prjARound2Page: ListResponse = {
+      trackers: [{ ...makeTracker("a-2"), createdAt: "2000-01-01T00:00:07Z" }],
+      hiddenCount: 0,
+      pageInfo: { nextCursor: null, hasMore: false, totalCount: 3 },
+    };
+    const trackerList = vi.fn(
+      async (args: { projectId: string; page?: { cursor?: string } }): Promise<ListResponse> => {
+        if (args.projectId === "prj-0") {
+          if (args.page?.cursor === undefined) {
+            return prjARound1Page;
+          }
+          if (args.page?.cursor === "a-2") {
+            return prjARound2Page;
+          }
+          return EMPTY_PAGE;
+        }
+        if (args.projectId === "prj-1") {
+          // Every attempt errors — a permanently misconfigured/permission-denied
+          // project, not a transient blip.
+          throw new Error("boom");
+        }
+        return EMPTY_PAGE;
+      },
+    );
+    runtimeState.getClient.mockReturnValue({
+      trackerList,
+      trackerSearch: vi.fn(),
+      getLastServerInfoMessage: () => ({ features: { aitTrackerSort: true } }),
+    });
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: makeProjects(2),
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 2,
+        sections: ["open"],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // prj-0's rows render even though prj-1 errored in the SAME (round-1)
+    // fetch — not blanked, not blocked behind prj-1.
+    expect(result.current.trackers.map((t) => t.id)).toEqual(["a-0", "a-1"]);
+    expect(result.current.projectErrors.map((e) => e.projectId)).toEqual(["prj-1"]);
+    // prj-1's cursor survives for a retry — not minted exhausted.
+    expect(result.current.sectionHasMore.open).toBe(true);
+
+    // Show more again: prj-0 continues normally (its cursor untouched by
+    // prj-1's error), and prj-1 is attempted again (still errors, same
+    // project — dedup keeps projectErrors at one entry).
+    act(() => {
+      result.current.loadMore("open");
+    });
+    await waitFor(() => expect(result.current.sectionLoadingMore.open).toBe(false));
+    expect(result.current.trackers.map((t) => t.id)).toEqual(["a-0", "a-1", "a-2"]);
+    expect(result.current.projectErrors.map((e) => e.projectId)).toEqual(["prj-1"]);
   });
 });
