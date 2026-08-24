@@ -2519,3 +2519,209 @@ describe("useTrackerProjectData per-project sort gate (pas-2KY5X.36)", () => {
     expect(sortArgFor("prj-c")).toBeUndefined();
   });
 });
+
+describe("useTrackerProjectData cursor survives a sort-order change (pas-2KY5X.4x)", () => {
+  beforeEach(() => {
+    connectionStatusState.byServer = {};
+  });
+
+  // A single project selected forces mergeMode false unconditionally
+  // (mergeMode = selectedProjectId === null && allSupportSort) — the exact
+  // shape the reviewer flagged, since scopeKey carries mergeMode but a
+  // single-project scope's mergeMode never changes regardless of what the
+  // capability does, so a capability flip triggers no reset there.
+  it("does not resume a project's cursor once its sort-order capability changes, and drops rows fetched under the old order", async () => {
+    let capable = false;
+    let openStartCalls = 0;
+    const trackerList = vi.fn(
+      async (args: {
+        projectId: string;
+        status?: TrackerStatus;
+        sort?: string;
+        page?: { cursor?: string };
+      }): Promise<ListResponse> => {
+        if (args.projectId !== "prj-a" || args.status !== "open") {
+          return EMPTY_PAGE;
+        }
+        if (args.page?.cursor === undefined) {
+          openStartCalls += 1;
+          if (openStartCalls === 1) {
+            // Page one, fetched while capable === false: `ait` served its
+            // `--sort oldest` default. cursor "1" is offset 1 IN THAT ORDER.
+            return {
+              trackers: [makeTracker("old-order-row")],
+              hiddenCount: 0,
+              pageInfo: { nextCursor: "1", hasMore: true },
+            };
+          }
+          // The CORRECT behavior once capable flips true: a fresh offset-0
+          // fetch under the new order, not a resume.
+          return {
+            trackers: [makeTracker("new-order-row")],
+            hiddenCount: 0,
+            pageInfo: { nextCursor: "n-1", hasMore: true },
+          };
+        }
+        if (args.page?.cursor === "1") {
+          // Only reachable if the bug is present: cursor "1" (minted under
+          // oldest order) resumed under sort: "newest" — offset 1 in a
+          // DIFFERENT total order, an arbitrary and wrong row.
+          return {
+            trackers: [makeTracker("wrongly-resumed-row")],
+            hiddenCount: 0,
+            pageInfo: { nextCursor: "2", hasMore: false },
+          };
+        }
+        return EMPTY_PAGE;
+      },
+    );
+    runtimeState.getClient.mockReturnValue({
+      trackerList,
+      trackerSearch: vi.fn(),
+      getLastServerInfoMessage: () => ({ features: { aitTrackerSort: capable } }),
+    });
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A],
+        selectedProjectId: "prj-a",
+        all: true,
+        enabled: true,
+        pageSize: 2,
+        sections: ["open"],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.trackers.map((t) => t.id)).toEqual(["old-order-row"]);
+    expect(trackerList.mock.calls[0]?.[0]?.sort).toBeUndefined();
+
+    // The daemon upgrades / the ait binary gains --sort / a PATH fix lands —
+    // capable flips true. setConnectionStatus forces the re-render that
+    // makes the hook re-read it (same mechanism the pas-2KY5X.25 tests use),
+    // even though the value ("online") doesn't itself change.
+    capable = true;
+    act(() => {
+      setConnectionStatus("host-a", "online");
+    });
+
+    act(() => {
+      result.current.loadMore("open");
+    });
+    await waitFor(() => expect(result.current.sectionLoadingMore.open).toBe(false));
+
+    // DIRECT proof: the second "open" request started fresh (no cursor),
+    // carrying `sort: "newest"` — not a resume of cursor "1" under the new
+    // order.
+    const secondCall = trackerList.mock.calls[1]?.[0];
+    expect(secondCall?.page?.cursor).toBeUndefined();
+    expect(secondCall?.sort).toBe("newest");
+
+    // The display reflects only the new-order page — the old-order row,
+    // whose position meant something under a total order that no longer
+    // applies, is dropped rather than left sitting above/below rows from a
+    // different order.
+    expect(result.current.trackers.map((t) => t.id)).toEqual(["new-order-row"]);
+  });
+});
+
+describe("useTrackerProjectData errored stream fails closed (pas-2KY5X.4x)", () => {
+  beforeEach(() => {
+    connectionStatusState.byServer = {};
+  });
+
+  it("stops the window rather than treating a mid-refill error as exhaustion, and lets the next loadMore retry it", async () => {
+    // prj-0 owns the true newest 2 rows and nothing else — one page, done.
+    const prj0Page: ListResponse = {
+      trackers: [
+        { ...makeTracker("a-0"), createdAt: "2000-01-01T00:00:09Z" },
+        { ...makeTracker("a-1"), createdAt: "2000-01-01T00:00:08Z" },
+      ],
+      hiddenCount: 0,
+      pageInfo: { nextCursor: null, hasMore: false, totalCount: 2 },
+    };
+    // prj-1's round-1 chunk (3, older than prj-0's) drains before budget is
+    // met, forcing a round-2 refill — that refill is where the error lands.
+    const prj1Round1Page: ListResponse = {
+      trackers: [
+        { ...makeTracker("b-0"), createdAt: "2000-01-01T00:00:07Z" },
+        { ...makeTracker("b-1"), createdAt: "2000-01-01T00:00:06Z" },
+        { ...makeTracker("b-2"), createdAt: "2000-01-01T00:00:05Z" },
+      ],
+      hiddenCount: 0,
+      pageInfo: { nextCursor: "b-3", hasMore: true, totalCount: 5 },
+    };
+    const prj1RemainingPage: ListResponse = {
+      trackers: [
+        { ...makeTracker("b-3"), createdAt: "2000-01-01T00:00:04Z" },
+        { ...makeTracker("b-4"), createdAt: "2000-01-01T00:00:03Z" },
+      ],
+      hiddenCount: 0,
+      pageInfo: { nextCursor: null, hasMore: false, totalCount: 5 },
+    };
+    let prj1ShouldError = true;
+    const trackerList = vi.fn(
+      async (args: { projectId: string; page?: { cursor?: string } }): Promise<ListResponse> => {
+        if (args.projectId === "prj-0") {
+          return args.page?.cursor === undefined ? prj0Page : EMPTY_PAGE;
+        }
+        if (args.projectId === "prj-1") {
+          if (args.page?.cursor === undefined) {
+            return prj1Round1Page;
+          }
+          if (args.page?.cursor === "b-3") {
+            if (prj1ShouldError) {
+              throw new Error("boom");
+            }
+            return prj1RemainingPage;
+          }
+        }
+        return EMPTY_PAGE;
+      },
+    );
+    runtimeState.getClient.mockReturnValue({
+      trackerList,
+      trackerSearch: vi.fn(),
+      getLastServerInfoMessage: () => ({ features: { aitTrackerSort: true } }),
+    });
+
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: makeProjects(2),
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 6,
+        sections: ["open"],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    // Budget 6, but prj-1 errors mid-window: taken stops at 5 (prj-0's 2 +
+    // prj-1's first 3) rather than being padded to 6 by treating prj-1 as
+    // exhausted. Newest-first order, unaffected by the error.
+    expect(result.current.trackers.map((t) => t.id)).toEqual(["a-0", "a-1", "b-0", "b-1", "b-2"]);
+    expect(result.current.projectErrors.map((e) => e.projectId)).toEqual(["prj-1"]);
+    // prj-1 is NOT marked exhausted by the error — it still has more.
+    expect(result.current.sectionHasMore.open).toBe(true);
+
+    // The error was transient — prj-1 now succeeds. The next "Show more" is
+    // this stream's own retry: no separate retry mechanism needed.
+    prj1ShouldError = false;
+    act(() => {
+      result.current.loadMore("open");
+    });
+    await waitFor(() => expect(result.current.sectionLoadingMore.open).toBe(false));
+
+    expect(result.current.trackers.map((t) => t.id)).toEqual([
+      "a-0",
+      "a-1",
+      "b-0",
+      "b-1",
+      "b-2",
+      "b-3",
+      "b-4",
+    ]);
+    expect(result.current.sectionHasMore.open).toBe(false);
+  });
+});

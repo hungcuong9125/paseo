@@ -39,9 +39,28 @@ interface CursorState {
    * that was over-fetched relative to the current budget doesn't pay for
    * the same rows twice on the next "Show more". */
   buffer: AggregatedTracker[];
+  /** Whether the fetch that produced this cursor position requested
+   * `sort: "newest"` — a project's own sort-capability answer
+   * (pas-2KY5X.36's `sortSupportByProject`) can change mid-session (a daemon
+   * upgrade, an `ait` install, a PATH fix), and `--offset N` means a
+   * different row under `--sort oldest` than under `--sort newest`. A cursor
+   * minted under one order is never valid to resume under the other — the
+   * per-project fetch call sites (loadMore, retryOne) compare this against
+   * the CURRENT answer before reusing a cursor, and purge+restart from
+   * offset 0 instead when it no longer matches (pas-2KY5X.4x). */
+  sortedWith: boolean;
 }
 
-const ERRORED_CURSOR: CursorState = { cursor: null, hasMore: false, totalCount: null, buffer: [] };
+const ERRORED_CURSOR: CursorState = {
+  cursor: null,
+  hasMore: false,
+  totalCount: null,
+  buffer: [],
+  // Never resumed (hasMore: false) and the purge check only ever compares
+  // sortedWith against a REAL prior fetch, never overwrites one with this —
+  // see mergePage's call sites, which never pass `replaceExisting` here.
+  sortedWith: false,
+};
 
 interface SectionPageState {
   trackers: AggregatedTracker[];
@@ -147,7 +166,16 @@ interface MergeFetchOutcome {
 }
 
 interface MergedWindowResult {
-  /** Up to `budget` rows, newest-first across every relevant project. */
+  /** Up to `budget` rows, newest-first across every relevant project — a
+   * genuine prefix, never a project silently dropped from the ordering
+   * guarantee. A project that errors mid-window does NOT get treated as
+   * exhausted (pas-2KY5X.4x): its cursor is left exactly as it was, so
+   * `taken` may come back shorter than `budget` (the same honest partial
+   * page the round cap already returns) rather than risk emitting rows
+   * older than something the errored project still holds but hasn't
+   * revealed. The errored project stays blocked — buffer empty, `hasMore`
+   * unchanged — so the next `loadMore` retries it on its own; no separate
+   * retry mechanism needed. */
   taken: AggregatedTracker[];
   /** Every relevant project's updated cursor, including whatever's left in
    * its buffer after `taken` was drawn from it. */
@@ -216,6 +244,12 @@ async function fetchMergedStatusWindow(
       hasMore: true,
       totalCount: null,
       buffer: [],
+      // Merge mode requires every relevant project to support sort
+      // (mergeMode = selectedProjectId === null && allSupportSort) — a
+      // capability change that would make this false resets the whole scope
+      // via scopeKey (mergeMode is a component of it), so this never needs
+      // the purge-on-mismatch check the per-project path does.
+      sortedWith: true,
     };
     cursors[key] = prior;
     buffers.set(key, [...prior.buffer]);
@@ -225,6 +259,11 @@ async function fetchMergedStatusWindow(
   const seenErrorProjects = new Set<string>();
   const offlineStatusByProject = new Map<string, boolean>();
 
+  // Set when any outcome this round errored — the caller (the emission loop
+  // below) stops refilling once it sees this, instead of looping back and
+  // immediately re-attempting the same doomed fetch up to MERGE_MAX_ROUNDS
+  // times.
+  let erroredThisRound = false;
   const applyOutcomes = (outcomes: readonly MergeFetchOutcome[]): void => {
     for (const outcome of outcomes) {
       const key = projectKeyOf(outcome.project);
@@ -235,8 +274,18 @@ async function fetchMergedStatusWindow(
           seenErrorProjects.add(key);
           errors.push(toTrackerProjectError(outcome.project, outcome.error));
         }
-        cursors[key] = ERRORED_CURSOR;
-        buffers.set(key, []);
+        // Do NOT mint ERRORED_CURSOR (hasMore: false) here (pas-2KY5X.4x):
+        // an error is not evidence this stream is exhausted. Minting it
+        // anyway let the frontier stop waiting on this project and keep
+        // emitting from the others — silently dropping whatever newer rows
+        // it might still hold, on the append-only merge path with no way to
+        // correct that once emitted. `cursors[key]` already holds this
+        // stream's last real position (seeded from priorCursors, or
+        // preserved from an earlier round within this same call); leaving it
+        // untouched keeps `hasMore`/an empty buffer exactly as they were, so
+        // this project is naturally "blocked" again on the very next
+        // loadMore — its own retry, no separate mechanism needed.
+        erroredThisRound = true;
         continue;
       }
       if (outcome.wasOfflineAtFetch) {
@@ -257,6 +306,7 @@ async function fetchMergedStatusWindow(
         hasMore: outcome.hasMore,
         totalCount: outcome.totalCount,
         buffer: [],
+        sortedWith: true,
       };
       buffers.get(key)!.push(...outcome.trackers);
     }
@@ -312,6 +362,20 @@ async function fetchMergedStatusWindow(
           chunk,
         ),
       );
+      if (erroredThisRound) {
+        // Fail closed (pas-2KY5X.4x): at least one still-blocking project
+        // errored instead of answering, so the frontier can no longer prove
+        // `taken` extends correctly — that project might still hold rows
+        // newer than anything another stream would emit next. `taken` so
+        // far is a correct prefix (every row in it was validly compared
+        // against every stream that could still beat it); returning it now,
+        // short of `budget`, is the same honest partial-page outcome the
+        // round cap above already returns, and it stops this call from
+        // burning the rest of MERGE_MAX_ROUNDS re-attempting the same
+        // doomed fetch — the project stays blocked (buffer empty, hasMore
+        // preserved above), so the very next loadMore retries it on its own.
+        break;
+      }
       continue;
     }
     const next = shiftNewestRow(buffers);
@@ -879,10 +943,23 @@ export function useTrackerProjectData(
       projectKey: string,
       trackers: AggregatedTracker[],
       next: CursorState,
+      // Set only when the caller has already determined this project's
+      // existing rows for `status` were fetched under a DIFFERENT sort order
+      // than `next.sortedWith` (pas-2KY5X.4x) — the offset that produced
+      // them means something else now, so they can't sit above a fresh
+      // offset-0 page under the new order without an incoherent ordering.
+      // The caller is responsible for also sending `cursor: undefined` (not
+      // the stale value) for the fetch that produced `trackers`; this only
+      // handles the DISPLAY side. Never set on an error path (`trackers` is
+      // empty there, so it would only ever discard good rows for nothing).
+      mergeOptions?: { replaceExisting?: boolean },
     ) => {
       setSections((current) => {
         const section = current[status];
-        const merged = [...section.trackers, ...trackers];
+        const existing = mergeOptions?.replaceExisting
+          ? section.trackers.filter((tracker) => projectKeyOf(tracker) !== projectKey)
+          : section.trackers;
+        const merged = [...existing, ...trackers];
         sortMerged(merged);
         return {
           ...current,
@@ -1276,6 +1353,11 @@ export function useTrackerProjectData(
             hasMore: result.pageInfo?.hasMore ?? false,
             totalCount: result.pageInfo?.totalCount ?? null,
             buffer: [],
+            // Always this scope's first-ever fetch for this (project,
+            // status) — see toFetch's own guard — so there is nothing to
+            // compare this against yet; recorded so a later loadMore/retryOne
+            // can detect a capability change against it (pas-2KY5X.4x).
+            sortedWith: sortSupportByProject.get(projectKey) === true,
           };
         }
         for (const status of toFetch) {
@@ -1384,7 +1466,11 @@ export function useTrackerProjectData(
 
     // Lands a reconnected project's page in its buffer rather than splicing
     // it directly into the displayed window in merge mode — see
-    // setProjectCursor — and appends it normally otherwise.
+    // setProjectCursor — and appends it normally otherwise. `replaceExisting`
+    // (pas-2KY5X.4x, non-merge only — see retryOne) drops this project's
+    // existing rows for `status` first: they were fetched under a different
+    // sort order than `sortedWith`, so their positions mean nothing next to
+    // an offset-0 page under the new one.
     const applyReconnectedPage = (
       status: TrackerStatus,
       projectKey: string,
@@ -1392,6 +1478,8 @@ export function useTrackerProjectData(
       cursor: string | null,
       hasMore: boolean,
       totalCount: number | null,
+      sortedWith: boolean,
+      replaceExisting: boolean,
     ): void => {
       if (mergeMode) {
         const priorBuffer = sectionsRef.current[status].cursors[projectKey]?.buffer ?? [];
@@ -1400,9 +1488,16 @@ export function useTrackerProjectData(
           hasMore,
           totalCount,
           buffer: [...priorBuffer, ...trackers],
+          sortedWith,
         });
       } else {
-        mergePage(status, projectKey, trackers, { cursor, hasMore, totalCount, buffer: [] });
+        mergePage(
+          status,
+          projectKey,
+          trackers,
+          { cursor, hasMore, totalCount, buffer: [], sortedWith },
+          { replaceExisting },
+        );
       }
     };
     const applyReconnectedError = (status: TrackerStatus, projectKey: string): void => {
@@ -1415,11 +1510,27 @@ export function useTrackerProjectData(
     const retryOne = async (project: TrackerProjectInput, status: TrackerStatus): Promise<void> => {
       const projectKey = projectKeyOf(project);
       const offlineKey = offlineKeyOf(projectKey, status);
+      const priorCursor = sectionsRef.current[status].cursors[projectKey];
+      // This (project, status)'s own capability, not the workspace-wide
+      // `allSupportSort` (pas-2KY5X.36) — a reconnecting project's own sort
+      // support has nothing to do with whether every OTHER relevant project
+      // also has it.
+      const currentlySorts = sortSupportByProject.get(projectKey) === true;
+      // pas-2KY5X.4x: a cursor minted under one sort order is never valid to
+      // resume under the other — `--offset N` means a different row once
+      // `sort` flips. `priorCursor === undefined` (this project's very first
+      // fetch for this status) is not a change; anything else disagreeing
+      // with the current answer is.
+      const sortModeChanged =
+        priorCursor !== undefined && priorCursor.sortedWith !== currentlySorts;
       // Resume from this (project, status)'s own real cursor — the same
-      // field every other fetch call site in this file already sends. A
-      // project genuinely offline since its very first fetch has no cursor
-      // yet (`undefined`), which correctly starts it at offset 0.
-      const cursor = sectionsRef.current[status].cursors[projectKey]?.cursor ?? undefined;
+      // field every other fetch call site in this file already sends —
+      // UNLESS the sort order it was minted under just changed, in which
+      // case reusing it would ask `ait` for offset N in a different total
+      // order than the one that produced it. A project genuinely offline
+      // since its very first fetch has no cursor yet (`undefined`), which
+      // also correctly starts it at offset 0.
+      const cursor = sortModeChanged ? undefined : (priorCursor?.cursor ?? undefined);
       try {
         const result = await fetchTrackerPage({
           project,
@@ -1430,11 +1541,7 @@ export function useTrackerProjectData(
           type: options.type,
           priority: options.priority,
           cursor,
-          // This (project, status)'s own capability, not the workspace-wide
-          // `allSupportSort` (pas-2KY5X.36) — a reconnecting project's own
-          // sort support has nothing to do with whether every OTHER relevant
-          // project also has it.
-          ...(sortSupportByProject.get(projectKey) ? { sort: "newest" as TrackerSort } : {}),
+          ...(currentlySorts ? { sort: "newest" as TrackerSort } : {}),
         });
         if (seq !== loadSeqRef.current) {
           return;
@@ -1453,6 +1560,8 @@ export function useTrackerProjectData(
           result.pageInfo.nextCursor,
           result.pageInfo.hasMore,
           result.pageInfo.totalCount ?? null,
+          currentlySorts,
+          sortModeChanged,
         );
       } catch (error) {
         if (seq !== loadSeqRef.current) {
@@ -1562,7 +1671,17 @@ export function useTrackerProjectData(
         const results = await Promise.all(
           targets.map(async (project) => {
             const projectKey = projectKeyOf(project);
-            const cursor = currentCursors[projectKey]?.cursor ?? undefined;
+            const priorCursor = currentCursors[projectKey];
+            // This project's own capability, not the workspace-wide
+            // `allSupportSort` (pas-2KY5X.36) — see the per-project
+            // pagination comment in syncSections above.
+            const currentlySorts = sortSupportByProject.get(projectKey) === true;
+            // pas-2KY5X.4x: a cursor minted under one sort order is never
+            // valid to resume under the other — see retryOne's identical
+            // check for the full reasoning.
+            const sortModeChanged =
+              priorCursor !== undefined && priorCursor.sortedWith !== currentlySorts;
+            const cursor = sortModeChanged ? undefined : (priorCursor?.cursor ?? undefined);
             try {
               const result = await fetchTrackerPage({
                 project,
@@ -1573,14 +1692,25 @@ export function useTrackerProjectData(
                 type: options.type,
                 priority: options.priority,
                 cursor,
-                // This project's own capability, not the workspace-wide
-                // `allSupportSort` (pas-2KY5X.36) — see the per-project
-                // pagination comment in syncSections above.
-                ...(sortSupportByProject.get(projectKey) ? { sort: "newest" as TrackerSort } : {}),
+                ...(currentlySorts ? { sort: "newest" as TrackerSort } : {}),
               });
-              return { project, projectKey, result, error: null as unknown };
+              return {
+                project,
+                projectKey,
+                result,
+                error: null as unknown,
+                currentlySorts,
+                sortModeChanged,
+              };
             } catch (error) {
-              return { project, projectKey, result: null, error };
+              return {
+                project,
+                projectKey,
+                result: null,
+                error,
+                currentlySorts,
+                sortModeChanged,
+              };
             }
           }),
         );
@@ -1618,12 +1748,19 @@ export function useTrackerProjectData(
             continue;
           }
           offlineProjectKeysRef.current.delete(offlineKey);
-          mergePage(status, page.projectKey, result.trackers, {
-            cursor: result.pageInfo.nextCursor,
-            hasMore: result.pageInfo.hasMore,
-            totalCount: result.pageInfo.totalCount ?? null,
-            buffer: [],
-          });
+          mergePage(
+            status,
+            page.projectKey,
+            result.trackers,
+            {
+              cursor: result.pageInfo.nextCursor,
+              hasMore: result.pageInfo.hasMore,
+              totalCount: result.pageInfo.totalCount ?? null,
+              buffer: [],
+              sortedWith: page.currentlySorts,
+            },
+            { replaceExisting: page.sortModeChanged },
+          );
         }
       })();
     },
