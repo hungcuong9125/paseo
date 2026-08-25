@@ -7,23 +7,33 @@ const READ_ONLY_GIT_ENV = {
   GIT_OPTIONAL_LOCKS: "0",
   LC_ALL: "C",
 } as const;
+const aitRootPathCache = new Map<string, Promise<string>>();
 
 /**
  * Resolve the directory passed to `ait`: Git's worktree root when the path is
  * in a repository, otherwise the path itself. A non-Git child does not
- * inherit an AIT database from an unrelated parent directory.
+ * inherit an AIT database from an unrelated parent directory. The Git lookup
+ * is stable for a project path and is memoized; the database stat below stays
+ * fresh on every descriptor build.
  */
-export async function resolveAitRootPath(projectRootPath: string): Promise<string> {
+export function resolveAitRootPath(projectRootPath: string): Promise<string> {
   const resolvedProjectRootPath = resolve(projectRootPath);
-  try {
-    const { stdout } = await runGitCommand(["rev-parse", "--show-toplevel"], {
-      cwd: resolvedProjectRootPath,
-      envOverlay: READ_ONLY_GIT_ENV,
-    });
-    return resolveGitRevParsePath(resolvedProjectRootPath, stdout) ?? resolvedProjectRootPath;
-  } catch {
-    return resolvedProjectRootPath;
-  }
+  const cached = aitRootPathCache.get(resolvedProjectRootPath);
+  if (cached) return cached;
+
+  const resolution = (async () => {
+    try {
+      const { stdout } = await runGitCommand(["rev-parse", "--show-toplevel"], {
+        cwd: resolvedProjectRootPath,
+        envOverlay: READ_ONLY_GIT_ENV,
+      });
+      return resolveGitRevParsePath(resolvedProjectRootPath, stdout) ?? resolvedProjectRootPath;
+    } catch {
+      return resolvedProjectRootPath;
+    }
+  })();
+  aitRootPathCache.set(resolvedProjectRootPath, resolution);
+  return resolution;
 }
 
 /**

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { startGitCommandMetrics, stopGitCommandMetrics } from "../utils/run-git-command.js";
 import { checkAitInitialized, resolveAitRootPath } from "./ait-init-status.js";
 
 describe("checkAitInitialized", () => {
@@ -89,6 +90,21 @@ describe("checkAitInitialized", () => {
 
     await expect(resolveAitRootPath(child)).resolves.toBe(root);
     await expect(checkAitInitialized(child)).resolves.toBe(true);
+  });
+
+  it("memoizes Git root resolution for repeated project descriptor checks", async () => {
+    const root = makeGitProjectRoot();
+    const child = join(root, "packages", "server");
+    mkdirSync(child, { recursive: true });
+
+    startGitCommandMetrics();
+    await expect(resolveAitRootPath(child)).resolves.toBe(root);
+    await expect(resolveAitRootPath(child)).resolves.toBe(root);
+    const metrics = stopGitCommandMetrics();
+
+    expect(
+      metrics.commands.filter(({ args }) => args.join(" ") === "rev-parse --show-toplevel"),
+    ).toHaveLength(1);
   });
 
   it("tracks appearance and deletion at the resolved Git root", async () => {

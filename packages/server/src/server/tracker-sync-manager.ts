@@ -37,7 +37,7 @@ interface ProjectNotFoundError extends Error {
 
 const DEBOUNCE_MS = 150;
 const MAX_DEBOUNCE_MS = 1_000;
-const UNINITIALISED_PROBE_MS = 500;
+const UNINITIALISED_PROBE_MS = 5_000;
 const WATCH_RETRY_MS = 10_000;
 export const MAX_TREE_DEPTH = 32;
 // Keep one screen load's sequential project reads on the same watched snapshot,
