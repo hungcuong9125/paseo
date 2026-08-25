@@ -6,7 +6,7 @@ The Tracker screen never pulls a project's whole `.ait/ait.db` over the WebSocke
 
 The daemon resolves `aitInitialized` at the same boundary as the `ait` CLI. For a project inside a Git repository, use the repository toplevel; otherwise use the project path. A project rooted in a repository subdirectory therefore uses the repository's `.ait/ait.db`.
 
-The daemon rechecks the database when it builds a project descriptor. When a watched project gains or loses `.ait/ait.db`, including after `ait init` runs in a terminal or agent, the server rebuilds the descriptor and can publish it to connected clients as `project.update`. The Tracker screen still does not subscribe; see [docs/ait-tracker-live-sync.md](ait-tracker-live-sync.md).
+The daemon rechecks the database when it builds a project descriptor. When a watched project gains or loses `.ait/ait.db`, including after `ait init` runs in a terminal or agent, the server rebuilds the descriptor and publishes it to connected clients as `project.update`. The Tracker screen still does not subscribe; see [docs/ait-tracker-live-sync.md](ait-tracker-live-sync.md).
 
 Only projects currently reported as uninitialised carry a global root watch. A stale `false` is silent because the app gates the project before sending a tracker RPC. A stale `true` reaches the existing RPC-failure path and reports the problem. This asymmetry keeps the watch population focused on the state that can hide tracker data.
 
