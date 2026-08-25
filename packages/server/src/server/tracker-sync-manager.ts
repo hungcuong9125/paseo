@@ -153,13 +153,21 @@ export class TrackerSyncManager {
   async watchProject(projectId: string): Promise<void> {
     const rootPath = await this.resolveRoot(projectId);
     const initialized = await this.aitDatabaseExists(rootPath);
+    const existingRoot = this.roots.get(rootPath);
+    if (initialized) {
+      if (existingRoot) {
+        existingRoot.seedInitializationState(true);
+        await this.removeGlobalWatch(rootPath);
+      }
+      return;
+    }
     const root = this.getOrCreateRoot(rootPath);
     this.addProjectId(rootPath, projectId);
     const projectIds = this.globalProjectIdsByRoot.get(rootPath) ?? new Set<string>();
     projectIds.add(projectId);
     this.globalProjectIdsByRoot.set(rootPath, projectIds);
     this.cancelIdleDisposal(rootPath);
-    root.seedInitializationState(initialized);
+    root.seedInitializationState(false);
     await root.start();
   }
 
@@ -297,7 +305,8 @@ export class TrackerSyncManager {
         this.aitService,
         this.directoryExists,
         this.aitDatabaseExists,
-        () => this.notifyAitInitializationChanged(rootPath),
+        (initialized) => this.notifyAitInitializationChanged(rootPath, initialized),
+        () => this.removeGlobalWatchWhenInitialized(rootPath),
         () => {
           this.roots.delete(rootPath);
           this.projectIdsByRoot.delete(rootPath);
@@ -319,13 +328,30 @@ export class TrackerSyncManager {
     root.seedInitializationState(await this.aitDatabaseExists(rootPath));
   }
 
-  private async notifyAitInitializationChanged(rootPath: string): Promise<void> {
-    if (!this.onAitInitializedChanged) return;
-    await Promise.all(
-      [...(this.projectIdsByRoot.get(rootPath) ?? [])].map((projectId) =>
-        this.onAitInitializedChanged!(projectId),
-      ),
-    );
+  private async removeGlobalWatch(rootPath: string): Promise<void> {
+    this.globalProjectIdsByRoot.delete(rootPath);
+    const root = this.roots.get(rootPath);
+    if (root) await this.maybeDisposeRoot(root);
+  }
+
+  private async notifyAitInitializationChanged(
+    rootPath: string,
+    initialized: boolean,
+  ): Promise<void> {
+    if (this.onAitInitializedChanged) {
+      await Promise.all(
+        [...(this.projectIdsByRoot.get(rootPath) ?? [])].map((projectId) =>
+          this.onAitInitializedChanged!(projectId),
+        ),
+      );
+    }
+    const root = this.roots.get(rootPath);
+    if (initialized && root?.hasObserverSubscription) await this.removeGlobalWatch(rootPath);
+  }
+
+  private async removeGlobalWatchWhenInitialized(rootPath: string): Promise<void> {
+    const root = this.roots.get(rootPath);
+    if (root?.isInitialized) await this.removeGlobalWatch(rootPath);
   }
 
   private async maybeDisposeRoot(root: AitRootWatch): Promise<void> {
@@ -382,7 +408,8 @@ class AitRootWatch {
     private readonly aitService: AitService,
     private readonly directoryExists: (directory: string) => Promise<boolean>,
     private readonly aitDatabaseExists: (rootPath: string) => Promise<boolean>,
-    private readonly onInitializationChange: () => void | Promise<void>,
+    private readonly onInitializationChange: (initialized: boolean) => void | Promise<void>,
+    private readonly onObserverAttached: () => void | Promise<void>,
     private readonly onEmpty: () => void,
   ) {
     this.rootPath = rootPath;
@@ -390,6 +417,14 @@ class AitRootWatch {
 
   seedInitializationState(initialized: boolean): void {
     if (this.aitInitialized === null) this.aitInitialized = initialized;
+  }
+
+  get isInitialized(): boolean {
+    return this.aitInitialized === true;
+  }
+
+  get hasObserverSubscription(): boolean {
+    return this.observerSubscription !== null;
   }
 
   get hasListeners(): boolean {
@@ -479,6 +514,7 @@ class AitRootWatch {
       if (this.retryTimer) clearInterval(this.retryTimer);
       this.retryTimer = null;
       await this.refreshInitializationState();
+      await this.onObserverAttached();
       if (recovering) {
         await this.refreshActiveVariants();
       }
@@ -529,11 +565,11 @@ class AitRootWatch {
     const next = await this.aitDatabaseExists(this.rootPath);
     if (this.aitInitialized === null) {
       this.aitInitialized = next;
-      if (next) await this.onInitializationChange();
+      if (next) await this.onInitializationChange(next);
       return;
     }
     if (this.aitInitialized === next) return;
-    await this.onInitializationChange();
+    await this.onInitializationChange(next);
     this.aitInitialized = next;
   }
 }

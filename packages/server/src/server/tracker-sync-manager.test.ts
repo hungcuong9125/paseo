@@ -269,6 +269,29 @@ describe("TrackerSyncManager", () => {
     await harness.manager.close();
   });
 
+  it("does not attach a global watcher for an initialized project", async () => {
+    const harness = createHarness({ aitInitialized: true });
+
+    await harness.manager.watchProject(PROJECT_ID);
+
+    expect(harness.subscribeCount).toBe(0);
+    await harness.manager.close();
+  });
+
+  it("releases the global watcher after initialization is confirmed", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness({ aitInitialized: false });
+
+    await harness.manager.watchProject(PROJECT_ID);
+    harness.setAitInitialized(true);
+    harness.emitChange();
+    await vi.advanceTimersByTimeAsync(150);
+    await vi.advanceTimersByTimeAsync(TRACKER_ROOT_IDLE_TTL_MS);
+
+    expect(harness.unsubscribeCount).toBe(1);
+    await harness.manager.close();
+  });
+
   it("reconciles a database that appears before the first initialization sample", async () => {
     const changes: string[] = [];
     const harness = createHarness({

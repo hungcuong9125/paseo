@@ -952,8 +952,8 @@ export class VoiceAssistantWebSocketServer {
         });
       }) ?? null;
 
-    // Descriptors can outlive tracker subscriptions, so every active project
-    // needs a root watch to publish external init and deletion transitions.
+    // Only gated projects need a global watch; tracker subscriptions observe
+    // initialized projects, while RPC failures surface stale true states.
     const projects = await this.projectRegistry.list();
     await Promise.all(
       projects
