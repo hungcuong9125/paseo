@@ -75,8 +75,16 @@ export interface OpenCodeServerManagerOptions {
   createEventSource?: OpenCodeEventConsumerFactory;
 }
 
+function getServerRuntimeSettingsKey(runtimeSettings?: ProviderRuntimeSettings): string {
+  const envEntries = Object.entries(runtimeSettings?.env ?? {}).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  const env = envEntries.length > 0 ? Object.fromEntries(envEntries) : undefined;
+  return JSON.stringify({ command: runtimeSettings?.command, env });
+}
+
 export class OpenCodeServerManager implements OpenCodeServerManagerLike {
-  private static instance: OpenCodeServerManager | null = null;
+  private static instances = new Map<string, OpenCodeServerManager>();
   private static exitHandlerRegistered = false;
   private currentServer: OpenCodeServerGeneration | null = null;
   private retiredServers = new Set<OpenCodeServerGeneration>();
@@ -85,7 +93,6 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
   private readonly logger: Logger;
   private readonly baseEnv?: SpawnProcessOptions["baseEnv"];
   private readonly runtimeSettings?: ProviderRuntimeSettings;
-  private readonly runtimeSettingsKey: string;
   private readonly managedProcesses?: ManagedProcessRegistry;
   private readonly terminateProcess: ProcessTerminator;
   private readonly portAllocator: OpenCodePortAllocator;
@@ -98,7 +105,6 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
     this.logger = options.logger;
     this.baseEnv = options.baseEnv;
     this.runtimeSettings = options.runtimeSettings;
-    this.runtimeSettingsKey = JSON.stringify(this.runtimeSettings ?? {});
     this.managedProcesses = options.managedProcesses;
     this.terminateProcess = options.terminateProcess ?? terminateWithTreeKill;
     this.portAllocator = options.portAllocator ?? findAvailablePort;
@@ -116,24 +122,18 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
     runtimeSettings?: ProviderRuntimeSettings,
     options: Omit<OpenCodeServerManagerOptions, "logger" | "runtimeSettings"> = {},
   ): OpenCodeServerManager {
-    const nextSettingsKey = JSON.stringify(runtimeSettings ?? {});
-    if (!OpenCodeServerManager.instance) {
-      OpenCodeServerManager.instance = new OpenCodeServerManager({
+    const settingsKey = getServerRuntimeSettingsKey(runtimeSettings);
+    let instance = OpenCodeServerManager.instances.get(settingsKey);
+    if (!instance) {
+      instance = new OpenCodeServerManager({
         logger,
         runtimeSettings,
         ...options,
       });
+      OpenCodeServerManager.instances.set(settingsKey, instance);
       OpenCodeServerManager.registerExitHandler();
-    } else if (OpenCodeServerManager.instance.runtimeSettingsKey !== nextSettingsKey) {
-      logger.warn(
-        {
-          existingRuntimeSettings: OpenCodeServerManager.instance.runtimeSettingsKey,
-          requestedRuntimeSettings: nextSettingsKey,
-        },
-        "OpenCode server manager already initialized with different runtime settings",
-      );
     }
-    return OpenCodeServerManager.instance;
+    return instance;
   }
 
   private static registerExitHandler(): void {
@@ -143,8 +143,9 @@ export class OpenCodeServerManager implements OpenCodeServerManagerLike {
     OpenCodeServerManager.exitHandlerRegistered = true;
 
     const cleanup = () => {
-      const instance = OpenCodeServerManager.instance;
-      void instance?.shutdown();
+      void Promise.all(
+        Array.from(OpenCodeServerManager.instances.values(), (instance) => instance.shutdown()),
+      );
     };
 
     process.on("exit", cleanup);
