@@ -937,6 +937,64 @@ describe("TrackerScreen filtered-empty state (pas-2KY5X.52)", () => {
 
     expect(container?.querySelector('[data-testid="trackers-filtered-empty"]')).toBeNull();
   });
+
+  it("does not claim filters hid anything while stats is still refetching after a mutation (pas-2KY5X.52 corrections pass)", () => {
+    // Models the instant right after deleting the last visible tracker with
+    // no filters active: projectData's local removal already emptied
+    // trackers, but stats.refetch() (triggered by the same handler) hasn't
+    // resolved yet, so statsCounts is still the pre-delete, nonzero total.
+    // No filters are narrowing anything here — the two numbers just aren't
+    // comparable yet, and the banner must not claim otherwise.
+    setProjectDataState({ trackers: [] });
+    setStatsState({
+      counts: {
+        all: makeStatsBucket(1),
+        task: makeStatsBucket(1),
+        epic: makeStatsBucket(0),
+        initiative: makeStatsBucket(0),
+      },
+      isLoading: true,
+    });
+    render();
+    switchToKanban();
+
+    expect(container?.querySelector('[data-testid="trackers-filtered-empty"]')).toBeNull();
+
+    switchToList();
+    expect(container?.querySelector('[data-testid="trackers-filtered-empty"]')).toBeNull();
+  });
+
+  it("does not claim filters hid anything when a project's list RPC failed while its stats RPC succeeded, in all-projects mode (pas-2KY5X.52 corrections pass)", () => {
+    // All-projects mode: a per-project project.tracker.list failure never
+    // becomes a full-screen `blocked` state (that's a banner elsewhere, the
+    // rest of the board still renders) — the visible set is empty for a
+    // reason that has nothing to do with any filter, even though the
+    // separate stats RPC for the same project succeeded with a real total.
+    const listError: TrackerProjectError = {
+      serverId: "host-a",
+      serverName: "alpha",
+      projectId: "project-a",
+      projectName: "Project",
+      message: "connection reset",
+      code: "unknown",
+    };
+    setProjectDataState({ trackers: [], projectErrors: [listError] });
+    setStatsState({
+      counts: {
+        all: makeStatsBucket(1),
+        task: makeStatsBucket(1),
+        epic: makeStatsBucket(0),
+        initiative: makeStatsBucket(0),
+      },
+    });
+    render();
+    switchToKanban();
+
+    expect(container?.querySelector('[data-testid="trackers-filtered-empty"]')).toBeNull();
+
+    switchToList();
+    expect(container?.querySelector('[data-testid="trackers-filtered-empty"]')).toBeNull();
+  });
 });
 
 describe("TrackerScreen mutation patching", () => {

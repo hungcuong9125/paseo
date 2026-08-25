@@ -706,6 +706,22 @@ function TrackerScreenContent(): ReactElement {
     () => (viewMode === "kanban" ? kanbanTrackers.length : listViewTrackers.length),
     [viewMode, kanbanTrackers, listViewTrackers],
   );
+  // gatedProjectErrors first: a project excluded from initializedProjectInputs
+  // never reaches projectData (that's the whole point of the gate), so it can
+  // never surface through projectData.projectErrors — without this, a still-
+  // selected gated project silently falls through to the generic "empty"
+  // state instead of the actionable "Initialize tracker" CTA (pas-2KY5X.28).
+  // Also the source of truth for "is any project's data actually wrong right
+  // now" — in all-projects mode resolveTrackerScreenBodyState never turns
+  // this into a full-screen state (a per-project failure there is a banner
+  // instead, rendered elsewhere), so hasFilteredOutTrackers below has to
+  // check it directly: without that, a project whose list RPC failed while
+  // its stats RPC happened to succeed would read as "filtered", not "broken"
+  // (pas-2KY5X.52).
+  const allProjectErrors = useMemo(
+    () => [...gatedProjectErrors, ...projectData.projectErrors],
+    [gatedProjectErrors, projectData.projectErrors],
+  );
   // Search's own loading routes through isSearchLoading below, not here — it
   // would otherwise unmount the search row on every keystroke.
   const bodyState = resolveTrackerScreenBodyState({
@@ -713,13 +729,7 @@ function TrackerScreenContent(): ReactElement {
     isProjectListLoading,
     isLoading: isListSearch ? false : projectData.isLoading,
     selectedProjectId: selectedProjectId ?? "all",
-    // gatedProjectErrors first: a project excluded from initializedProjectInputs
-    // never reaches projectData (that's the whole point of the gate), so it
-    // can never surface through projectData.projectErrors — without this, a
-    // still-selected gated project silently falls through to the generic
-    // "empty" state instead of the actionable "Initialize tracker" CTA
-    // (pas-2KY5X.28).
-    projectErrors: [...gatedProjectErrors, ...projectData.projectErrors],
+    projectErrors: allProjectErrors,
     visibleTrackersCount,
   });
 
@@ -1026,6 +1036,7 @@ function TrackerScreenContent(): ReactElement {
         trackerHierarchy={trackerHierarchy}
         statsCounts={stats.counts}
         statsLoading={stats.isLoading}
+        hasProjectErrors={allProjectErrors.length > 0}
         kanbanTrackers={kanbanTrackers}
         kanbanReadyIds={readyIds}
         laneTotals={laneTotals}
@@ -1686,6 +1697,7 @@ function TrackerScreenBody({
   trackerHierarchy,
   statsCounts,
   statsLoading,
+  hasProjectErrors,
   kanbanTrackers,
   kanbanReadyIds,
   laneTotals,
@@ -1743,6 +1755,12 @@ function TrackerScreenBody({
    * loading or when the host lacks `aitTrackerStats`. */
   statsCounts: TrackerStatsCounts | null;
   statsLoading: boolean;
+  /** Whether any in-scope project currently has a data error — a failed
+   * `project.tracker.list` in all-projects mode never becomes `blocked`
+   * below (that's a banner elsewhere, the rest of the board still renders),
+   * so hasFilteredOutTrackers has to be told about it directly instead of
+   * inferring "broken" from "empty" (pas-2KY5X.52). */
+  hasProjectErrors: boolean;
   kanbanTrackers: AggregatedTracker[];
   kanbanReadyIds: ReadonlySet<string>;
   laneTotals: Partial<Record<TrackerBoardLaneKey, number | null>>;
@@ -1833,13 +1851,27 @@ function TrackerScreenBody({
   const isLoading = bodyState.kind === "loading";
   const visibleCount = viewMode === "kanban" ? kanbanTrackers.length : trackers.length;
   // statsCounts is never narrowed by typeFilter/statFilter — unlike trackers
-  // and kanbanTrackers, it always reports the project's real total. A nonzero
-  // total here while nothing is visible means the active filters hid
-  // everything the project has, not that the project is actually empty
-  // (pas-2KY5X.52). Search takes priority over this: TrackerListEmptyState's
+  // and kanbanTrackers, it always reports the project's real total, so a
+  // nonzero total while nothing is visible CAN mean the active filters hid
+  // everything the project has (pas-2KY5X.52). It can also mean the two
+  // numbers are simply not comparable right now, which is not evidence of
+  // filtering and must not render as if it were:
+  //  - statsLoading: a mutation (e.g. deleting the last visible tracker)
+  //    empties `trackers`/`kanbanTrackers` synchronously but only kicks off
+  //    stats.refetch() — statsCounts stays the pre-mutation total until that
+  //    resolves, a stale-vs-fresh mismatch, not a filtered one.
+  //  - hasProjectErrors: in all-projects mode a per-project list-RPC failure
+  //    never becomes `blocked` (see the comment on `blocked` above), so the
+  //    visible set can be wrong for a reason that has nothing to do with any
+  //    filter while statsCounts (a different RPC) still succeeded.
+  // Both leave the two numbers looking like a mismatch for reasons other
+  // than filtering, so both suppress the claim rather than let it disagree
+  // silently. Search also takes priority over this: TrackerListEmptyState's
   // "No results for ..." already explains that case.
   const hasFilteredOutTrackers =
     !isLoading &&
+    !statsLoading &&
+    !hasProjectErrors &&
     activeSearch.length === 0 &&
     statsCounts !== null &&
     statsCounts.all.total > 0 &&
