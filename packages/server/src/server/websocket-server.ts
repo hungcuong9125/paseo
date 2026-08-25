@@ -965,8 +965,16 @@ export class VoiceAssistantWebSocketServer {
     // relative to whatever it does next can rely on this actually
     // finishing, and it's what stopped this from racing session.ts's own
     // rename/icon-set callers against their assertions in tests.
+    //
+    // Each session's failure is caught on its own: one broken session must not
+    // cost the others their update, and the callers that fire this without
+    // awaiting would otherwise turn a rejection into an unhandled one.
     await Promise.all(
-      this.listTrustedSessions().map((session) => session.emitProjectUpdate(update)),
+      this.listTrustedSessions().map((session) =>
+        session
+          .emitProjectUpdate(update)
+          .catch((error) => this.logger.warn({ err: error }, "Failed to publish project update")),
+      ),
     );
   }
 
