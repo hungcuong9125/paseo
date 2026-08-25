@@ -325,12 +325,14 @@ describe("wire compatibility", () => {
       messages: capableMessages,
     });
 
-    await Promise.all([
-      legacy.emitProjectUpdate({ kind: "upsert", project }),
-      legacy.emitProjectUpdate({ kind: "remove", projectId: project.projectId }),
-      capable.emitProjectUpdate({ kind: "upsert", project }),
-      capable.emitProjectUpdate({ kind: "remove", projectId: project.projectId }),
-    ]);
+    // emitProjectUpdate is async (pas-2KY5X.28's descriptor build awaits a
+    // fresh .ait/ait.db check) — awaited in order here so both delivery and
+    // the upsert-then-remove ordering the assertion below checks are real,
+    // not accidental from these all resolving before the next tick.
+    await legacy.emitProjectUpdate({ kind: "upsert", project });
+    await legacy.emitProjectUpdate({ kind: "remove", projectId: project.projectId });
+    await capable.emitProjectUpdate({ kind: "upsert", project });
+    await capable.emitProjectUpdate({ kind: "remove", projectId: project.projectId });
 
     expect(legacyMessages).toEqual([]);
     expect(capableMessages.map((message) => SessionOutboundMessageSchema.parse(message))).toEqual([
@@ -346,6 +348,9 @@ describe("wire compatibility", () => {
             projectIconRevision: "automatic:none:v1",
             projectRootPath: "/tmp/project",
             projectKind: "git",
+            // rootPath doesn't exist on disk in this fixture, so the fresh
+            // `.ait/ait.db` check (pas-2KY5X.28) correctly reports false.
+            aitInitialized: false,
           },
         },
       },

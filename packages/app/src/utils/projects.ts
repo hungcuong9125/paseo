@@ -26,6 +26,9 @@ export interface ProjectHostEntry {
   githubRuntime?: WorkspaceDescriptor["githubRuntime"];
   customIconRevision?: string | null;
   iconRevision?: string;
+  // From ProjectDescriptor.aitInitialized (pas-2KY5X.28) — undefined means
+  // "unknown", never treat it as false. See that field's own doc comment.
+  aitInitialized?: boolean;
 }
 
 export interface ProjectSummary {
@@ -92,6 +95,8 @@ interface HostGroup {
   // Repo root for a project parent that has no workspaces yet. Without it the
   // host's repoRoot resolves to "" and the project reads as non-editable.
   fallbackRepoRoot: string;
+  // See ProjectHostEntry.aitInitialized.
+  aitInitialized?: boolean;
 }
 
 interface ProjectGroup {
@@ -162,6 +167,7 @@ function toHostEntry(group: HostGroup): ProjectHostEntry {
     githubRuntime: canonical?.githubRuntime,
     customIconRevision: canonical?.projectCustomIconRevision ?? group.customIconRevision,
     iconRevision: group.iconRevision,
+    aitInitialized: group.aitInitialized,
   };
 }
 
@@ -196,6 +202,9 @@ function addHostProjects(
   const repoRootByProjectId = new Map(
     host.projects.map((project) => [project.projectId, project.projectRootPath]),
   );
+  const aitInitializedByProjectId = new Map(
+    host.projects.map((project) => [project.projectId, project.aitInitialized]),
+  );
 
   for (const hostProject of hostProjects) {
     const placement = hostProject.hosts.find((entry) => entry.serverId === host.serverId);
@@ -228,6 +237,7 @@ function addHostProjects(
         customIconRevision: placement.customIconRevision,
         iconRevision: placement.iconRevision,
         fallbackRepoRoot: repoRootByProjectId.get(projectId) ?? "",
+        aitInitialized: aitInitializedByProjectId.get(projectId),
       });
     }
   }
