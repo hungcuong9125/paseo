@@ -952,6 +952,8 @@ export class VoiceAssistantWebSocketServer {
         });
       }) ?? null;
 
+    // Descriptors can outlive tracker subscriptions, so every active project
+    // needs a root watch to publish external init and deletion transitions.
     const projects = await this.projectRegistry.list();
     await Promise.all(
       projects

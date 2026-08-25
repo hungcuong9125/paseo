@@ -57,6 +57,21 @@ describe("checkAitInitialized", () => {
     await expect(checkAitInitialized(root)).resolves.toBe(false);
   });
 
+  it("retries a non-Git root after a repository is created", async () => {
+    const root = makeProjectRoot();
+    const child = join(root, "packages", "server");
+    mkdirSync(child, { recursive: true });
+
+    await expect(checkAitInitialized(child)).resolves.toBe(false);
+
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    mkdirSync(join(root, ".ait"));
+    writeFileSync(join(root, ".ait", "ait.db"), "");
+
+    await expect(resolveAitRootPath(child)).resolves.toBe(root);
+    await expect(checkAitInitialized(child)).resolves.toBe(true);
+  });
+
   it("returns false when .ait exists but ait.db doesn't — a bare .ait/ dir is not actually initialised", async () => {
     const root = makeProjectRoot();
     mkdirSync(join(root, ".ait"));

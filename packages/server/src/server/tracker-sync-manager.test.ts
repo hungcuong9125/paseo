@@ -25,13 +25,23 @@ const TRACKER = {
 
 function createHarness(options?: {
   aitInitialized?: boolean;
+  aitDatabaseResults?: boolean[];
+  observerSubscribeFailures?: number;
   onAitInitializedChanged?: (projectId: string) => void | Promise<void>;
 }) {
   let aitInitialized = options?.aitInitialized ?? true;
+  const aitDatabaseResults = [...(options?.aitDatabaseResults ?? [])];
+  let observerSubscribeFailures = options?.observerSubscribeFailures ?? 0;
   let callback: FileObserverCallback | null = null;
+  let subscribeCount = 0;
   let unsubscribeCount = 0;
   const observer: FileObserver = {
     async subscribe(_directory, next) {
+      subscribeCount += 1;
+      if (observerSubscribeFailures > 0) {
+        observerSubscribeFailures -= 1;
+        throw new Error("observer unavailable");
+      }
       callback = next;
       const subscription: FileObserverSubscription = {
         updateIgnore: async () => {},
@@ -92,7 +102,7 @@ function createHarness(options?: {
     projectRegistry,
     fileObserver: observer,
     directoryExists: async () => true,
-    aitDatabaseExists: async () => aitInitialized,
+    aitDatabaseExists: async () => aitDatabaseResults.shift() ?? aitInitialized,
     onAitInitializedChanged: options?.onAitInitializedChanged,
   });
   return {
@@ -106,6 +116,9 @@ function createHarness(options?: {
     },
     get unsubscribeCount() {
       return unsubscribeCount;
+    },
+    get subscribeCount() {
+      return subscribeCount;
     },
   };
 }
@@ -253,6 +266,43 @@ describe("TrackerSyncManager", () => {
     await vi.advanceTimersByTimeAsync(150);
     expect(changes).toEqual([PROJECT_ID, PROJECT_ID]);
 
+    await harness.manager.close();
+  });
+
+  it("reconciles a database that appears before the first initialization sample", async () => {
+    const changes: string[] = [];
+    const harness = createHarness({
+      aitInitialized: true,
+      aitDatabaseResults: [false, true],
+      onAitInitializedChanged: (projectId) => {
+        changes.push(projectId);
+      },
+    });
+
+    await harness.manager.watchProject(PROJECT_ID);
+
+    expect(changes).toEqual([PROJECT_ID]);
+    await harness.manager.close();
+  });
+
+  it("probes initialization independently when observer attachment fails", async () => {
+    vi.useFakeTimers();
+    const changes: string[] = [];
+    const harness = createHarness({
+      aitInitialized: true,
+      aitDatabaseResults: [false, true],
+      observerSubscribeFailures: 1,
+      onAitInitializedChanged: (projectId) => {
+        changes.push(projectId);
+      },
+    });
+
+    await harness.manager.watchProject(PROJECT_ID);
+    expect(changes).toEqual([PROJECT_ID]);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(harness.subscribeCount).toBe(2);
+    expect(changes).toEqual([PROJECT_ID]);
     await harness.manager.close();
   });
 

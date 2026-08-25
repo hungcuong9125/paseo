@@ -152,12 +152,14 @@ export class TrackerSyncManager {
 
   async watchProject(projectId: string): Promise<void> {
     const rootPath = await this.resolveRoot(projectId);
+    const initialized = await this.aitDatabaseExists(rootPath);
     const root = this.getOrCreateRoot(rootPath);
     this.addProjectId(rootPath, projectId);
     const projectIds = this.globalProjectIdsByRoot.get(rootPath) ?? new Set<string>();
     projectIds.add(projectId);
     this.globalProjectIdsByRoot.set(rootPath, projectIds);
     this.cancelIdleDisposal(rootPath);
+    root.seedInitializationState(initialized);
     await root.start();
   }
 
@@ -186,6 +188,7 @@ export class TrackerSyncManager {
     const root = this.getOrCreateRoot(rootPath);
     this.addProjectId(rootPath, input.projectId);
     this.cancelIdleDisposal(rootPath);
+    await this.seedRootInitializationState(root, rootPath);
     const variant = root.getVariant(input.all === true, () => this.allocateEpoch());
     variant.addListener(input.subscriptionId, input.projectId, input.listener);
     try {
@@ -212,6 +215,7 @@ export class TrackerSyncManager {
     const root = this.getOrCreateRoot(rootPath);
     this.addProjectId(rootPath, projectId);
     this.cancelIdleDisposal(rootPath);
+    await this.seedRootInitializationState(root, rootPath);
     const variant = root.getVariant(all, () => this.allocateEpoch());
     try {
       await root.start();
@@ -230,6 +234,7 @@ export class TrackerSyncManager {
     const root = this.getOrCreateRoot(rootPath);
     this.addProjectId(rootPath, projectId);
     this.cancelIdleDisposal(rootPath);
+    await this.seedRootInitializationState(root, rootPath);
     const variant = root.getVariant(all, () => this.allocateEpoch());
     try {
       await root.start();
@@ -310,6 +315,10 @@ export class TrackerSyncManager {
     this.projectIdsByRoot.set(rootPath, projectIds);
   }
 
+  private async seedRootInitializationState(root: AitRootWatch, rootPath: string): Promise<void> {
+    root.seedInitializationState(await this.aitDatabaseExists(rootPath));
+  }
+
   private async notifyAitInitializationChanged(rootPath: string): Promise<void> {
     if (!this.onAitInitializedChanged) return;
     await Promise.all(
@@ -377,6 +386,10 @@ class AitRootWatch {
     private readonly onEmpty: () => void,
   ) {
     this.rootPath = rootPath;
+  }
+
+  seedInitializationState(initialized: boolean): void {
+    if (this.aitInitialized === null) this.aitInitialized = initialized;
   }
 
   get hasListeners(): boolean {
@@ -455,6 +468,7 @@ class AitRootWatch {
           const subscription = this.observerSubscription;
           this.observerSubscription = null;
           void subscription?.unsubscribe();
+          this.probeInitializationState();
           this.enterDegradedPolling();
           return;
         }
@@ -469,6 +483,7 @@ class AitRootWatch {
         await this.refreshActiveVariants();
       }
     } catch {
+      await this.refreshInitializationState().catch(() => undefined);
       this.enterDegradedPolling();
     }
   }
@@ -488,6 +503,10 @@ class AitRootWatch {
       void this.refreshActiveVariants();
     }, WATCH_RETRY_MS);
     (this.retryTimer as unknown as { unref?: () => void }).unref?.();
+  }
+
+  private probeInitializationState(): void {
+    void this.refreshInitializationState().catch(() => undefined);
   }
 
   private scheduleRefresh(): void {
@@ -510,6 +529,7 @@ class AitRootWatch {
     const next = await this.aitDatabaseExists(this.rootPath);
     if (this.aitInitialized === null) {
       this.aitInitialized = next;
+      if (next) await this.onInitializationChange();
       return;
     }
     if (this.aitInitialized === next) return;
