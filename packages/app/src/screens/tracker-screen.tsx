@@ -59,6 +59,7 @@ import {
   DropdownMenuTrigger,
   type DropdownMenuTriggerState,
 } from "@/components/ui/dropdown-menu";
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { SkeletonPulse, useSkeletonPulse } from "@/components/ui/skeleton";
@@ -109,7 +110,10 @@ type ViewMode = "list" | "kanban";
 // board's `kanbanTrackers` and the List view's `visibleTrackers` (see the
 // task paseo-PQNMc.2 spec) — filtering happens here, not inside
 // buildTrackerBoard, which stays status-only per its own docstring. Default is
-// "task" (preserves the board's original default; the List view inherits it).
+// "all", for the same reason listStatFilter/kanbanStatFilter below default to
+// "all": a project whose open work happens to be entirely epics/initiatives
+// must show that on first load, not read as empty because the type filter
+// silently narrowed to "task" underneath it (pas-2KY5X.52).
 type TypeFilter = TrackerType | "all";
 
 const TYPE_FILTER_DEFS: ReadonlyArray<{ value: TypeFilter; labelKey: string }> = [
@@ -468,9 +472,10 @@ function TrackerScreenContent(): ReactElement {
   // everything rather than a filtered subset that reads as "missing items".
   const [listStatFilter, setListStatFilter] = useState<StatFilter>("all");
   const [kanbanStatFilter, setKanbanStatFilter] = useState<StatFilter>("all");
-  // Shared by BOTH views: which tracker granularities are included. Defaults to
-  // "task" (preserves the board's original default; the List view inherits it).
-  const [typeFilter, setTypeFilter] = useState<TypeFilter>("task");
+  // Shared by BOTH views: which tracker granularities are included. Defaults
+  // to "all", matching listStatFilter/kanbanStatFilter above — see the
+  // TypeFilter comment for why (pas-2KY5X.52).
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   // Desktop/tablet defaults to Kanban and remembers the last choice across a
   // reload (sessionStorage — see readStoredViewMode); compact always mounts on
   // List and never reads or writes that memory, so switching view on a phone
@@ -790,6 +795,15 @@ function TrackerScreenContent(): ReactElement {
   const handleTypeFilterChange = useCallback((value: TypeFilter) => {
     setTypeFilter(value);
   }, []);
+  // One recovery action for "the active filters hid everything the project
+  // has" (pas-2KY5X.52): resets every filter that can narrow the fetch, in
+  // both views at once, so the same button works regardless of which view
+  // is on screen when the user reaches for it.
+  const handleClearFilters = useCallback(() => {
+    setTypeFilter("all");
+    setListStatFilter("all");
+    setKanbanStatFilter("all");
+  }, []);
   const effectiveStatFilter = useMemo(
     () => (viewMode === "kanban" ? kanbanStatFilter : listStatFilter),
     [viewMode, kanbanStatFilter, listStatFilter],
@@ -1040,6 +1054,7 @@ function TrackerScreenContent(): ReactElement {
         viewMode={viewMode}
         typeFilter={typeFilter}
         onTypeFilterChange={handleTypeFilterChange}
+        onClearFilters={handleClearFilters}
         searchInput={searchInput}
         onSearchInputChange={setSearchInput}
         activeSearch={search}
@@ -1699,6 +1714,7 @@ function TrackerScreenBody({
   viewMode,
   typeFilter,
   onTypeFilterChange,
+  onClearFilters,
   searchInput,
   onSearchInputChange,
   activeSearch,
@@ -1765,6 +1781,10 @@ function TrackerScreenBody({
   viewMode: ViewMode;
   typeFilter: TypeFilter;
   onTypeFilterChange: (value: TypeFilter) => void;
+  /** Resets typeFilter and both views' statFilter to "all" — the one action
+   * offered when the active filters hid every tracker the project has
+   * (pas-2KY5X.52). */
+  onClearFilters: () => void;
   searchInput: string;
   activeSearch: string;
   onSearchInputChange: (value: string) => void;
@@ -1811,6 +1831,19 @@ function TrackerScreenBody({
   }
 
   const isLoading = bodyState.kind === "loading";
+  const visibleCount = viewMode === "kanban" ? kanbanTrackers.length : trackers.length;
+  // statsCounts is never narrowed by typeFilter/statFilter — unlike trackers
+  // and kanbanTrackers, it always reports the project's real total. A nonzero
+  // total here while nothing is visible means the active filters hid
+  // everything the project has, not that the project is actually empty
+  // (pas-2KY5X.52). Search takes priority over this: TrackerListEmptyState's
+  // "No results for ..." already explains that case.
+  const hasFilteredOutTrackers =
+    !isLoading &&
+    activeSearch.length === 0 &&
+    statsCounts !== null &&
+    statsCounts.all.total > 0 &&
+    visibleCount === 0;
 
   const toolbar = (
     <TrackersToolbar
@@ -1870,33 +1903,41 @@ function TrackerScreenBody({
     // its own vertical ScrollView and needs a bounded-height parent (flex: 1),
     // which a ScrollView's content container can't give a child.
     //
-    // No "empty" branch here on purpose — a board with nothing in it is five
-    // empty lanes, not a replacement screen, and swapping the lanes out for a
-    // centred message would move the toolbar every time a filter matched
-    // nothing.
+    // No "empty" branch here on purpose — a board with genuinely nothing in
+    // it is five empty lanes, not a replacement screen, and swapping the
+    // lanes out for a centred message would move the toolbar every time a
+    // filter matched nothing. hasFilteredOutTrackers is a different case: the
+    // project isn't empty, the active filters just hid everything it has
+    // (pas-2KY5X.52) — that gets a banner ABOVE the still-mounted lanes
+    // instead, so the toolbar and lane layout stay put.
     return (
       <View style={styles.kanbanContainer} testID="trackers-kanban">
         {toolbar}
         {blocked ?? (
-          <TrackerKanbanBoard
-            availableWidth={contentWidth}
-            isLoading={isLoading}
-            trackers={kanbanTrackers}
-            filter={statFilter}
-            readyIds={kanbanReadyIds}
-            laneTotals={laneTotals}
-            laneHasMore={laneHasMore}
-            laneLoadingMore={laneLoadingMore}
-            onLoadMore={onKanbanLoadMore}
-            onTransition={onKanbanTransition}
-            onTransitionError={onKanbanTransitionError}
-            onEdit={onKanbanEdit}
-            onDelete={onKanbanDelete}
-            onDeleteError={onKanbanDeleteError}
-            getHasChildren={getKanbanHasChildren}
-            getProjectLabel={getKanbanProjectLabel}
-            onCardPress={onKanbanCardPress}
-          />
+          <>
+            {hasFilteredOutTrackers ? (
+              <TrackerFilteredEmptyBanner onClearFilters={onClearFilters} />
+            ) : null}
+            <TrackerKanbanBoard
+              availableWidth={contentWidth}
+              isLoading={isLoading}
+              trackers={kanbanTrackers}
+              filter={statFilter}
+              readyIds={kanbanReadyIds}
+              laneTotals={laneTotals}
+              laneHasMore={laneHasMore}
+              laneLoadingMore={laneLoadingMore}
+              onLoadMore={onKanbanLoadMore}
+              onTransition={onKanbanTransition}
+              onTransitionError={onKanbanTransitionError}
+              onEdit={onKanbanEdit}
+              onDelete={onKanbanDelete}
+              onDeleteError={onKanbanDeleteError}
+              getHasChildren={getKanbanHasChildren}
+              getProjectLabel={getKanbanProjectLabel}
+              onCardPress={onKanbanCardPress}
+            />
+          </>
         )}
       </View>
     );
@@ -1908,7 +1949,9 @@ function TrackerScreenBody({
   } else if (isLoading) {
     listBody = <TrackerListSkeleton />;
   } else if (bodyState.kind === "empty") {
-    listBody = (
+    listBody = hasFilteredOutTrackers ? (
+      <TrackerFilteredEmptyBanner onClearFilters={onClearFilters} />
+    ) : (
       <TrackerListEmptyState
         activeSearch={activeSearch}
         isSearchLoading={isSearchLoading}
@@ -1972,6 +2015,37 @@ function TrackerScreenBody({
       />
       {listBody}
     </ScrollView>
+  );
+}
+
+// Shared by both views (pas-2KY5X.52): the active type/priority/status
+// filters hid every tracker the project has. Rendered as a page-level
+// <Alert> per docs/design.md §11 ("recoverable errors that need a small
+// visible block on the page"), not a full-screen replacement — Kanban keeps
+// its lanes mounted below this, and List has nothing else to show in its
+// place.
+function TrackerFilteredEmptyBanner({
+  onClearFilters,
+}: {
+  onClearFilters: () => void;
+}): ReactElement {
+  return (
+    <View style={styles.filterEmptyBanner} testID="trackers-filtered-empty">
+      <Alert
+        variant="info"
+        title="No items match your filters"
+        description="This project has items outside the current type or priority filter."
+      >
+        <Button
+          variant="outline"
+          size="sm"
+          onPress={onClearFilters}
+          testID="trackers-clear-filters"
+        >
+          Clear filters
+        </Button>
+      </Alert>
+    </View>
   );
 }
 
@@ -2565,6 +2639,13 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
     textAlign: "center",
+  },
+  // Same horizontal rhythm as toolbarRow/searchRow below — kanbanContainer
+  // carries no padding of its own, and inside the List ScrollView this sits
+  // where TrackerTable's own row padding would otherwise start.
+  filterEmptyBanner: {
+    paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
+    paddingVertical: theme.spacing[4],
   },
   // Same padding tokens as sessions-screen.tsx's filterContainer — rendered
   // inside the scrollable content, below the sticky toolbar and above
