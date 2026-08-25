@@ -612,14 +612,11 @@ describe("TrackerScreen kanban type filter", () => {
     expect(container?.querySelector('[data-testid="trackers-type-filter"]')).not.toBeNull();
   });
 
-  it("defaults to task-only trackers reaching the board on first Kanban render", () => {
+  it("defaults to every type reaching the board on first Kanban render (pas-2KY5X.52)", () => {
     render();
     switchToKanban();
 
-    expect(lastKanbanBoardProps.current?.trackers).toHaveLength(1);
-    expect((lastKanbanBoardProps.current?.trackers[0] as AggregatedTracker | undefined)?.id).toBe(
-      "task-1",
-    );
+    expect(lastKanbanBoardProps.current?.trackers).toHaveLength(3);
 
     const control = container?.querySelector('[data-testid="trackers-type-filter"]');
     expect(control).not.toBeNull();
@@ -629,7 +626,7 @@ describe("TrackerScreen kanban type filter", () => {
     render();
     switchToKanban();
 
-    expect(lastKanbanBoardProps.current?.trackers).toHaveLength(1);
+    expect(lastKanbanBoardProps.current?.trackers).toHaveLength(3);
 
     const epicOption = container?.querySelector<HTMLElement>(
       '[data-testid="trackers-type-filter-epic"]',
@@ -659,9 +656,10 @@ describe("TrackerScreen kanban type filter", () => {
     render();
     switchToKanban();
 
-    // Default is "task" — passed straight through to the hook's options, not
-    // applied as a client-side .filter() over an unfiltered fetch.
-    expect(lastProjectDataOptions.current?.type).toBe("task");
+    // Default is "all" (pas-2KY5X.52) — no type constraint, passed straight
+    // through to the hook's options as undefined, not applied as a
+    // client-side .filter() over an unfiltered fetch.
+    expect(lastProjectDataOptions.current?.type).toBeUndefined();
 
     const epicOption = container?.querySelector<HTMLElement>(
       '[data-testid="trackers-type-filter-epic"]',
@@ -728,10 +726,10 @@ describe("TrackerScreen kanban type filter", () => {
     render();
     switchToKanban();
 
-    // Default type filter is "task" and priority is unfiltered — only task-1
-    // (mixedTrackers' single task, default priority P2) reaches the board.
+    // Default type filter is "all" (pas-2KY5X.52) and priority is unfiltered
+    // — every mixedTrackers item is P2, so all three reach the board.
     expect(lastProjectDataOptions.current?.priority).toBeUndefined();
-    expect(lastKanbanBoardProps.current?.trackers).toHaveLength(1);
+    expect(lastKanbanBoardProps.current?.trackers).toHaveLength(3);
 
     const p2Button = container?.querySelector<HTMLElement>(
       '[data-testid="trackers-kanban-priority-p2"]',
@@ -741,7 +739,7 @@ describe("TrackerScreen kanban type filter", () => {
       p2Button.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     });
     expect(lastProjectDataOptions.current?.priority).toBe("P2");
-    expect(lastKanbanBoardProps.current?.trackers).toHaveLength(1);
+    expect(lastKanbanBoardProps.current?.trackers).toHaveLength(3);
 
     const p1Button = container?.querySelector<HTMLElement>(
       '[data-testid="trackers-kanban-priority-p1"]',
@@ -751,9 +749,9 @@ describe("TrackerScreen kanban type filter", () => {
       p1Button.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     });
     expect(lastProjectDataOptions.current?.priority).toBe("P1");
-    // task-1 is P2, not P1 — the mock hook's server-side narrowing (mirroring
-    // the real priority push) drops it from the fetch itself, proof this
-    // isn't still a client-side-only buildTrackerBoard dim.
+    // None of mixedTrackers is P1 — the mock hook's server-side narrowing
+    // (mirroring the real priority push) drops them all from the fetch
+    // itself, proof this isn't still a client-side-only buildTrackerBoard dim.
     expect(lastKanbanBoardProps.current?.trackers).toHaveLength(0);
 
     const allButton = container?.querySelector<HTMLElement>(
@@ -785,8 +783,9 @@ describe("TrackerScreen kanban type filter", () => {
         (listTracker) => (listTracker as AggregatedTracker).id,
       );
 
-    // Default shared state is "task" — the List set mirrors the board's default.
-    expect(listTrackerIds()).toEqual(["task-1"]);
+    // Default shared state is "all" (pas-2KY5X.52) — sorted by id: epic-1 <
+    // initiative-1 < task-1.
+    expect(listTrackerIds()).toEqual(["epic-1", "initiative-1", "task-1"]);
 
     const epicOption = container?.querySelector<HTMLElement>(
       '[data-testid="trackers-type-filter-epic"]',
@@ -804,6 +803,197 @@ describe("TrackerScreen kanban type filter", () => {
 
     // Same project, so orderedTrackers sorts by id: epic-1 < initiative-1 < task-1.
     expect(listTrackerIds()).toEqual(["epic-1", "initiative-1", "task-1"]);
+  });
+});
+
+describe("TrackerScreen filtered-empty state (pas-2KY5X.52)", () => {
+  let container: HTMLElement | null = null;
+  let root: Root | null = null;
+
+  // The exact shape reported against the human's real databases
+  // (tieuthuong-ai, paseo-demonthorn, digital_operating): open work exists,
+  // but none of it is type "task".
+  const epicOnlyTrackers: AggregatedTracker[] = [
+    tracker({ id: "epic-1", type: "epic", title: "Epic one" }),
+    tracker({ id: "initiative-1", type: "initiative", title: "Initiative one" }),
+  ];
+
+  beforeEach(() => {
+    vi.stubGlobal("React", React);
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    setProjectsState({});
+    setProjectDataState({ trackers: epicOnlyTrackers });
+    // statsCounts is what tells the screen the project isn't actually
+    // empty — total 2 (one epic, one initiative), zero task, matching
+    // epicOnlyTrackers exactly.
+    setStatsState({
+      counts: {
+        all: makeStatsBucket(2),
+        task: makeStatsBucket(0),
+        epic: makeStatsBucket(1),
+        initiative: makeStatsBucket(1),
+      },
+    });
+    lastKanbanBoardProps.current = null;
+    lastListTableProps.current = null;
+  });
+
+  afterEach(() => {
+    if (root) {
+      act(() => {
+        root?.unmount();
+      });
+    }
+    root = null;
+    container?.remove();
+    container = null;
+    vi.unstubAllGlobals();
+  });
+
+  function render() {
+    act(() => {
+      root?.render(React.createElement(TrackerScreen));
+    });
+  }
+
+  function switchToKanban() {
+    const kanbanToggle = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-view-kanban"]',
+    );
+    if (!kanbanToggle) throw new Error("Expected the Kanban view toggle to render");
+    act(() => {
+      kanbanToggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+  }
+
+  function switchToList() {
+    const listToggle = container?.querySelector<HTMLElement>('[data-testid="trackers-view-list"]');
+    if (!listToggle) throw new Error("Expected the List view toggle to render");
+    act(() => {
+      listToggle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+  }
+
+  function selectTaskTypeFilter() {
+    const option = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-type-filter-task"]',
+    );
+    if (!option) throw new Error("Expected the Tasks type filter option to render");
+    act(() => {
+      option.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+  }
+
+  it("defaults to type 'all', so a project whose work is entirely epic/initiative is visible on first Kanban render", () => {
+    render();
+    switchToKanban();
+
+    expect(lastKanbanBoardProps.current?.trackers).toHaveLength(2);
+    expect(container?.querySelector('[data-testid="trackers-filtered-empty"]')).toBeNull();
+  });
+
+  it("narrowing the type filter to zero matches shows the filtered-empty banner above the still-mounted board, in Kanban", () => {
+    render();
+    switchToKanban();
+    selectTaskTypeFilter();
+
+    // The board stays mounted with its own (empty) trackers — no full-screen
+    // replacement, per the Kanban "no empty branch" design.
+    expect(lastKanbanBoardProps.current?.trackers).toHaveLength(0);
+    expect(container?.querySelector('[data-testid="mock-kanban-board"]')).not.toBeNull();
+    expect(container?.querySelector('[data-testid="trackers-filtered-empty"]')).not.toBeNull();
+
+    const clearButton = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-clear-filters"]',
+    );
+    if (!clearButton) throw new Error("Expected the Clear filters button to render");
+    act(() => {
+      clearButton.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(lastKanbanBoardProps.current?.trackers).toHaveLength(2);
+    expect(container?.querySelector('[data-testid="trackers-filtered-empty"]')).toBeNull();
+  });
+
+  it("narrowing the type filter to zero matches shows the filtered-empty banner instead of the generic empty state, in List", () => {
+    render();
+    switchToList();
+    selectTaskTypeFilter();
+
+    expect(container?.querySelector('[data-testid="mock-tracker-table"]')).toBeNull();
+    expect(container?.querySelector('[data-testid="trackers-filtered-empty"]')).not.toBeNull();
+    expect(container?.querySelector('[data-testid="trackers-empty"]')).toBeNull();
+
+    const clearButton = container?.querySelector<HTMLElement>(
+      '[data-testid="trackers-clear-filters"]',
+    );
+    if (!clearButton) throw new Error("Expected the Clear filters button to render");
+    act(() => {
+      clearButton.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container?.querySelector('[data-testid="trackers-filtered-empty"]')).toBeNull();
+  });
+
+  it("does not claim filters hid anything while stats is still refetching after a mutation (pas-2KY5X.52 corrections pass)", () => {
+    // Models the instant right after deleting the last visible tracker with
+    // no filters active: projectData's local removal already emptied
+    // trackers, but stats.refetch() (triggered by the same handler) hasn't
+    // resolved yet, so statsCounts is still the pre-delete, nonzero total.
+    // No filters are narrowing anything here — the two numbers just aren't
+    // comparable yet, and the banner must not claim otherwise.
+    setProjectDataState({ trackers: [] });
+    setStatsState({
+      counts: {
+        all: makeStatsBucket(1),
+        task: makeStatsBucket(1),
+        epic: makeStatsBucket(0),
+        initiative: makeStatsBucket(0),
+      },
+      isLoading: true,
+    });
+    render();
+    switchToKanban();
+
+    expect(container?.querySelector('[data-testid="trackers-filtered-empty"]')).toBeNull();
+
+    switchToList();
+    expect(container?.querySelector('[data-testid="trackers-filtered-empty"]')).toBeNull();
+  });
+
+  it("does not claim filters hid anything when a project's list RPC failed while its stats RPC succeeded, in all-projects mode (pas-2KY5X.52 corrections pass)", () => {
+    // All-projects mode: a per-project project.tracker.list failure never
+    // becomes a full-screen `blocked` state (that's a banner elsewhere, the
+    // rest of the board still renders) — the visible set is empty for a
+    // reason that has nothing to do with any filter, even though the
+    // separate stats RPC for the same project succeeded with a real total.
+    const listError: TrackerProjectError = {
+      serverId: "host-a",
+      serverName: "alpha",
+      projectId: "project-a",
+      projectName: "Project",
+      message: "connection reset",
+      code: "unknown",
+    };
+    setProjectDataState({ trackers: [], projectErrors: [listError] });
+    setStatsState({
+      counts: {
+        all: makeStatsBucket(1),
+        task: makeStatsBucket(1),
+        epic: makeStatsBucket(0),
+        initiative: makeStatsBucket(0),
+      },
+    });
+    render();
+    switchToKanban();
+
+    expect(container?.querySelector('[data-testid="trackers-filtered-empty"]')).toBeNull();
+
+    switchToList();
+    expect(container?.querySelector('[data-testid="trackers-filtered-empty"]')).toBeNull();
   });
 });
 

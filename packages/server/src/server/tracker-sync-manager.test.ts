@@ -23,11 +23,25 @@ const TRACKER = {
   parentId: null,
 };
 
-function createHarness() {
+function createHarness(options?: {
+  aitInitialized?: boolean;
+  aitDatabaseResults?: boolean[];
+  observerSubscribeFailures?: number;
+  onAitInitializedChanged?: (projectId: string) => void | Promise<void>;
+}) {
+  let aitInitialized = options?.aitInitialized ?? true;
+  const aitDatabaseResults = [...(options?.aitDatabaseResults ?? [])];
+  let observerSubscribeFailures = options?.observerSubscribeFailures ?? 0;
   let callback: FileObserverCallback | null = null;
+  let subscribeCount = 0;
   let unsubscribeCount = 0;
   const observer: FileObserver = {
     async subscribe(_directory, next) {
+      subscribeCount += 1;
+      if (observerSubscribeFailures > 0) {
+        observerSubscribeFailures -= 1;
+        throw new Error("observer unavailable");
+      }
       callback = next;
       const subscription: FileObserverSubscription = {
         updateIgnore: async () => {},
@@ -88,6 +102,8 @@ function createHarness() {
     projectRegistry,
     fileObserver: observer,
     directoryExists: async () => true,
+    aitDatabaseExists: async () => aitDatabaseResults.shift() ?? aitInitialized,
+    onAitInitializedChanged: options?.onAitInitializedChanged,
   });
   return {
     manager,
@@ -95,8 +111,14 @@ function createHarness() {
       return listCalls;
     },
     emitChange: () => callback?.(null, [{ path: `${ROOT}/.ait/ait.db`, type: "update" }]),
+    setAitInitialized: (value: boolean) => {
+      aitInitialized = value;
+    },
     get unsubscribeCount() {
       return unsubscribeCount;
+    },
+    get subscribeCount() {
+      return subscribeCount;
     },
   };
 }
@@ -219,6 +241,91 @@ describe("TrackerSyncManager", () => {
     await harness.manager.getSnapshot(PROJECT_ID, true);
 
     expect(harness.listCalls).toBe(2);
+    await harness.manager.close();
+  });
+
+  it("notifies descriptor owners when the AIT database appears or disappears", async () => {
+    vi.useFakeTimers();
+    const changes: string[] = [];
+    const harness = createHarness({
+      aitInitialized: false,
+      onAitInitializedChanged: async (projectId) => {
+        changes.push(projectId);
+      },
+    });
+
+    await harness.manager.watchProject(PROJECT_ID);
+
+    harness.setAitInitialized(true);
+    harness.emitChange();
+    await vi.advanceTimersByTimeAsync(150);
+    expect(changes).toEqual([PROJECT_ID]);
+
+    harness.setAitInitialized(false);
+    harness.emitChange();
+    await vi.advanceTimersByTimeAsync(150);
+    expect(changes).toEqual([PROJECT_ID, PROJECT_ID]);
+
+    await harness.manager.close();
+  });
+
+  it("does not attach a global watcher for an initialized project", async () => {
+    const harness = createHarness({ aitInitialized: true });
+
+    await harness.manager.watchProject(PROJECT_ID);
+
+    expect(harness.subscribeCount).toBe(0);
+    await harness.manager.close();
+  });
+
+  it("releases the global watcher after initialization is confirmed", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness({ aitInitialized: false });
+
+    await harness.manager.watchProject(PROJECT_ID);
+    harness.setAitInitialized(true);
+    harness.emitChange();
+    await vi.advanceTimersByTimeAsync(150);
+    await vi.advanceTimersByTimeAsync(TRACKER_ROOT_IDLE_TTL_MS);
+
+    expect(harness.unsubscribeCount).toBe(1);
+    await harness.manager.close();
+  });
+
+  it("reconciles a database that appears before the first initialization sample", async () => {
+    const changes: string[] = [];
+    const harness = createHarness({
+      aitInitialized: true,
+      aitDatabaseResults: [false, true],
+      onAitInitializedChanged: (projectId) => {
+        changes.push(projectId);
+      },
+    });
+
+    await harness.manager.watchProject(PROJECT_ID);
+
+    expect(changes).toEqual([PROJECT_ID]);
+    await harness.manager.close();
+  });
+
+  it("probes initialization independently when observer attachment fails", async () => {
+    vi.useFakeTimers();
+    const changes: string[] = [];
+    const harness = createHarness({
+      aitInitialized: true,
+      aitDatabaseResults: [false, true],
+      observerSubscribeFailures: 1,
+      onAitInitializedChanged: (projectId) => {
+        changes.push(projectId);
+      },
+    });
+
+    await harness.manager.watchProject(PROJECT_ID);
+    expect(changes).toEqual([PROJECT_ID]);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(harness.subscribeCount).toBe(2);
+    expect(changes).toEqual([PROJECT_ID]);
     await harness.manager.close();
   });
 

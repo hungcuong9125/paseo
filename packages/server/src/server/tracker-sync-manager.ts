@@ -8,6 +8,7 @@ import {
   type FileObserver,
   type FileObserverSubscription,
 } from "./file-observer/index.js";
+import { resolveAitRootPath } from "./ait-init-status.js";
 import type { ProjectRegistry } from "./workspace-registry.js";
 
 export interface TrackerSnapshot {
@@ -24,6 +25,8 @@ export interface TrackerSyncManagerOptions {
   projectRegistry: Pick<ProjectRegistry, "get">;
   fileObserver?: FileObserver;
   directoryExists?: (directory: string) => Promise<boolean>;
+  aitDatabaseExists?: (rootPath: string) => Promise<boolean>;
+  onAitInitializedChanged?: (projectId: string) => void | Promise<void>;
 }
 
 export type TrackerSnapshotListener = (snapshot: TrackerSnapshot, projectId: string) => void;
@@ -111,7 +114,11 @@ export class TrackerSyncManager {
   private readonly projectRegistry: Pick<ProjectRegistry, "get">;
   private readonly fileObserver: FileObserver;
   private readonly directoryExists: (directory: string) => Promise<boolean>;
+  private readonly aitDatabaseExists: (rootPath: string) => Promise<boolean>;
+  private readonly onAitInitializedChanged: ((projectId: string) => void | Promise<void>) | null;
   private readonly roots = new Map<string, AitRootWatch>();
+  private readonly projectIdsByRoot = new Map<string, Set<string>>();
+  private readonly globalProjectIdsByRoot = new Map<string, Set<string>>();
   private readonly idleDisposalTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly idleDisposals = new Set<Promise<void>>();
   private nextEpoch = 1;
@@ -130,6 +137,53 @@ export class TrackerSyncManager {
           return false;
         }
       });
+    this.aitDatabaseExists =
+      options.aitDatabaseExists ??
+      (async (rootPath) => {
+        try {
+          await access(join(rootPath, ".ait", "ait.db"));
+          return true;
+        } catch {
+          return false;
+        }
+      });
+    this.onAitInitializedChanged = options.onAitInitializedChanged ?? null;
+  }
+
+  async watchProject(projectId: string): Promise<void> {
+    const rootPath = await this.resolveRoot(projectId);
+    const initialized = await this.aitDatabaseExists(rootPath);
+    const existingRoot = this.roots.get(rootPath);
+    if (initialized) {
+      if (existingRoot) {
+        existingRoot.seedInitializationState(true);
+        await this.removeGlobalWatch(rootPath);
+      }
+      return;
+    }
+    const root = this.getOrCreateRoot(rootPath);
+    this.addProjectId(rootPath, projectId);
+    const projectIds = this.globalProjectIdsByRoot.get(rootPath) ?? new Set<string>();
+    projectIds.add(projectId);
+    this.globalProjectIdsByRoot.set(rootPath, projectIds);
+    this.cancelIdleDisposal(rootPath);
+    root.seedInitializationState(false);
+    await root.start();
+  }
+
+  async unwatchProject(projectId: string): Promise<void> {
+    for (const [rootPath, projectIds] of this.projectIdsByRoot) {
+      if (!projectIds.delete(projectId)) continue;
+      const globalProjectIds = this.globalProjectIdsByRoot.get(rootPath);
+      globalProjectIds?.delete(projectId);
+      if (globalProjectIds?.size === 0) this.globalProjectIdsByRoot.delete(rootPath);
+      if (projectIds.size === 0) {
+        this.projectIdsByRoot.delete(rootPath);
+        const root = this.roots.get(rootPath);
+        if (root) await this.maybeDisposeRoot(root);
+      }
+      return;
+    }
   }
 
   async subscribe(input: {
@@ -139,20 +193,10 @@ export class TrackerSyncManager {
     listener: TrackerSnapshotListener;
   }): Promise<TrackerSnapshot> {
     const rootPath = await this.resolveRoot(input.projectId);
-    let root = this.roots.get(rootPath);
-    if (!root) {
-      root = new AitRootWatch(
-        rootPath,
-        this.fileObserver,
-        this.aitService,
-        this.directoryExists,
-        () => {
-          this.roots.delete(rootPath);
-        },
-      );
-      this.roots.set(rootPath, root);
-    }
+    const root = this.getOrCreateRoot(rootPath);
+    this.addProjectId(rootPath, input.projectId);
     this.cancelIdleDisposal(rootPath);
+    await this.seedRootInitializationState(root, rootPath);
     const variant = root.getVariant(input.all === true, () => this.allocateEpoch());
     variant.addListener(input.subscriptionId, input.projectId, input.listener);
     try {
@@ -176,20 +220,10 @@ export class TrackerSyncManager {
 
   async list(projectId: string, all = false): Promise<TrackerSnapshot> {
     const rootPath = await this.resolveRoot(projectId);
-    let root = this.roots.get(rootPath);
-    if (!root) {
-      root = new AitRootWatch(
-        rootPath,
-        this.fileObserver,
-        this.aitService,
-        this.directoryExists,
-        () => {
-          this.roots.delete(rootPath);
-        },
-      );
-      this.roots.set(rootPath, root);
-    }
+    const root = this.getOrCreateRoot(rootPath);
+    this.addProjectId(rootPath, projectId);
     this.cancelIdleDisposal(rootPath);
+    await this.seedRootInitializationState(root, rootPath);
     const variant = root.getVariant(all, () => this.allocateEpoch());
     try {
       await root.start();
@@ -205,20 +239,10 @@ export class TrackerSyncManager {
 
   async getSnapshot(projectId: string, all = true): Promise<TrackerSnapshot> {
     const rootPath = await this.resolveRoot(projectId);
-    let root = this.roots.get(rootPath);
-    if (!root) {
-      root = new AitRootWatch(
-        rootPath,
-        this.fileObserver,
-        this.aitService,
-        this.directoryExists,
-        () => {
-          this.roots.delete(rootPath);
-        },
-      );
-      this.roots.set(rootPath, root);
-    }
+    const root = this.getOrCreateRoot(rootPath);
+    this.addProjectId(rootPath, projectId);
     this.cancelIdleDisposal(rootPath);
+    await this.seedRootInitializationState(root, rootPath);
     const variant = root.getVariant(all, () => this.allocateEpoch());
     try {
       await root.start();
@@ -231,7 +255,7 @@ export class TrackerSyncManager {
   }
 
   async requestRefresh(rootPath: string): Promise<void> {
-    const root = this.roots.get(rootPath);
+    const root = this.roots.get(await resolveAitRootPath(rootPath));
     if (root) {
       await root.refreshActiveVariants();
     }
@@ -252,6 +276,8 @@ export class TrackerSyncManager {
       clearTimeout(timer);
     }
     this.idleDisposalTimers.clear();
+    this.projectIdsByRoot.clear();
+    this.globalProjectIdsByRoot.clear();
     await Promise.all([...roots.map((root) => root.close()), ...idleDisposals]);
     await this.fileObserver.close();
   }
@@ -267,18 +293,80 @@ export class TrackerSyncManager {
       Object.defineProperty(error, "trackerErrorCode", { value: "not_found" });
       throw error;
     }
-    return project.rootPath;
+    return resolveAitRootPath(project.rootPath);
+  }
+
+  private getOrCreateRoot(rootPath: string): AitRootWatch {
+    let root = this.roots.get(rootPath);
+    if (!root) {
+      root = new AitRootWatch(
+        rootPath,
+        this.fileObserver,
+        this.aitService,
+        this.directoryExists,
+        this.aitDatabaseExists,
+        (initialized) => this.notifyAitInitializationChanged(rootPath, initialized),
+        () => this.removeGlobalWatchWhenInitialized(rootPath),
+        () => {
+          this.roots.delete(rootPath);
+          this.projectIdsByRoot.delete(rootPath);
+          this.globalProjectIdsByRoot.delete(rootPath);
+        },
+      );
+      this.roots.set(rootPath, root);
+    }
+    return root;
+  }
+
+  private addProjectId(rootPath: string, projectId: string): void {
+    const projectIds = this.projectIdsByRoot.get(rootPath) ?? new Set<string>();
+    projectIds.add(projectId);
+    this.projectIdsByRoot.set(rootPath, projectIds);
+  }
+
+  private async seedRootInitializationState(root: AitRootWatch, rootPath: string): Promise<void> {
+    root.seedInitializationState(await this.aitDatabaseExists(rootPath));
+  }
+
+  private async removeGlobalWatch(rootPath: string): Promise<void> {
+    this.globalProjectIdsByRoot.delete(rootPath);
+    const root = this.roots.get(rootPath);
+    if (root) await this.maybeDisposeRoot(root);
+  }
+
+  private async notifyAitInitializationChanged(
+    rootPath: string,
+    initialized: boolean,
+  ): Promise<void> {
+    if (this.onAitInitializedChanged) {
+      await Promise.all(
+        [...(this.projectIdsByRoot.get(rootPath) ?? [])].map((projectId) =>
+          this.onAitInitializedChanged!(projectId),
+        ),
+      );
+    }
+    const root = this.roots.get(rootPath);
+    if (initialized && root?.hasObserverSubscription) await this.removeGlobalWatch(rootPath);
+  }
+
+  private async removeGlobalWatchWhenInitialized(rootPath: string): Promise<void> {
+    const root = this.roots.get(rootPath);
+    if (root?.isInitialized) await this.removeGlobalWatch(rootPath);
   }
 
   private async maybeDisposeRoot(root: AitRootWatch): Promise<void> {
-    if (root.hasListeners) {
+    if (root.hasListeners || (this.globalProjectIdsByRoot.get(root.rootPath)?.size ?? 0) > 0) {
       this.cancelIdleDisposal(root.rootPath);
       return;
     }
     this.cancelIdleDisposal(root.rootPath);
     const timer = setTimeout(() => {
       this.idleDisposalTimers.delete(root.rootPath);
-      if (root.hasListeners || this.roots.get(root.rootPath) !== root) {
+      if (
+        root.hasListeners ||
+        (this.globalProjectIdsByRoot.get(root.rootPath)?.size ?? 0) > 0 ||
+        this.roots.get(root.rootPath) !== root
+      ) {
         return;
       }
       this.roots.delete(root.rootPath);
@@ -312,15 +400,31 @@ class AitRootWatch {
   private existenceTimer: ReturnType<typeof setInterval> | null = null;
   private retryTimer: ReturnType<typeof setInterval> | null = null;
   private closed = false;
+  private aitInitialized: boolean | null = null;
 
   constructor(
     rootPath: string,
     private readonly fileObserver: FileObserver,
     private readonly aitService: AitService,
     private readonly directoryExists: (directory: string) => Promise<boolean>,
+    private readonly aitDatabaseExists: (rootPath: string) => Promise<boolean>,
+    private readonly onInitializationChange: (initialized: boolean) => void | Promise<void>,
+    private readonly onObserverAttached: () => void | Promise<void>,
     private readonly onEmpty: () => void,
   ) {
     this.rootPath = rootPath;
+  }
+
+  seedInitializationState(initialized: boolean): void {
+    if (this.aitInitialized === null) this.aitInitialized = initialized;
+  }
+
+  get isInitialized(): boolean {
+    return this.aitInitialized === true;
+  }
+
+  get hasObserverSubscription(): boolean {
+    return this.observerSubscription !== null;
   }
 
   get hasListeners(): boolean {
@@ -388,6 +492,7 @@ class AitRootWatch {
         this.observerSubscription = null;
         await subscription.unsubscribe().catch(() => undefined);
       }
+      await this.refreshInitializationState();
       this.enterExistenceProbe();
       return;
     }
@@ -398,6 +503,7 @@ class AitRootWatch {
           const subscription = this.observerSubscription;
           this.observerSubscription = null;
           void subscription?.unsubscribe();
+          this.probeInitializationState();
           this.enterDegradedPolling();
           return;
         }
@@ -407,10 +513,13 @@ class AitRootWatch {
       this.existenceTimer = null;
       if (this.retryTimer) clearInterval(this.retryTimer);
       this.retryTimer = null;
+      await this.refreshInitializationState();
+      await this.onObserverAttached();
       if (recovering) {
         await this.refreshActiveVariants();
       }
     } catch {
+      await this.refreshInitializationState().catch(() => undefined);
       this.enterDegradedPolling();
     }
   }
@@ -432,6 +541,10 @@ class AitRootWatch {
     (this.retryTimer as unknown as { unref?: () => void }).unref?.();
   }
 
+  private probeInitializationState(): void {
+    void this.refreshInitializationState().catch(() => undefined);
+  }
+
   private scheduleRefresh(): void {
     if (this.closed) return;
     const now = Date.now();
@@ -442,8 +555,22 @@ class AitRootWatch {
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
       this.debounceStartedAt = 0;
-      void this.refreshActiveVariants();
+      void this.refreshActiveVariants()
+        .then(() => this.refreshInitializationState())
+        .catch(() => undefined);
     }, delay);
+  }
+
+  private async refreshInitializationState(): Promise<void> {
+    const next = await this.aitDatabaseExists(this.rootPath);
+    if (this.aitInitialized === null) {
+      this.aitInitialized = next;
+      if (next) await this.onInitializationChange(next);
+      return;
+    }
+    if (this.aitInitialized === next) return;
+    await this.onInitializationChange(next);
+    this.aitInitialized = next;
   }
 }
 

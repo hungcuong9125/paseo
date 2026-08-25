@@ -841,7 +841,15 @@ export class Session {
       logger: this.sessionLogger,
     });
     this.trackerSession = new TrackerSession({
-      host: { emit: (msg) => this.emit(msg) },
+      host: {
+        emit: (msg) => this.emit(msg),
+        refreshProjectDescriptor: async (projectId) => {
+          const project = await this.projectRegistry.get(projectId);
+          if (project) {
+            await this.emitProjectUpdate({ kind: "upsert", project });
+          }
+        },
+      },
       aitService,
       projectRegistry: this.projectRegistry,
       logger: this.sessionLogger,
