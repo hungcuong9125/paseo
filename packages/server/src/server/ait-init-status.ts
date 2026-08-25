@@ -7,7 +7,9 @@ const READ_ONLY_GIT_ENV = {
   GIT_OPTIONAL_LOCKS: "0",
   LC_ALL: "C",
 } as const;
-const aitRootPathCache = new Map<string, Promise<string>>();
+const NOT_A_GIT_REPOSITORY = /not a git repository/i;
+const aitRootPathCache = new Map<string, string>();
+const aitRootPathResolutions = new Map<string, Promise<{ rootPath: string; cacheable: boolean }>>();
 
 /**
  * Resolve the directory passed to `ait`: Git's worktree root when the path is
@@ -19,21 +21,43 @@ const aitRootPathCache = new Map<string, Promise<string>>();
 export function resolveAitRootPath(projectRootPath: string): Promise<string> {
   const resolvedProjectRootPath = resolve(projectRootPath);
   const cached = aitRootPathCache.get(resolvedProjectRootPath);
-  if (cached) return cached;
+  if (cached) return Promise.resolve(cached);
+  const pending = aitRootPathResolutions.get(resolvedProjectRootPath);
+  if (pending) return pending.then(({ rootPath }) => rootPath);
 
   const resolution = (async () => {
     try {
-      const { stdout } = await runGitCommand(["rev-parse", "--show-toplevel"], {
+      const result = await runGitCommand(["rev-parse", "--show-toplevel"], {
         cwd: resolvedProjectRootPath,
         envOverlay: READ_ONLY_GIT_ENV,
+        acceptExitCodes: [0, 128],
       });
-      return resolveGitRevParsePath(resolvedProjectRootPath, stdout) ?? resolvedProjectRootPath;
+      if (result.exitCode === 128) {
+        return {
+          rootPath: resolvedProjectRootPath,
+          cacheable: NOT_A_GIT_REPOSITORY.test(result.stderr),
+        };
+      }
+      const rootPath = resolveGitRevParsePath(resolvedProjectRootPath, result.stdout);
+      return rootPath
+        ? { rootPath, cacheable: true }
+        : { rootPath: resolvedProjectRootPath, cacheable: false };
     } catch {
-      return resolvedProjectRootPath;
+      return { rootPath: resolvedProjectRootPath, cacheable: false };
     }
   })();
-  aitRootPathCache.set(resolvedProjectRootPath, resolution);
-  return resolution;
+  aitRootPathResolutions.set(resolvedProjectRootPath, resolution);
+  return resolution.then(
+    ({ rootPath, cacheable }) => {
+      aitRootPathResolutions.delete(resolvedProjectRootPath);
+      if (cacheable) aitRootPathCache.set(resolvedProjectRootPath, rootPath);
+      return rootPath;
+    },
+    () => {
+      aitRootPathResolutions.delete(resolvedProjectRootPath);
+      return resolvedProjectRootPath;
+    },
+  );
 }
 
 /**
