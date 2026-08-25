@@ -533,6 +533,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly scheduleService: ScheduleService;
   private readonly aitService: AitService;
   private readonly trackerSyncManager: TrackerSyncManager;
+  private unsubscribeProjectMutations: (() => void) | null = null;
   private readonly checkoutDiffManager: CheckoutDiffManager;
   private readonly github: ForgeService;
   private readonly workspaceGitService: WorkspaceGitService;
@@ -653,6 +654,10 @@ export class VoiceAssistantWebSocketServer {
     this.trackerSyncManager = new TrackerSyncManager({
       aitService: this.aitService,
       projectRegistry: this.projectRegistry,
+      onAitInitializedChanged: (projectId) => this.publishProjectUpdateForProject(projectId),
+    });
+    void this.startTrackerProjectWatches().catch((error) => {
+      this.logger.warn({ err: error }, "Failed to start AIT initialization watches");
     });
     this.checkoutDiffManager = requiredServices.checkoutDiffManager;
     this.github = github ?? createGitHubService();
@@ -922,6 +927,39 @@ export class VoiceAssistantWebSocketServer {
     );
   }
 
+  private async publishProjectUpdateForProject(projectId: string): Promise<void> {
+    const project = await this.projectRegistry.get(projectId);
+    if (!project || project.archivedAt) return;
+    await this.publishProjectUpdate({ kind: "upsert", project });
+  }
+
+  private async startTrackerProjectWatches(): Promise<void> {
+    this.unsubscribeProjectMutations =
+      this.projectRegistry.subscribeToMutations?.((mutation) => {
+        if (mutation.kind === "upsert" && mutation.project && !mutation.project.archivedAt) {
+          return this.trackerSyncManager.watchProject(mutation.projectId).catch((error) => {
+            this.logger.warn(
+              { err: error, projectId: mutation.projectId },
+              "Failed to update AIT initialization watch",
+            );
+          });
+        }
+        return this.trackerSyncManager.unwatchProject(mutation.projectId).catch((error) => {
+          this.logger.warn(
+            { err: error, projectId: mutation.projectId },
+            "Failed to remove AIT initialization watch",
+          );
+        });
+      }) ?? null;
+
+    const projects = await this.projectRegistry.list();
+    await Promise.all(
+      projects
+        .filter((project) => !project.archivedAt)
+        .map((project) => this.trackerSyncManager.watchProject(project.projectId)),
+    );
+  }
+
   public publishSpeechReadiness(readiness: SpeechReadinessSnapshot | null): void {
     this.updateServerCapabilities(buildServerCapabilities({ readiness }));
   }
@@ -989,6 +1027,8 @@ export class VoiceAssistantWebSocketServer {
 
   public async close(): Promise<void> {
     this.prepareForShutdown();
+    this.unsubscribeProjectMutations?.();
+    this.unsubscribeProjectMutations = null;
     this.unsubscribeSpeechReadiness?.();
     this.unsubscribeSpeechReadiness = null;
     this.unsubscribeDaemonConfigChange?.();

@@ -14,6 +14,7 @@ const CWD = "/repo/my-project";
 function makeSession(
   ait: { [K in keyof AitService]?: unknown },
   trackerSyncManager?: { [K in keyof TrackerSyncManager]?: unknown },
+  refreshProjectDescriptor?: (projectId: string) => void | Promise<void>,
 ) {
   const emitted: SessionOutboundMessage[] = [];
   const projectRegistry = createStub<Pick<ProjectRegistry, "get">>({
@@ -23,7 +24,10 @@ function makeSession(
         : null,
   });
   const session = new TrackerSession({
-    host: { emit: (message) => emitted.push(message) },
+    host: {
+      emit: (message) => emitted.push(message),
+      refreshProjectDescriptor,
+    },
     aitService: createStub<AitService>(ait),
     projectRegistry,
     logger: pino({ level: "silent" }),
@@ -345,6 +349,31 @@ describe("TrackerSession", () => {
     const response = findByType(emitted, "project.tracker.init.response");
     expect(response?.payload.initialised).toBe(false);
     expect(response?.payload.errorCode).toBe("cli_missing");
+  });
+
+  it("refreshes the project descriptor before the init response", async () => {
+    const order: string[] = [];
+    const { session, emitted } = makeSession(
+      {
+        initTracker: async () => {
+          order.push("init");
+          return { initialised: true };
+        },
+      },
+      undefined,
+      async (projectId) => {
+        order.push(`descriptor:${projectId}`);
+      },
+    );
+
+    await session.handleProjectTrackerInitRequest({
+      type: "project.tracker.init.request",
+      requestId: "r7-success",
+      projectId: PROJECT_ID,
+    });
+
+    expect(order).toEqual(["init", `descriptor:${PROJECT_ID}`]);
+    expect(findByType(emitted, "project.tracker.init.response")?.payload.error).toBeNull();
   });
 
   it("ready emits the ready id list from the ait service", async () => {

@@ -23,7 +23,11 @@ const TRACKER = {
   parentId: null,
 };
 
-function createHarness() {
+function createHarness(options?: {
+  aitInitialized?: boolean;
+  onAitInitializedChanged?: (projectId: string) => void | Promise<void>;
+}) {
+  let aitInitialized = options?.aitInitialized ?? true;
   let callback: FileObserverCallback | null = null;
   let unsubscribeCount = 0;
   const observer: FileObserver = {
@@ -88,6 +92,8 @@ function createHarness() {
     projectRegistry,
     fileObserver: observer,
     directoryExists: async () => true,
+    aitDatabaseExists: async () => aitInitialized,
+    onAitInitializedChanged: options?.onAitInitializedChanged,
   });
   return {
     manager,
@@ -95,6 +101,9 @@ function createHarness() {
       return listCalls;
     },
     emitChange: () => callback?.(null, [{ path: `${ROOT}/.ait/ait.db`, type: "update" }]),
+    setAitInitialized: (value: boolean) => {
+      aitInitialized = value;
+    },
     get unsubscribeCount() {
       return unsubscribeCount;
     },
@@ -219,6 +228,31 @@ describe("TrackerSyncManager", () => {
     await harness.manager.getSnapshot(PROJECT_ID, true);
 
     expect(harness.listCalls).toBe(2);
+    await harness.manager.close();
+  });
+
+  it("notifies descriptor owners when the AIT database appears or disappears", async () => {
+    vi.useFakeTimers();
+    const changes: string[] = [];
+    const harness = createHarness({
+      aitInitialized: false,
+      onAitInitializedChanged: async (projectId) => {
+        changes.push(projectId);
+      },
+    });
+
+    await harness.manager.watchProject(PROJECT_ID);
+
+    harness.setAitInitialized(true);
+    harness.emitChange();
+    await vi.advanceTimersByTimeAsync(150);
+    expect(changes).toEqual([PROJECT_ID]);
+
+    harness.setAitInitialized(false);
+    harness.emitChange();
+    await vi.advanceTimersByTimeAsync(150);
+    expect(changes).toEqual([PROJECT_ID, PROJECT_ID]);
+
     await harness.manager.close();
   });
 

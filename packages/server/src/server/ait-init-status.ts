@@ -1,5 +1,30 @@
 import { access } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { resolveGitRevParsePath } from "../utils/git-rev-parse-path.js";
+import { runGitCommand } from "../utils/run-git-command.js";
+
+const READ_ONLY_GIT_ENV = {
+  GIT_OPTIONAL_LOCKS: "0",
+  LC_ALL: "C",
+} as const;
+
+/**
+ * Resolve the directory passed to `ait`: Git's worktree root when the path is
+ * in a repository, otherwise the path itself. A non-Git child does not
+ * inherit an AIT database from an unrelated parent directory.
+ */
+export async function resolveAitRootPath(projectRootPath: string): Promise<string> {
+  const resolvedProjectRootPath = resolve(projectRootPath);
+  try {
+    const { stdout } = await runGitCommand(["rev-parse", "--show-toplevel"], {
+      cwd: resolvedProjectRootPath,
+      envOverlay: READ_ONLY_GIT_ENV,
+    });
+    return resolveGitRevParsePath(resolvedProjectRootPath, stdout) ?? resolvedProjectRootPath;
+  } catch {
+    return resolvedProjectRootPath;
+  }
+}
 
 /**
  * Cheap, upfront signal for whether a project has ever run `ait init` —
@@ -12,8 +37,9 @@ import { join } from "node:path";
  * stale behind some other cache's invalidation.
  */
 export async function checkAitInitialized(projectRootPath: string): Promise<boolean> {
+  const aitRootPath = await resolveAitRootPath(projectRootPath);
   try {
-    await access(join(projectRootPath, ".ait", "ait.db"));
+    await access(join(aitRootPath, ".ait", "ait.db"));
     return true;
   } catch {
     return false;

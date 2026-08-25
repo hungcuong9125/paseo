@@ -1,8 +1,9 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { checkAitInitialized } from "./ait-init-status.js";
+import { checkAitInitialized, resolveAitRootPath } from "./ait-init-status.js";
 
 describe("checkAitInitialized", () => {
   const tempDirs: string[] = [];
@@ -15,7 +16,26 @@ describe("checkAitInitialized", () => {
 
   function makeProjectRoot(): string {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ait-init-status-test-")));
+    assertNoAitAbove(root);
     tempDirs.push(root);
+    return root;
+  }
+
+  function assertNoAitAbove(root: string): void {
+    let current = dirname(root);
+    while (true) {
+      if (existsSync(join(current, ".ait"))) {
+        throw new Error(`Fixture root ${root} has an unexpected .ait ancestor at ${current}`);
+      }
+      const parent = dirname(current);
+      if (parent === current) return;
+      current = parent;
+    }
+  }
+
+  function makeGitProjectRoot(): string {
+    const root = makeProjectRoot();
+    execFileSync("git", ["init", "-q"], { cwd: root });
     return root;
   }
 
@@ -58,5 +78,45 @@ describe("checkAitInitialized", () => {
     writeFileSync(join(root, ".ait", "ait.db"), "");
 
     await expect(checkAitInitialized(root)).resolves.toBe(true);
+  });
+
+  it("resolves the database from a Git ancestor root", async () => {
+    const root = makeGitProjectRoot();
+    const child = join(root, "packages", "server");
+    mkdirSync(child, { recursive: true });
+    mkdirSync(join(root, ".ait"));
+    writeFileSync(join(root, ".ait", "ait.db"), "");
+
+    await expect(resolveAitRootPath(child)).resolves.toBe(root);
+    await expect(checkAitInitialized(child)).resolves.toBe(true);
+  });
+
+  it("tracks appearance and deletion at the resolved Git root", async () => {
+    const root = makeGitProjectRoot();
+    const child = join(root, "agent", "workdir");
+    mkdirSync(child, { recursive: true });
+
+    await expect(resolveAitRootPath(child)).resolves.toBe(root);
+    await expect(checkAitInitialized(child)).resolves.toBe(false);
+
+    mkdirSync(join(root, ".ait"));
+    const databasePath = join(root, ".ait", "ait.db");
+    writeFileSync(databasePath, "");
+    await expect(checkAitInitialized(child)).resolves.toBe(true);
+
+    rmSync(databasePath);
+    await expect(checkAitInitialized(child)).resolves.toBe(false);
+  });
+
+  it("does not cross a nested Git boundary", async () => {
+    const outerRoot = makeGitProjectRoot();
+    mkdirSync(join(outerRoot, ".ait"));
+    writeFileSync(join(outerRoot, ".ait", "ait.db"), "");
+    const nestedRoot = join(outerRoot, "nested");
+    mkdirSync(nestedRoot);
+    execFileSync("git", ["init", "-q"], { cwd: nestedRoot });
+
+    await expect(resolveAitRootPath(nestedRoot)).resolves.toBe(nestedRoot);
+    await expect(checkAitInitialized(nestedRoot)).resolves.toBe(false);
   });
 });

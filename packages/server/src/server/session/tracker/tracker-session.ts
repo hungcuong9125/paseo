@@ -12,6 +12,7 @@ import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
 
 export interface TrackerSessionHost {
   emit(msg: SessionOutboundMessage): void;
+  refreshProjectDescriptor?: (projectId: string) => void | Promise<void>;
 }
 
 export interface TrackerSessionOptions {
@@ -613,6 +614,7 @@ export class TrackerSession {
       const cwd = await this.resolveCwd(request.projectId);
       const { initialised } = await this.aitService.initTracker({ cwd, prefix: request.prefix });
       await this.refreshAfterMutation(cwd);
+      await this.host.refreshProjectDescriptor?.(request.projectId);
       this.host.emit({
         type: "project.tracker.init.response",
         payload: {
