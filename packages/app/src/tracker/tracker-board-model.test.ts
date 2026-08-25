@@ -154,53 +154,42 @@ describe("buildTrackerBoard", () => {
     expect(board.open.map((card) => card.tracker.id)).toEqual(["z", "a", "b"]);
   });
 
-  it("sorts the done lane by createdAt descending, with missing createdAt last", () => {
+  // pas-2KY5X.37 (this function's own sibling defect): done/cancelled used
+  // to re-sort by compareByCreatedNewest on every call. `trackers` (the
+  // shared data hook) already hands them newest-first, position-stable order
+  // — the k-way merge appends its already-correct window instead of
+  // re-sorting, specifically so an already-shown row never moves when a
+  // later page arrives. Re-sorting here, with a tiebreak (id) that has no
+  // relationship to fetch order, undid that: a same-tied card arriving on a
+  // later page could rank above an already-shown one and jump above it —
+  // the Kanban Done lane surface the human originally reported. This
+  // function now trusts input order for Done/Cancelled instead of deriving
+  // its own.
+  it("the done lane preserves trackers' input order, not a fresh createdAt sort", () => {
     const trackers = [
       tracker({ id: "older", status: "closed", createdAt: "2026-01-01T00:00:00Z" }),
       tracker({ id: "newer", status: "closed", createdAt: "2026-06-01T00:00:00Z" }),
-      tracker({ id: "no-created-at", status: "closed" }),
     ];
 
     const board = buildTrackerBoard(trackers, "all");
 
-    expect(board.done.map((card) => card.tracker.id)).toEqual(["newer", "older", "no-created-at"]);
+    // Fed oldest-first — a fresh createdAt-descending sort would put "newer"
+    // first. It doesn't: the lane mirrors exactly the input order.
+    expect(board.done.map((card) => card.tracker.id)).toEqual(["older", "newer"]);
   });
 
-  // pas-2KY5X.23: the done/cancelled lanes used to re-sort by updatedAt, which
-  // could disagree with the createdAt order the merge selected and the card
-  // label renders. createdAt must win regardless of updatedAt.
-  it("orders the done lane by createdAt even when updatedAt disagrees", () => {
+  it("the cancelled lane preserves trackers' input order for tied createdAt, not an id tiebreak", () => {
+    const tied = "2026-01-01T00:00:00Z";
     const trackers = [
-      tracker({
-        id: "a",
-        status: "closed",
-        createdAt: "2026-01-01T00:00:00Z",
-        updatedAt: "2026-08-01T00:00:00Z",
-      }),
-      tracker({
-        id: "b",
-        status: "closed",
-        createdAt: "2026-06-01T00:00:00Z",
-        updatedAt: "2026-01-01T00:00:00Z",
-      }),
+      tracker({ id: "a", status: "cancelled", createdAt: tied }),
+      tracker({ id: "z", status: "cancelled", createdAt: tied }),
+      tracker({ id: "m", status: "cancelled", createdAt: tied }),
     ];
 
     const board = buildTrackerBoard(trackers, "all");
 
-    expect(board.done.map((card) => card.tracker.id)).toEqual(["b", "a"]);
-  });
-
-  // Matches `ait list --sort newest`'s tiebreaker (pas-2KY5X.19/.23): id
-  // descending, same direction as the createdAt sort itself.
-  it("breaks a createdAt tie in the cancelled lane by id descending", () => {
-    const trackers = [
-      tracker({ id: "a", status: "cancelled", createdAt: "2026-01-01T00:00:00Z" }),
-      tracker({ id: "z", status: "cancelled", createdAt: "2026-01-01T00:00:00Z" }),
-      tracker({ id: "m", status: "cancelled", createdAt: "2026-01-01T00:00:00Z" }),
-    ];
-
-    const board = buildTrackerBoard(trackers, "all");
-
-    expect(board.cancelled.map((card) => card.tracker.id)).toEqual(["z", "m", "a"]);
+    // Fed a-z-m — an id-descending tiebreak would produce z-m-a. It doesn't:
+    // exactly the input order.
+    expect(board.cancelled.map((card) => card.tracker.id)).toEqual(["a", "z", "m"]);
   });
 });

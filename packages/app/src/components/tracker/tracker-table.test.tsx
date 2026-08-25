@@ -245,19 +245,73 @@ describe("TrackerTable status grouping", () => {
     expect(openSection?.querySelector('[data-testid="row-a-ip"]')).toBeNull();
   });
 
-  it("preserves the projectId-then-id ordering within each section", () => {
+  // pas-2KY5X.37: the sectioned variant used to re-sort `trackers` itself
+  // (`[...trackers].sort(compareByCreatedNewest)`) before bucketing by
+  // status. That looked harmless (same comparator the data hook already
+  // sorted with) but wasn't: the hook hands this component a
+  // position-stable, newest-first order within each status — appended, not
+  // re-derived, specifically so an already-shown row never moves when a
+  // later page arrives — and re-sorting here with a tiebreak (id) that has
+  // no relationship to fetch order could rank a same-tied row from a later
+  // page above one already on screen and jump it above it. The sectioned
+  // variant now buckets `trackers` exactly as received.
+  it("buckets rows by status preserving trackers' own order, not a fresh createdAt sort", () => {
     const { container: c } = renderTable([
-      tracker({ id: "b-open", status: "open", projectId: "proj-b", title: "B open" }),
-      tracker({ id: "a-open", status: "open", projectId: "proj-a", title: "A open" }),
-      tracker({ id: "b-ip", status: "in_progress", projectId: "proj-b", title: "B ip" }),
-      tracker({ id: "a-ip", status: "in_progress", projectId: "proj-a", title: "A ip" }),
+      // Fed OLDEST first, on purpose — if this variant still re-sorted
+      // newest-first, "a-new" would render first. It shouldn't: the section
+      // must mirror the array order exactly.
+      tracker({
+        id: "z-old",
+        status: "open",
+        projectId: "proj-a",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+      tracker({
+        id: "m-mid",
+        status: "open",
+        projectId: "proj-m",
+        createdAt: "2026-03-01T00:00:00.000Z",
+      }),
+      tracker({
+        id: "a-new",
+        status: "open",
+        projectId: "proj-z",
+        createdAt: "2026-06-01T00:00:00.000Z",
+      }),
     ]);
     container = c;
 
     const openSection = c.querySelector('[data-testid="tracker-table-section-open"]');
     const rows = openSection?.querySelectorAll('[data-testid^="row-"]');
-    expect(rows?.[0]?.getAttribute("data-testid")).toBe("row-a-open");
-    expect(rows?.[1]?.getAttribute("data-testid")).toBe("row-b-open");
+    expect(rows?.[0]?.getAttribute("data-testid")).toBe("row-z-old");
+    expect(rows?.[1]?.getAttribute("data-testid")).toBe("row-m-mid");
+    expect(rows?.[2]?.getAttribute("data-testid")).toBe("row-a-new");
+  });
+
+  it("preserves input order for rows that share a createdAt, not an id tiebreak", () => {
+    const { container: c } = renderTable([
+      // Fed a-then-b, on purpose — an id-descending tiebreak (the old
+      // comparator's fallback for a tie) would put "b-tie" first.
+      tracker({
+        id: "a-tie",
+        status: "open",
+        projectId: "proj-b",
+        createdAt: "2026-05-01T00:00:00.000Z",
+      }),
+      tracker({
+        id: "b-tie",
+        status: "open",
+        projectId: "proj-a",
+        createdAt: "2026-05-01T00:00:00.000Z",
+      }),
+    ]);
+    container = c;
+
+    const rows = c
+      .querySelector('[data-testid="tracker-table-section-open"]')
+      ?.querySelectorAll('[data-testid^="row-"]');
+    expect(rows?.[0]?.getAttribute("data-testid")).toBe("row-a-tie");
+    expect(rows?.[1]?.getAttribute("data-testid")).toBe("row-b-tie");
   });
 
   it("renders only non-empty sections when a toolbar status filter leaves other buckets empty", () => {

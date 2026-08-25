@@ -127,6 +127,53 @@ esac
     }
   });
 
+  it("rejects when a found ait binary fails to run the sort probe, instead of silently reporting unsupported (pas-2KY5X.35 correction)", async () => {
+    // A found binary that then errors on the probe command itself is a
+    // probe malfunction, not a legitimate "no --sort" answer — the caller
+    // (refreshAitTrackerSortCapability) has its own catch wired to the
+    // daemon's structured pino logger specifically for this case, and that
+    // catch only ever fires if this rejects instead of swallowing the error.
+    const binDir = mkdtempSync(join(tmpdir(), "ait-sort-probe-malfunction-test-"));
+    const fakeAit = join(binDir, "ait");
+    writeFileSync(
+      fakeAit,
+      `#!/bin/sh
+case " $* " in
+  *" --version "*) printf '%s\\n' 'dev';;
+  *" list --help "*) echo 'boom: probe malfunction' >&2; exit 1;;
+  *) printf '%s\\n' '{"issues":[],"hidden_count":0}';;
+esac
+`,
+    );
+    chmodSync(fakeAit, 0o755);
+    const originalPath = process.env.PATH;
+    process.env.PATH = binDir;
+    try {
+      const probeService = createAitService();
+      expect(probeService.supportsSort).toBeDefined();
+      await expect(probeService.supportsSort!()).rejects.toThrow();
+    } finally {
+      process.env.PATH = originalPath;
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("probes sort support correctly even when the daemon's own cwd has no valid ait prefix (pas-2KY5X.35)", async () => {
+    // A GUI-launched daemon's process cwd is `/` — an empty basename that
+    // fails ait's project-prefix validation even for `--db :memory:`. Real
+    // binary, no faking (same posture as every other test in this file):
+    // this only proves anything if the probe stops depending on whatever
+    // directory happens to be current when it runs.
+    const originalCwd = process.cwd();
+    try {
+      process.chdir("/");
+      const probeService = createAitService();
+      await expect(probeService.supportsSort!()).resolves.toBe(true);
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
   it("creates, shows, and lists an tracker", async () => {
     await service.initTracker({ cwd });
 
