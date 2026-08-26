@@ -1010,6 +1010,9 @@ describe("project command-center RPCs", () => {
               projectIconRevision: "automatic:none:v1",
               projectRootPath: directoryPath,
               projectKind: "non_git",
+              // A freshly created directory has no `.ait/ait.db` inside it,
+              // so the fresh check (pas-2KY5X.28) correctly reports false.
+              aitInitialized: false,
             },
             error: null,
             errorCode: null,
@@ -5274,6 +5277,9 @@ test("sends project updates only to capable sockets in a retained session", asyn
   session.updateClientCapabilities(null, legacySocket);
   session.updateClientCapabilities({ [CLIENT_CAPS.projectUpdates]: true }, capableSocket);
 
+  // emitProjectUpdate is async (pas-2KY5X.28's descriptor build awaits a
+  // fresh .ait/ait.db check) — awaited so the assertions below don't run
+  // before the message actually lands.
   await session.emitProjectUpdate({
     kind: "upsert",
     project: createPersistedProjectRecord({
@@ -5340,6 +5346,9 @@ test("project.list returns every active project descriptor", async () => {
             projectIconRevision: "automatic:none:v1",
             projectRootPath: "/tmp/project-active",
             projectKind: "git",
+            // rootPath doesn't exist on disk in this fixture, so the fresh
+            // `.ait/ait.db` check (pas-2KY5X.28) correctly reports false.
+            aitInitialized: false,
           },
         ],
       },

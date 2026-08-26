@@ -1096,6 +1096,7 @@ export const ko: TranslationResources = {
     sections: {
       sessions: "기록",
       schedules: "일정",
+      tracker: "트래커",
     },
     worktreeSetup: {
       title: "워크트리 스크립트 설정",
@@ -2603,6 +2604,61 @@ export const ko: TranslationResources = {
         saving: "저장하는 중...",
         cancel: "취소",
       },
+    },
+  },
+  tracker: {
+    card: {
+      childProgress: "{{done}}/{{count}}",
+      claimedBy: "{{name}}님이 담당",
+      created: "{{time}}에 생성됨",
+      closed: "{{time}}에 종료됨",
+    },
+    kanban: {
+      lane: {
+        ready: "백로그",
+        open: "할 일",
+        inProgress: "진행 중",
+        done: "완료",
+        cancelled: "취소",
+      },
+      empty: {
+        ready: "백로그 항목이 없습니다",
+        open: "할 일 항목이 없습니다",
+        inProgress: "진행 중인 항목이 없습니다",
+        done: "완료된 항목이 없습니다",
+        cancelled: "취소된 항목이 없습니다",
+      },
+      showMore: "{{count}}개 더 보기",
+      moveMenu: {
+        trigger: "{{title}} 작업",
+        title: "작업",
+      },
+      moveTo: {
+        open: "열림으로 이동",
+        inProgress: "진행 중으로 이동",
+        done: "완료로 이동",
+        cancelled: "취소로 이동",
+      },
+      type: {
+        tasks: "작업",
+        epics: "에픽",
+        initiatives: "이니셔티브",
+        all: "전체",
+      },
+      error: {
+        transitionFailed: "{{title}}을(를) 이동할 수 없습니다. 다시 시도하세요.",
+        deleteFailed: "{{title}}을(를) 삭제할 수 없습니다. 다시 시도하세요.",
+      },
+    },
+    list: {
+      section: {
+        open: "할 일",
+        inProgress: "진행 중",
+        done: "완료",
+        cancelled: "취소됨",
+      },
+      showMore: "{{count}}개 더 보기",
+      loadMore: "더 불러오기",
     },
   },
 };

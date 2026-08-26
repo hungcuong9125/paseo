@@ -3724,6 +3724,9 @@ test("archiving the last workspace emits a remove carrying the now-empty project
       projectCustomIconRevision: null,
       projectRootPath: REPO_CWD,
       projectKind: "git",
+      // rootPath doesn't have `.ait/ait.db` in this fixture, so the fresh
+      // check (pas-2KY5X.28) correctly reports false.
+      aitInitialized: false,
     },
   });
 });

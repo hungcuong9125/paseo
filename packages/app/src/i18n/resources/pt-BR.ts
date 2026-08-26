@@ -1114,6 +1114,7 @@ export const ptBR: TranslationResources = {
     sections: {
       sessions: "Histórico",
       schedules: "Agendamentos",
+      tracker: "Rastreador",
     },
     worktreeSetup: {
       title: "Configurar scripts de worktree",
@@ -2630,6 +2631,61 @@ export const ptBR: TranslationResources = {
         saving: "Salvando...",
         cancel: "Cancelar",
       },
+    },
+  },
+  tracker: {
+    card: {
+      childProgress: "{{done}}/{{count}}",
+      claimedBy: "Reivindicado por {{name}}",
+      created: "Criado {{time}}",
+      closed: "Fechado {{time}}",
+    },
+    kanban: {
+      lane: {
+        ready: "Backlog",
+        open: "A fazer",
+        inProgress: "Em andamento",
+        done: "Concluído",
+        cancelled: "Cancelado",
+      },
+      empty: {
+        ready: "Nenhum item no backlog",
+        open: "Nenhum item a fazer",
+        inProgress: "Nenhum item em andamento",
+        done: "Nenhum item concluído",
+        cancelled: "Nenhum item cancelado",
+      },
+      showMore: "Mostrar mais {{count}}",
+      moveMenu: {
+        trigger: "Ações para {{title}}",
+        title: "Ações",
+      },
+      moveTo: {
+        open: "Mover para Aberto",
+        inProgress: "Mover para Em andamento",
+        done: "Mover para Concluído",
+        cancelled: "Mover para Cancelado",
+      },
+      type: {
+        tasks: "Tarefas",
+        epics: "Épicos",
+        initiatives: "Iniciativas",
+        all: "Todos",
+      },
+      error: {
+        transitionFailed: "Não foi possível mover {{title}}. Tente novamente.",
+        deleteFailed: "Não foi possível excluir {{title}}. Tente novamente.",
+      },
+    },
+    list: {
+      section: {
+        open: "A fazer",
+        inProgress: "Em progresso",
+        done: "Concluído",
+        cancelled: "Cancelado",
+      },
+      showMore: "Mostrar mais {{count}}",
+      loadMore: "Carregar mais",
     },
   },
 };

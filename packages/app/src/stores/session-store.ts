@@ -178,6 +178,12 @@ export interface ProjectDescriptor {
   projectIconRevision?: string;
   projectRootPath: string;
   projectKind: WorkspaceDescriptorPayload["projectKind"];
+  // COMPAT(aitProjectInitStatus): added in v0.4.1, remove gate after 2027-02-19.
+  // `undefined` means "unknown" — an old daemon that predates the feature,
+  // or a workspace-derived legacy descriptor (see
+  // legacyProjectDescriptorFromWorkspace) synthesized client-side with no
+  // wire answer at all. Never treat undefined as false.
+  aitInitialized?: boolean;
 }
 
 export function normalizeProjectDescriptor(
@@ -192,6 +198,7 @@ export function normalizeProjectDescriptor(
     projectIconRevision: payload.projectIconRevision,
     projectRootPath: payload.projectRootPath,
     projectKind: payload.projectKind,
+    aitInitialized: payload.aitInitialized,
   };
 }
 

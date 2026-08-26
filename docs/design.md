@@ -161,6 +161,8 @@ Electron window controls are top-corner obstructions, not a compact-layout condi
 
 Windows and Linux controls are fixed window chrome, outside scrolling header content. A tab rail that reaches them ends at their obstruction and shows the shared overflow fade. On macOS, the Explorer toggle occupies a fixed top-right window slot so opening and closing Explorer does not move the pointer target.
 
+A layout no breakpoint can decide measures its own container instead. The tracker toolbar is the case: an open sidebar takes ~320px off the row without changing the window breakpoint, so no media query knows whether its groups fit on one line. Measure on web in a layout effect, not only in `onLayout` — `onLayout` lands a frame after mount, so the first painted frame gets the wrong arrangement and visibly snaps. Keep `onLayout` for resizes afterwards.
+
 A new list+detail feature copies the settings shell. A new workspace-shaped feature copies the workspace shell. Inventing a third shape happens in design review, not in a PR.
 
 ---
@@ -208,6 +210,10 @@ Partial failure (a list mostly fine but one source errored) is a bordered banner
 State surfaces at the smallest scope it affects. Field error stays under the field; page error is a banner; flow-stopping error is an `Alert`.
 
 Changing state must not move the layout. A row that grows when its badge arrives, a card that reflows when a count resolves, a list that jumps as data streams in — all wrong. Reserve the space the loaded state will need, so the skeleton, the spinner, and the content occupy the same box. A surface that shifts under the user stops feeling calm.
+
+Draw the line between chrome and data before writing the load branch. Toolbars, filter labels, search fields, column headers, lane names — everything whose size and position follow from the route and the viewport rather than from the response — renders on the first frame and never unmounts. Only the data region swaps between skeleton, empty, error and content. A `switch` over a load state that returns a centered spinner for the whole screen is the mistake: the page then arrives all at once and re-lays-out around itself. `packages/app/src/screens/tracker-screen.tsx` is the worked example.
+
+Placeholders come from `packages/app/src/components/ui/skeleton.tsx`: `useSkeletonPulse()` once per skeleton tree, `<SkeletonPulse>` per block, each block sized to the thing it stands in for. A number that arrives late gets a reserved column — `minWidth` plus right alignment — so its label doesn't move as digits are added. A page-level spinner is for a region with no shape to hold open yet, not for a screen whose layout you already know.
 
 ---
 

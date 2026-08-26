@@ -12,6 +12,12 @@ import {
   type ACPExtensionCommandsParser,
 } from "./acp-agent.js";
 import {
+  buildGrokNewSessionMeta,
+  buildGrokSetSessionModelMeta,
+  isGrokACPProvider,
+  writeGrokThinkingOption,
+} from "./grok-acp.js";
+import {
   buildBinaryDiagnosticRows,
   formatProviderDiagnostic,
   type DiagnosticEntry,
@@ -61,6 +67,7 @@ export class GenericACPAgentClient extends ACPAgentClient {
 
   constructor(options: GenericACPAgentClientOptions) {
     const providerParams = parseGenericACPProviderParams(options.providerParams);
+    const grokAcp = isGrokACPProvider(options.providerId, options.command);
     super({
       provider: "acp",
       logger: options.logger,
@@ -76,6 +83,13 @@ export class GenericACPAgentClient extends ACPAgentClient {
       configFeatureOptions: options.configFeatureOptions,
       extensionCommandsParser: options.extensionCommandsParser,
       catalogModelResolver: options.catalogModelResolver,
+      ...(grokAcp
+        ? {
+            thinkingOptionWriter: writeGrokThinkingOption,
+            buildNewSessionMeta: buildGrokNewSessionMeta,
+            buildSetSessionModelMeta: buildGrokSetSessionModelMeta,
+          }
+        : {}),
     });
 
     this.command = options.command;

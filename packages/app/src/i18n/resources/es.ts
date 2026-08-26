@@ -1123,6 +1123,7 @@ export const es: TranslationResources = {
     sections: {
       sessions: "Historial",
       schedules: "Horarios",
+      tracker: "Seguimiento",
     },
     worktreeSetup: {
       title: "Configurar secuencias de comandos del árbol de trabajo",
@@ -2646,6 +2647,61 @@ export const es: TranslationResources = {
         saving: "Guardando...",
         cancel: "Cancelar",
       },
+    },
+  },
+  tracker: {
+    card: {
+      childProgress: "{{done}}/{{count}}",
+      claimedBy: "Reclamado por {{name}}",
+      created: "Creado {{time}}",
+      closed: "Cerrado {{time}}",
+    },
+    kanban: {
+      lane: {
+        ready: "Backlog",
+        open: "Por hacer",
+        inProgress: "En curso",
+        done: "Hecho",
+        cancelled: "Cancelado",
+      },
+      empty: {
+        ready: "No hay elementos en el backlog",
+        open: "No hay elementos por hacer",
+        inProgress: "No hay elementos en curso",
+        done: "No hay elementos completados",
+        cancelled: "No hay elementos cancelados",
+      },
+      showMore: "Mostrar {{count}} más",
+      moveMenu: {
+        trigger: "Acciones para {{title}}",
+        title: "Acciones",
+      },
+      moveTo: {
+        open: "Mover a Abierto",
+        inProgress: "Mover a En curso",
+        done: "Mover a Hecho",
+        cancelled: "Mover a Cancelado",
+      },
+      type: {
+        tasks: "Tareas",
+        epics: "Épicas",
+        initiatives: "Iniciativas",
+        all: "Todo",
+      },
+      error: {
+        transitionFailed: "No se pudo mover {{title}}. Inténtalo de nuevo.",
+        deleteFailed: "No se pudo eliminar {{title}}. Inténtalo de nuevo.",
+      },
+    },
+    list: {
+      section: {
+        open: "Por hacer",
+        inProgress: "En progreso",
+        done: "Hecho",
+        cancelled: "Cancelado",
+      },
+      showMore: "Mostrar {{count}} más",
+      loadMore: "Cargar más",
     },
   },
 };
