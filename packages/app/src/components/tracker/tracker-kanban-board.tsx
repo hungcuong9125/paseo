@@ -208,29 +208,46 @@ export function TrackerKanbanBoard({
   const lanesFit = availableWidth != null && availableWidth >= widthNeeded;
   const scrolls = !isCompact && !lanesFit;
 
+  // Ready and Open are two visual projections of the same `open` status
+  // cursor. Keep one pagination affordance for that shared stream, and anchor
+  // it to a lane that actually has cards so an empty lane cannot promise to
+  // load rows into its sibling.
+  let sharedOpenLane: "open" | "ready" | null = null;
+  if (board.open.length > 0) {
+    sharedOpenLane = "open";
+  } else if (board.ready.length > 0) {
+    sharedOpenLane = "ready";
+  }
+  const canPageLane = (lane: TrackerBoardLaneKey): boolean =>
+    board[lane].length > 0 &&
+    (lane === "ready" || lane === "open" ? sharedOpenLane === lane : true);
+
   const columnStyle = resolveColumnStyle({ isCompact, scrolls });
-  const columnList = lanesToRender.map((lane, laneIndex) => (
-    <TrackerKanbanColumn
-      key={lane}
-      lane={lane}
-      laneIndex={laneIndex}
-      isLoading={isLoading}
-      cards={board[lane]}
-      hierarchy={hierarchy}
-      laneTotal={laneTotals?.[lane]}
-      laneHasMore={laneHasMore?.[lane]}
-      laneLoadingMore={laneLoadingMore?.[lane]}
-      onLoadMore={onLoadMore}
-      getProjectLabel={getProjectLabel}
-      isPending={isPending}
-      onTransition={handleTransition}
-      onEdit={onEdit}
-      onDelete={onDelete ? handleDelete : undefined}
-      getHasChildren={getHasChildren}
-      onCardPress={onCardPress}
-      style={columnStyle}
-    />
-  ));
+  const columnList = lanesToRender.map((lane, laneIndex) => {
+    const canLoadMore = canPageLane(lane);
+    return (
+      <TrackerKanbanColumn
+        key={lane}
+        lane={lane}
+        laneIndex={laneIndex}
+        isLoading={isLoading}
+        cards={board[lane]}
+        hierarchy={hierarchy}
+        laneTotal={laneTotals?.[lane]}
+        laneHasMore={canLoadMore ? laneHasMore?.[lane] : false}
+        laneLoadingMore={canLoadMore ? laneLoadingMore?.[lane] : false}
+        onLoadMore={onLoadMore}
+        getProjectLabel={getProjectLabel}
+        isPending={isPending}
+        onTransition={handleTransition}
+        onEdit={onEdit}
+        onDelete={onDelete ? handleDelete : undefined}
+        getHasChildren={getHasChildren}
+        onCardPress={onCardPress}
+        style={columnStyle}
+      />
+    );
+  });
 
   return (
     <View style={styles.board} testID={testID}>

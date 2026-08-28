@@ -235,7 +235,7 @@ export function TrackerKanbanColumn({
       >
         {laneBody}
       </ScrollView>
-      {laneHasMore && onLoadMore ? (
+      {cards.length > 0 && laneHasMore && onLoadMore ? (
         <View style={styles.footer} testID={`tracker-kanban-column-${lane}-footer`}>
           <Pressable
             style={styles.showMore}
@@ -319,7 +319,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   showMoreText: {
     fontSize: theme.fontSize.sm,
-    color: theme.colors.foregroundMuted,
+    color: theme.colors.palette.blue[600],
     fontWeight: theme.fontWeight.medium,
   },
 }));

@@ -390,6 +390,21 @@ describe("TrackerTable status grouping", () => {
     expect(onLoadMore).toHaveBeenCalledWith("open");
   });
 
+  it("does not render Show 0 more when the known section total is already exhausted", () => {
+    const trackers = [tracker({ id: "open-1", status: "open", title: "Open 1" })];
+    const { container: c } = renderTable(trackers, {
+      sectionTotals: { open: 1 },
+      sectionHasMore: { open: true },
+      sectionLoadingMore: { open: false },
+    });
+    container = c;
+
+    expect(c.querySelector('[data-testid="tracker-table-section-open-show-more"]')).toBeNull();
+    expect(
+      c.querySelector('[data-testid="tracker-table-section-open"]')?.textContent,
+    ).not.toContain("Show 0 more");
+  });
+
   // pas-2KY5X.22: the page step's own breakpoint is "xs" only — "sm" (tablet,
   // or a narrow desktop window) must take the desktop step, not the mobile
   // one, even though useIsCompactFormFactor (a different, layout-shell

@@ -377,6 +377,24 @@ describe("TrackerKanbanBoard — desktop layout", () => {
     const showMore = screen.getByTestId("tracker-kanban-column-open-show-more");
     expect(showMore.textContent).toContain("Show 3 more");
   });
+
+  it("keeps an empty Todo lane but anchors shared open pagination to populated Backlog", () => {
+    const onLoadMore = vi.fn();
+    const trackers = [tracker({ id: "ready", status: "open", title: "Backlog item" })];
+
+    renderBoard(trackers, {
+      readyIds: new Set(["ready"]),
+      laneHasMore: { ready: true, open: true },
+      onLoadMore,
+    });
+
+    expect(screen.queryByTestId("tracker-kanban-column-open")).not.toBeNull();
+    expect(screen.queryByTestId("tracker-kanban-column-open-show-more")).toBeNull();
+    expect(screen.queryByTestId("tracker-kanban-column-ready-show-more")).not.toBeNull();
+
+    fireEvent.click(screen.getByTestId("tracker-kanban-column-ready-show-more"));
+    expect(onLoadMore).toHaveBeenCalledWith("ready");
+  });
 });
 
 describe("TrackerKanbanBoard — compact single-lane projection", () => {
