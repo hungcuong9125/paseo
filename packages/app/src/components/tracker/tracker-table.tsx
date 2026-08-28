@@ -197,7 +197,9 @@ export function TrackerTable(props: TrackerTableProps): ReactElement {
         }
         const total = sectionTotals[section.status];
         const sectionCount = total ?? items.length;
-        const hasMore = sectionHasMore[section.status] ?? false;
+        // A settled total is authoritative if the cursor's hasMore flag is stale.
+        const hasMore =
+          (sectionHasMore[section.status] ?? false) && (total == null || total > items.length);
         const loadingMore = sectionLoadingMore[section.status] ?? false;
         const showCount =
           total != null ? Math.max(0, Math.min(revealStep, total - items.length)) : revealStep;

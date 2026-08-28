@@ -126,6 +126,7 @@ describe("TrackerKanbanColumn Show more affordance", () => {
     // 60 total - 3 loaded = 57 remaining, capped at the page step (50 in this
     // test's mocked useTrackerPageStep) → the label shows the capped count.
     expect(showMore.textContent).toContain("Show 50 more");
+    expect((screen.getByText("Show 50 more") as HTMLElement).style.color).toBe("rgb(37, 99, 235)");
   });
 
   it("fires onLoadMore with the lane when pressed", () => {
@@ -148,6 +149,22 @@ describe("TrackerKanbanColumn Show more affordance", () => {
     render(<TrackerKanbanColumn {...baseProps({ laneHasMore: false })} />);
 
     // No reserved blank footer element, and therefore no Show more button.
+    expect(screen.queryByTestId("tracker-kanban-column-open-footer")).toBeNull();
+    expect(screen.queryByTestId("tracker-kanban-column-open-show-more")).toBeNull();
+  });
+
+  it("does not render Show more for an empty lane even when pagination reports more rows", () => {
+    render(
+      <TrackerKanbanColumn
+        {...baseProps({
+          cards: [],
+          laneHasMore: true,
+          onLoadMore: vi.fn(),
+          laneTotal: 60,
+        })}
+      />,
+    );
+
     expect(screen.queryByTestId("tracker-kanban-column-open-footer")).toBeNull();
     expect(screen.queryByTestId("tracker-kanban-column-open-show-more")).toBeNull();
   });
