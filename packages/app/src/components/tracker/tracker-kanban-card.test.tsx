@@ -15,6 +15,7 @@ vi.mock("react-i18next", () => ({
       const templates: Record<string, string> = {
         "tracker.card.childProgress": "{{done}}/{{count}}",
         "tracker.card.created": "Created {{time}}",
+        "tracker.kanban.blocked": "Blocked",
       };
       const template = templates[key] ?? key;
       if (!options) {
@@ -79,6 +80,14 @@ describe("TrackerKanbanCard", () => {
 
     rerender(<TrackerKanbanCard {...baseProps} projectLabel="paseo" />);
     expect(screen.getByText("paseo")).toBeTruthy();
+  });
+
+  it("shows a blocked badge only when readiness is known and the tracker is blocked", () => {
+    const { rerender } = render(<TrackerKanbanCard {...baseProps} />);
+    expect(screen.queryByText("Blocked")).toBeNull();
+
+    rerender(<TrackerKanbanCard {...baseProps} isBlocked />);
+    expect(screen.getByText("Blocked")).toBeTruthy();
   });
 
   it("renders TrackerStatusIcon without crashing for every status", () => {

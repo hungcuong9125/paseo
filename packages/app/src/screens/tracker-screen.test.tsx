@@ -25,6 +25,7 @@ const {
   projectsState,
   projectDataState,
   statsState,
+  readyQueryRefetch,
   lastProjectDataOptions,
   lastKanbanBoardProps,
   lastListTableProps,
@@ -97,6 +98,7 @@ const {
       refetch: vi.fn(),
     } as UseTrackerStatsResult,
   },
+  readyQueryRefetch: vi.fn(),
   // The mock hook below filters `projectDataState.current.trackers` by
   // whichever options.type/priority the screen passed in (mirroring what the
   // real server-side scoping does) — captured here so tests can assert the
@@ -155,6 +157,7 @@ vi.mock("react-i18next", () => ({
         "tracker.kanban.type.epics": "Epics",
         "tracker.kanban.type.initiatives": "Initiatives",
         "tracker.kanban.type.all": "All",
+        "tracker.kanban.refresh": "Refresh",
       };
       return templates[key] ?? key;
     },
@@ -171,7 +174,12 @@ vi.mock("@tanstack/react-query", () => ({
   // useFetchQuery -> useQuery; it's disabled whenever there are no projects
   // (the default in this suite), so a static stub is enough — no test here
   // exercises the readyIds data itself.
-  useQuery: () => ({ data: undefined, isPending: false, isFetching: false, refetch: vi.fn() }),
+  useQuery: () => ({
+    data: undefined,
+    isPending: false,
+    isFetching: false,
+    refetch: readyQueryRefetch,
+  }),
   useQueries: () => [],
   keepPreviousData: Symbol("keepPreviousData"),
   skipToken: Symbol("skipToken"),
@@ -566,6 +574,7 @@ describe("TrackerScreen kanban type filter", () => {
     setProjectsState({});
     setProjectDataState({ trackers: mixedTrackers });
     lastKanbanBoardProps.current = null;
+    readyQueryRefetch.mockClear();
   });
 
   afterEach(() => {
@@ -690,6 +699,42 @@ describe("TrackerScreen kanban type filter", () => {
     // rows under a button offering 50. Mocked to 30 above, matching
     // REVEAL_STEP_DESKTOP.
     expect(lastProjectDataOptions.current?.pageSize).toBe(30);
+  });
+
+  it("manually refreshes tracker data, stats, and Kanban readiness", () => {
+    render();
+    switchToKanban();
+
+    const refresh = container?.querySelector<HTMLElement>('[data-testid="trackers-refresh"]');
+    if (!refresh) throw new Error("Expected the Tracker refresh button to render");
+    act(() => {
+      refresh.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(projectDataState.current.refetch).toHaveBeenCalled();
+    expect(statsState.current.refetch).toHaveBeenCalled();
+    expect(readyQueryRefetch).toHaveBeenCalled();
+  });
+
+  it("polls the same refresh path every 45 seconds while focused", () => {
+    vi.useFakeTimers();
+    try {
+      render();
+      switchToKanban();
+      vi.mocked(projectDataState.current.refetch).mockClear();
+      vi.mocked(statsState.current.refetch).mockClear();
+      readyQueryRefetch.mockClear();
+
+      act(() => {
+        vi.advanceTimersByTime(45_000);
+      });
+
+      expect(projectDataState.current.refetch).toHaveBeenCalledTimes(1);
+      expect(statsState.current.refetch).toHaveBeenCalledTimes(1);
+      expect(readyQueryRefetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a List status filter reaches the query as options.sections instead of narrowing an all-four fetch in memory (pas-2KY5X.4)", () => {
@@ -1091,10 +1136,7 @@ describe("TrackerScreen mutation patching", () => {
     expect(lastKanbanBoardProps.current?.laneTotals?.done).not.toBe(3 + 2);
   });
 
-  it("falls back the ready and open lanes to their loaded count instead of a status total", () => {
-    // sectionTotals.open counts every open-status tracker (ready + blocked
-    // together) — neither lane alone can be expressed from it, so both must
-    // report null and let the column fall back to cards.length.
+  it("passes the open status total directly to the Todo lane", () => {
     setProjectDataState({
       trackers: [taskA],
       sectionTotals: { open: 9, in_progress: 0, closed: 0, cancelled: 0 },
@@ -1102,8 +1144,7 @@ describe("TrackerScreen mutation patching", () => {
     render();
     switchToKanban();
 
-    expect(lastKanbanBoardProps.current?.laneTotals?.ready).toBe(null);
-    expect(lastKanbanBoardProps.current?.laneTotals?.open).toBe(null);
+    expect(lastKanbanBoardProps.current?.laneTotals?.open).toBe(9);
   });
 
   it("reads the toolbar stat pills from useTrackerStats and refreshes them after a mutation", async () => {

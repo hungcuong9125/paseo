@@ -2600,20 +2600,20 @@ export const ar: TranslationResources = {
     },
     kanban: {
       lane: {
-        ready: "التراكم",
         open: "مهام",
         inProgress: "قيد التنفيذ",
         done: "منجز",
         cancelled: "ملغى",
       },
       empty: {
-        ready: "لا توجد عناصر في التراكم",
         open: "لا توجد مهام",
         inProgress: "لا توجد عناصر قيد التنفيذ",
         done: "لا توجد عناصر منجزة",
         cancelled: "لا توجد عناصر ملغاة",
       },
       showMore: "عرض {{count}} المزيد",
+      blocked: "محظور",
+      refresh: "تحديث",
       moveMenu: {
         trigger: "إجراءات {{title}}",
         title: "الإجراءات",

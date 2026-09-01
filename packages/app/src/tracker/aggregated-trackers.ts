@@ -85,18 +85,17 @@ export interface FetchTrackerReadyIdsInput {
 
 /**
  * Fan out `project.tracker.ready` across every known project and merge the
- * unblocked tracker ids into one flat Set — same resilience posture as
- * fetchTrackerPage: an offline host, a server that doesn't advertise
- * `aitTrackerReady` yet, or a project whose RPC fails all just contribute
- * nothing rather than failing the whole fetch. Per
- * docs/refactors/tracker-kanban-redesign.md and tracker-board-model.ts's
- * `readyIds` contract, an id in the result only matters for a tracker whose
- * status is already "open" — everything else ignores it.
+ * unblocked tracker ids into one flat Set. An offline host, a server that
+ * doesn't advertise `aitTrackerReady` yet, or a project whose RPC fails makes
+ * the result unknown rather than treating every tracker from that project as
+ * blocked. Per tracker-board-model.ts's `readyIds` contract, an id in the
+ * result only matters for a tracker whose status is already "open".
  */
 export async function fetchTrackerReadyIds(
   input: FetchTrackerReadyIdsInput,
-): Promise<ReadonlySet<string>> {
+): Promise<ReadonlySet<string> | null> {
   const readyIds = new Set<string>();
+  let isComplete = true;
 
   await Promise.all(
     input.projects.map(async (project) => {
@@ -104,9 +103,11 @@ export async function fetchTrackerReadyIds(
       const isOnline = snapshot?.connectionStatus === "online";
       const client = input.runtime.getClient(project.serverId);
       if (!client || !isOnline) {
+        isComplete = false;
         return;
       }
       if (client.getLastServerInfoMessage()?.features?.aitTrackerReady !== true) {
+        isComplete = false;
         return;
       }
       try {
@@ -115,12 +116,12 @@ export async function fetchTrackerReadyIds(
           readyIds.add(id);
         }
       } catch {
-        // Silently skip, same as an offline host — that project's items just stay in Open.
+        isComplete = false;
       }
     }),
   );
 
-  return readyIds;
+  return isComplete ? readyIds : null;
 }
 
 /** Cursor pagination envelope from a paginated tracker response. `null` means

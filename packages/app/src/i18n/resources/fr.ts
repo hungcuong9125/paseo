@@ -2667,20 +2667,20 @@ export const fr: TranslationResources = {
     },
     kanban: {
       lane: {
-        ready: "Backlog",
         open: "À faire",
         inProgress: "En cours",
         done: "Terminé",
         cancelled: "Annulé",
       },
       empty: {
-        ready: "Aucun élément dans le backlog",
         open: "Aucun élément à faire",
         inProgress: "Aucun élément en cours",
         done: "Aucun élément terminé",
         cancelled: "Aucun élément annulé",
       },
       showMore: "Afficher {{count}} de plus",
+      blocked: "Bloqué",
+      refresh: "Actualiser",
       moveMenu: {
         trigger: "Actions pour {{title}}",
         title: "Actions",

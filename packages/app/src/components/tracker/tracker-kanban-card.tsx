@@ -17,6 +17,8 @@ export interface TrackerKanbanCardProps {
   childCount?: number;
   doneCount?: number;
   createdAt?: string | null;
+  /** Readiness is unknown while the readiness query is loading. */
+  isBlocked?: boolean;
   testID?: string;
 }
 
@@ -47,6 +49,7 @@ export function TrackerKanbanCard({
   childCount,
   doneCount,
   createdAt = null,
+  isBlocked = false,
   testID,
 }: TrackerKanbanCardProps): ReactElement {
   const { t } = useTranslation();
@@ -70,13 +73,16 @@ export function TrackerKanbanCard({
       <Text style={styles.title} numberOfLines={2}>
         {title}
       </Text>
-      {projectLabel || createdAt ? (
+      {projectLabel || createdAt || isBlocked ? (
         <View style={styles.footerRow}>
           {/* Content-sized, not stretched — a bare child of this row would
               otherwise default to cross-axis stretch. Rendered even when
               empty so createdAt still lands on the right via space-between. */}
           <View style={styles.projectChipWrap}>
             {projectLabel ? <StatusBadge label={projectLabel} variant="muted" size="sm" /> : null}
+            {isBlocked ? (
+              <StatusBadge label={t("tracker.kanban.blocked")} variant="error" size="sm" />
+            ) : null}
           </View>
           {createdAt ? (
             <Text style={styles.dates} numberOfLines={1}>
@@ -126,6 +132,9 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[2],
   },
   projectChipWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
     alignSelf: "flex-start",
   },
   prioP0: {

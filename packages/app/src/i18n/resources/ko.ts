@@ -2615,20 +2615,20 @@ export const ko: TranslationResources = {
     },
     kanban: {
       lane: {
-        ready: "백로그",
         open: "할 일",
         inProgress: "진행 중",
         done: "완료",
         cancelled: "취소",
       },
       empty: {
-        ready: "백로그 항목이 없습니다",
         open: "할 일 항목이 없습니다",
         inProgress: "진행 중인 항목이 없습니다",
         done: "완료된 항목이 없습니다",
         cancelled: "취소된 항목이 없습니다",
       },
       showMore: "{{count}}개 더 보기",
+      blocked: "차단됨",
+      refresh: "새로 고침",
       moveMenu: {
         trigger: "{{title}} 작업",
         title: "작업",

@@ -2707,20 +2707,20 @@ export const en = {
     },
     kanban: {
       lane: {
-        ready: "Backlog",
         open: "Todo",
         inProgress: "In progress",
         done: "Done",
         cancelled: "Cancelled",
       },
       empty: {
-        ready: "No backlog items",
         open: "No todo items",
         inProgress: "No items in progress",
         done: "No done items",
         cancelled: "No cancelled items",
       },
       showMore: "Show {{count}} more",
+      blocked: "Blocked",
+      refresh: "Refresh",
       moveMenu: {
         trigger: "Actions for {{title}}",
         title: "Actions",

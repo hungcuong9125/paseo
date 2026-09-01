@@ -24,14 +24,14 @@ describe("buildTrackerBoard", () => {
 
     const board = buildTrackerBoard(trackers, "all");
 
-    expect(board.visibleLanes).toEqual(["ready", "open", "in_progress", "done", "cancelled"]);
+    expect(board.visibleLanes).toEqual(["open", "in_progress", "done", "cancelled"]);
     expect(board.open.map((card) => card.tracker.id)).toEqual(["a"]);
     expect(board.in_progress.map((card) => card.tracker.id)).toEqual(["b"]);
     expect(board.done.map((card) => card.tracker.id)).toEqual(["c"]);
     expect(board.cancelled.map((card) => card.tracker.id)).toEqual(["d"]);
   });
 
-  it("splits open items into ready and open by readyIds membership, leaving in_progress and done untouched", () => {
+  it("keeps open items in Todo and marks only unready items as blocked", () => {
     const trackers = [
       tracker({ id: "unblocked", status: "open" }),
       tracker({ id: "blocked", status: "open" }),
@@ -42,9 +42,10 @@ describe("buildTrackerBoard", () => {
 
     const board = buildTrackerBoard(trackers, "all", readyIds);
 
-    expect(board.visibleLanes).toEqual(["ready", "open", "in_progress", "done", "cancelled"]);
-    expect(board.ready.map((card) => card.tracker.id)).toEqual(["unblocked"]);
-    expect(board.open.map((card) => card.tracker.id)).toEqual(["blocked"]);
+    expect(board.visibleLanes).toEqual(["open", "in_progress", "done", "cancelled"]);
+    expect(board.open.map((card) => card.tracker.id)).toEqual(["blocked", "unblocked"]);
+    expect(board.open.find((card) => card.tracker.id === "unblocked")?.isBlocked).toBe(false);
+    expect(board.open.find((card) => card.tracker.id === "blocked")?.isBlocked).toBe(true);
     expect(board.in_progress.map((card) => card.tracker.id)).toEqual(["doing"]);
     expect(board.done.map((card) => card.tracker.id)).toEqual(["finished"]);
   });
@@ -54,8 +55,8 @@ describe("buildTrackerBoard", () => {
 
     const board = buildTrackerBoard(trackers, "all");
 
-    expect(board.ready).toEqual([]);
     expect(board.open.map((card) => card.tracker.id)).toEqual(["a", "b"]);
+    expect(board.open.every((card) => !card.isBlocked)).toBe(true);
   });
 
   it("puts cancelled items in their own lane with a distinguishing flag, closed items without it", () => {
@@ -78,7 +79,7 @@ describe("buildTrackerBoard", () => {
     "always shows every lane, regardless of filter %s — Kanban never hides a lane",
     (filter) => {
       const board = buildTrackerBoard([], filter);
-      expect(board.visibleLanes).toEqual(["ready", "open", "in_progress", "done", "cancelled"]);
+      expect(board.visibleLanes).toEqual(["open", "in_progress", "done", "cancelled"]);
     },
   );
 
@@ -105,20 +106,19 @@ describe("buildTrackerBoard", () => {
       const priority = filter.toUpperCase() as TrackerSummary["priority"];
       const otherPriority = priority === "P0" ? "P1" : "P0";
       const trackers = [
-        tracker({ id: "match-ready", status: "open", priority }),
+        tracker({ id: "match-unblocked", status: "open", priority }),
         tracker({ id: "match-open", status: "open", priority }),
         tracker({ id: "match-in-progress", status: "in_progress", priority }),
         tracker({ id: "wrong-priority", status: "open", priority: otherPriority }),
         tracker({ id: "done-same-priority", status: "closed", priority }),
         tracker({ id: "done-wrong-priority", status: "closed", priority: otherPriority }),
       ];
-      const readyIds = new Set(["match-ready"]);
+      const readyIds = new Set(["match-unblocked"]);
 
       const board = buildTrackerBoard(trackers, filter, readyIds);
 
-      expect(board.visibleLanes).toEqual(["ready", "open", "in_progress", "done", "cancelled"]);
-      expect(board.ready.map((card) => card.tracker.id)).toEqual(["match-ready"]);
-      expect(board.open.map((card) => card.tracker.id)).toEqual(["match-open"]);
+      expect(board.visibleLanes).toEqual(["open", "in_progress", "done", "cancelled"]);
+      expect(board.open.map((card) => card.tracker.id)).toEqual(["match-open", "match-unblocked"]);
       expect(board.in_progress.map((card) => card.tracker.id)).toEqual(["match-in-progress"]);
       // Priority counting/filtering spans every status now (matching the toolbar's
       // stat count), so a same-priority Done card stays — only its priority decides.

@@ -2568,20 +2568,20 @@ export const zhCN: TranslationResources = {
     },
     kanban: {
       lane: {
-        ready: "积压",
         open: "待办",
         inProgress: "进行中",
         done: "已完成",
         cancelled: "已取消",
       },
       empty: {
-        ready: "没有积压的事项",
         open: "没有待办的事项",
         inProgress: "没有进行中的事项",
         done: "没有已完成的事项",
         cancelled: "没有已取消的事项",
       },
       showMore: "显示另外 {{count}} 项",
+      blocked: "已阻塞",
+      refresh: "刷新",
       moveMenu: {
         trigger: "{{title}} 的操作",
         title: "操作",

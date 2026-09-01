@@ -9,7 +9,7 @@ import { matchesTrackerStatFilter, type TrackerStatFilter } from "@/tracker/trac
 // lane stays visible, nothing filtered) if ever passed.
 export type TrackerBoardFilter = TrackerStatFilter;
 
-export type TrackerBoardLaneKey = "ready" | "open" | "in_progress" | "done" | "cancelled";
+export type TrackerBoardLaneKey = "open" | "in_progress" | "done" | "cancelled";
 
 export interface TrackerBoardCard {
   tracker: TrackerSummary;
@@ -17,6 +17,8 @@ export interface TrackerBoardCard {
    * lane with `closed` items but must never render with the plain "success"
    * done treatment — this flag is what lets the card tell the two apart. */
   isCancelled: boolean;
+  /** True only for an open tracker whose id is absent from a loaded readiness set. */
+  isBlocked: boolean;
 }
 
 export interface TrackerBoard {
@@ -26,32 +28,18 @@ export interface TrackerBoard {
    * lanes still matched and left one lane stretched full-width). This field
    * stays mainly for the compact single-lane-at-a-time layout's switcher. */
   visibleLanes: readonly TrackerBoardLaneKey[];
-  ready: TrackerBoardCard[];
   open: TrackerBoardCard[];
   in_progress: TrackerBoardCard[];
   done: TrackerBoardCard[];
   cancelled: TrackerBoardCard[];
 }
 
-const ALL_LANES: readonly TrackerBoardLaneKey[] = [
-  "ready",
-  "open",
-  "in_progress",
-  "done",
-  "cancelled",
-];
+const ALL_LANES: readonly TrackerBoardLaneKey[] = ["open", "in_progress", "done", "cancelled"];
 
-// Ready is derived, not a peer TrackerStatus: an item is Ready iff it is
-// `open` AND unblocked (its id is in `readyIds`, from `project.tracker.ready`).
-// An `open` item not in `readyIds` is blocked and stays in Open. In progress
-// and Done never depend on `readyIds`.
-function laneForTracker(
-  tracker: TrackerSummary,
-  readyIds: ReadonlySet<string>,
-): TrackerBoardLaneKey {
+function laneForTracker(tracker: TrackerSummary): TrackerBoardLaneKey {
   switch (tracker.status) {
     case "open":
-      return readyIds.has(tracker.id) ? "ready" : "open";
+      return "open";
     case "in_progress":
       return "in_progress";
     case "closed":
@@ -68,27 +56,24 @@ function isPriorityFilter(filter: TrackerBoardFilter): filter is "p0" | "p1" | "
 }
 
 /**
- * Partitions a flat tracker list into the five Kanban lanes, every one of
+ * Partitions a flat tracker list into the four Kanban lanes, every one of
  * which always renders — the toolbar's priority filter (the only Kanban stat
  * filter left; Open/In Progress/Done only filter the List view) removes
  * non-matching cards from their lane rather than hiding the lane itself.
- * Partitioning is by `status` (plus `readyIds` membership for the open/ready
- * split) alone — `parentId` is never read, so malformed or cyclic hierarchy
- * data cannot affect lane placement.
+ * Partitioning is by `status` alone — `parentId` is never read, so malformed
+ * or cyclic hierarchy data cannot affect lane placement. A loaded `readyIds`
+ * set only adds the blocked indicator to open cards; it does not change lanes.
  *
- * `readyIds` defaults to an empty Set so callers that don't have the data yet
- * (loading, or the server doesn't advertise the capability) degrade to
- * "everything open-status stays in Open, nothing is Ready" rather than
- * crashing or showing a permanently-empty-looking Ready column.
+ * A null `readyIds` means readiness is not known yet, so cards do not render a
+ * blocked indicator until the readiness query has produced a result.
  */
 export function buildTrackerBoard(
   trackers: readonly TrackerSummary[],
   filter: TrackerBoardFilter,
-  readyIds: ReadonlySet<string> = new Set(),
+  readyIds: ReadonlySet<string> | null = null,
 ): TrackerBoard {
   const isPriority = isPriorityFilter(filter);
 
-  const ready: TrackerBoardCard[] = [];
   const open: TrackerBoardCard[] = [];
   const inProgress: TrackerBoardCard[] = [];
   const done: TrackerBoardCard[] = [];
@@ -98,12 +83,13 @@ export function buildTrackerBoard(
     if (isPriority && !matchesTrackerStatFilter(tracker, filter)) {
       continue;
     }
-    const lane = laneForTracker(tracker, readyIds);
-    const card: TrackerBoardCard = { tracker, isCancelled: tracker.status === "cancelled" };
+    const lane = laneForTracker(tracker);
+    const card: TrackerBoardCard = {
+      tracker,
+      isCancelled: tracker.status === "cancelled",
+      isBlocked: tracker.status === "open" && readyIds !== null && !readyIds.has(tracker.id),
+    };
     switch (lane) {
-      case "ready":
-        ready.push(card);
-        break;
       case "open":
         open.push(card);
         break;
@@ -119,7 +105,6 @@ export function buildTrackerBoard(
     }
   }
 
-  ready.sort((a, b) => compareTrackers(a.tracker, b.tracker));
   open.sort((a, b) => compareTrackers(a.tracker, b.tracker));
   inProgress.sort((a, b) => compareTrackers(a.tracker, b.tracker));
   // Done/Cancelled deliberately do NOT re-sort (pas-2KY5X.37's sibling
@@ -133,5 +118,5 @@ export function buildTrackerBoard(
   // arriving on a later page could rank above an already-shown one and jump
   // above it in the Done lane — the exact surface the human reported.
 
-  return { visibleLanes: ALL_LANES, ready, open, in_progress: inProgress, done, cancelled };
+  return { visibleLanes: ALL_LANES, open, in_progress: inProgress, done, cancelled };
 }
