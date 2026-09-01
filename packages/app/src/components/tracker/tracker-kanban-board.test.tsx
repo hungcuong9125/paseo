@@ -54,7 +54,6 @@ vi.mock("@/components/ui/segmented-control", () => ({
 
 vi.mock("@/components/tracker/tracker-kanban-column", () => {
   function getEmptyMessage(lane: string): string {
-    if (lane === "ready") return "No backlog items";
     if (lane === "open") return "No todo items";
     if (lane === "in_progress") return "No items in progress";
     if (lane === "done") return "No done items";
@@ -141,12 +140,10 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, options?: Record<string, unknown>) => {
       const templates: Record<string, string> = {
-        "tracker.kanban.lane.ready": "Backlog",
         "tracker.kanban.lane.open": "Todo",
         "tracker.kanban.lane.inProgress": "In progress",
         "tracker.kanban.lane.done": "Done",
         "tracker.kanban.lane.cancelled": "Cancelled",
-        "tracker.kanban.empty.ready": "No backlog items",
         "tracker.kanban.empty.open": "No todo items",
         "tracker.kanban.empty.inProgress": "No items in progress",
         "tracker.kanban.empty.done": "No done items",
@@ -258,7 +255,6 @@ describe("TrackerKanbanBoard — desktop layout", () => {
 
     renderBoard(trackers);
 
-    expect(screen.getByTestId("tracker-kanban-column-ready")).toBeTruthy();
     expect(screen.getByTestId("tracker-kanban-column-open")).toBeTruthy();
     expect(screen.getByTestId("tracker-kanban-column-in_progress")).toBeTruthy();
     expect(screen.getByTestId("tracker-kanban-column-done")).toBeTruthy();
@@ -266,12 +262,11 @@ describe("TrackerKanbanBoard — desktop layout", () => {
 
     expect(screen.getByText("Open one")).toBeTruthy();
     expect(screen.getByText("Doing one")).toBeTruthy();
-    expect(screen.getByText("No backlog items")).toBeTruthy();
     expect(screen.getByText("No done items")).toBeTruthy();
     expect(screen.getByText("No cancelled items")).toBeTruthy();
   });
 
-  it("renders an open item as Ready when its id is in readyIds, leaving it out of Open", () => {
+  it("keeps all open items in Todo while readiness marks blocked cards", () => {
     const trackers = [
       tracker({ id: "unblocked", status: "open", title: "Unblocked one" }),
       tracker({ id: "blocked", status: "open", title: "Blocked one" }),
@@ -281,12 +276,9 @@ describe("TrackerKanbanBoard — desktop layout", () => {
       readyIds: new Set(["unblocked"]),
     });
 
-    const readyColumn = screen.getByTestId("tracker-kanban-column-ready");
     const openColumn = screen.getByTestId("tracker-kanban-column-open");
-    expect(readyColumn.textContent).toContain("Unblocked one");
-    expect(readyColumn.textContent).not.toContain("Blocked one");
+    expect(openColumn.textContent).toContain("Unblocked one");
     expect(openColumn.textContent).toContain("Blocked one");
-    expect(openColumn.textContent).not.toContain("Unblocked one");
   });
 
   it("degrades to everything-open-stays-Open when readyIds is omitted", () => {
@@ -294,7 +286,6 @@ describe("TrackerKanbanBoard — desktop layout", () => {
 
     renderBoard(trackers);
 
-    expect(screen.getByText("No backlog items")).toBeTruthy();
     expect(screen.getByTestId("tracker-kanban-column-open").textContent).toContain("Open one");
   });
 
@@ -378,22 +369,20 @@ describe("TrackerKanbanBoard — desktop layout", () => {
     expect(showMore.textContent).toContain("Show 3 more");
   });
 
-  it("keeps an empty Todo lane but anchors shared open pagination to populated Backlog", () => {
+  it("pages the shared Todo lane directly", () => {
     const onLoadMore = vi.fn();
-    const trackers = [tracker({ id: "ready", status: "open", title: "Backlog item" })];
+    const trackers = [tracker({ id: "open", status: "open", title: "Todo item" })];
 
     renderBoard(trackers, {
-      readyIds: new Set(["ready"]),
-      laneHasMore: { ready: true, open: true },
+      laneHasMore: { open: true },
       onLoadMore,
     });
 
     expect(screen.queryByTestId("tracker-kanban-column-open")).not.toBeNull();
-    expect(screen.queryByTestId("tracker-kanban-column-open-show-more")).toBeNull();
-    expect(screen.queryByTestId("tracker-kanban-column-ready-show-more")).not.toBeNull();
+    expect(screen.queryByTestId("tracker-kanban-column-open-show-more")).not.toBeNull();
 
-    fireEvent.click(screen.getByTestId("tracker-kanban-column-ready-show-more"));
-    expect(onLoadMore).toHaveBeenCalledWith("ready");
+    fireEvent.click(screen.getByTestId("tracker-kanban-column-open-show-more"));
+    expect(onLoadMore).toHaveBeenCalledWith("open");
   });
 });
 
@@ -401,7 +390,7 @@ describe("TrackerKanbanBoard — compact single-lane projection", () => {
   beforeEach(() => useIsCompactFormFactorMock.mockReturnValue(true));
   afterEach(() => useIsCompactFormFactorMock.mockReturnValue(false));
 
-  it("renders exactly one lane behind a 5-option segmented control (Backlog, Todo, In progress, Done, Cancelled) and switches lane on selection", () => {
+  it("renders exactly one lane behind a 4-option segmented control and switches lane on selection", () => {
     const trackers = [
       tracker({ id: "a", status: "open", title: "Open one" }),
       tracker({ id: "b", status: "closed", title: "Done one" }),
@@ -410,30 +399,28 @@ describe("TrackerKanbanBoard — compact single-lane projection", () => {
 
     renderBoard(trackers);
 
-    expect(screen.getByTestId("tracker-kanban-board-lane-selector-ready")).toBeTruthy();
     expect(screen.getByTestId("tracker-kanban-board-lane-selector-open")).toBeTruthy();
     expect(screen.getByTestId("tracker-kanban-board-lane-selector-in_progress")).toBeTruthy();
     expect(screen.getByTestId("tracker-kanban-board-lane-selector-done")).toBeTruthy();
     expect(screen.getByTestId("tracker-kanban-board-lane-selector-cancelled")).toBeTruthy();
 
-    expect(screen.getByTestId("tracker-kanban-column-ready")).toBeTruthy();
-    expect(screen.queryByTestId("tracker-kanban-column-open")).toBeNull();
+    expect(screen.getByTestId("tracker-kanban-column-open")).toBeTruthy();
     expect(screen.queryByTestId("tracker-kanban-column-in_progress")).toBeNull();
     expect(screen.queryByTestId("tracker-kanban-column-done")).toBeNull();
     expect(screen.queryByTestId("tracker-kanban-column-cancelled")).toBeNull();
 
     fireEvent.click(screen.getByTestId("tracker-kanban-board-lane-selector-done"));
 
-    expect(screen.queryByTestId("tracker-kanban-column-ready")).toBeNull();
+    expect(screen.queryByTestId("tracker-kanban-column-open")).toBeNull();
     expect(screen.getByTestId("tracker-kanban-column-done")).toBeTruthy();
     expect(screen.getByText("Done one")).toBeTruthy();
   });
 
   // Open/In Progress/Done only filter the List view's dataset — Kanban (compact
-  // or not) never hides a lane for them, so the 5-lane switcher is identical to
+  // or not) never hides a lane for them, so the 4-lane switcher is identical to
   // the "all" filter regardless of which of these three is passed.
   it.each(["open", "in_progress", "done"] as const)(
-    "the %s filter still offers all 5 lanes behind the segmented control — it's a List-only filter",
+    "the %s filter still offers all 4 lanes behind the segmented control — it's a List-only filter",
     (filter) => {
       const trackers = [
         tracker({ id: "a", status: "closed", title: "Done one" }),
@@ -442,7 +429,6 @@ describe("TrackerKanbanBoard — compact single-lane projection", () => {
 
       renderBoard(trackers, { filter });
 
-      expect(screen.getByTestId("tracker-kanban-board-lane-selector-ready")).toBeTruthy();
       expect(screen.getByTestId("tracker-kanban-board-lane-selector-open")).toBeTruthy();
       expect(screen.getByTestId("tracker-kanban-board-lane-selector-in_progress")).toBeTruthy();
       expect(screen.getByTestId("tracker-kanban-board-lane-selector-done")).toBeTruthy();
@@ -463,11 +449,11 @@ describe("TrackerKanbanBoard — compact single-lane projection", () => {
 
     renderBoard(trackers, { filter: "p0" });
 
-    // Still all 5 lanes — priority never removes a lane from the switcher.
+    // Still all 4 lanes — priority never removes a lane from the switcher.
     expect(screen.getByTestId("tracker-kanban-board-lane-selector-in_progress")).toBeTruthy();
     expect(screen.getByTestId("tracker-kanban-board-lane-selector-done")).toBeTruthy();
-    // Effective lane defaults to the first lane (Ready); both cards' status is
-    // "open" with no readyIds, so they land in Open instead.
+    // Effective lane defaults to the first lane (Open), where both cards' status
+    // is rendered and the priority filter removes the non-matching card.
     fireEvent.click(screen.getByTestId("tracker-kanban-board-lane-selector-open"));
     expect(screen.getByText("Matches P0")).toBeTruthy();
     expect(screen.queryByText("Not P0")).toBeNull();

@@ -56,11 +56,10 @@ export type TrackerTableProps = TrackerTableBaseProps &
   );
 
 // The four real statuses, in the order they read top-to-bottom in the List view.
-// Unlike the Kanban board, List does NOT split `open` into Ready/Backlog (that
-// split is Kanban-derived `readyIds` data List never fetches); each status gets
-// exactly one section. Section copy is its own `tracker.list.section.*` set,
-// naming-aligned with the Kanban lane labels (Todo/In progress/Done/Cancelled)
-// even though List never shows a Backlog section.
+// List and Kanban both keep all `open` trackers in the Todo status section;
+// readiness is a Kanban card indicator sourced from `readyIds`, which this
+// table does not fetch. Section copy is its own `tracker.list.section.*` set,
+// naming-aligned with the Kanban lane labels (Todo/In progress/Done/Cancelled).
 const LIST_SECTIONS: ReadonlyArray<{ status: TrackerStatus; labelKey: string }> = [
   { status: "open", labelKey: "tracker.list.section.open" },
   { status: "in_progress", labelKey: "tracker.list.section.inProgress" },

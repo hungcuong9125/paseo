@@ -47,7 +47,6 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, options?: Record<string, unknown>) => {
       const templates: Record<string, string> = {
-        "tracker.kanban.lane.ready": "Backlog",
         "tracker.kanban.lane.open": "Todo",
         "tracker.kanban.empty.open": "No todo items",
         "tracker.kanban.showMore": "Show {{count}} more",
@@ -74,7 +73,7 @@ function tracker(id: string): TrackerSummary {
 }
 
 function card(id: string) {
-  return { tracker: tracker(id), isCancelled: false };
+  return { tracker: tracker(id), isCancelled: false, isBlocked: false };
 }
 
 function baseProps(overrides: Partial<TrackerKanbanColumnProps> = {}): TrackerKanbanColumnProps {

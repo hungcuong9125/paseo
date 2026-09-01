@@ -36,4 +36,4 @@ When a project reports no total — an old CLI binary, an offline host, or a fet
 
 ## Counts without an exact total
 
-The Kanban ready and open lanes split by `readyIds`, which no status total can express, so they fall back to their loaded counts. Every other lane, every List section, and the toolbar pills use the server counts above.
+Kanban's blocked indicator is derived from `readyIds`, which no status total can express. The Todo lane and every other lane use the matching server status count. Every List section and the toolbar pills use the server counts above.

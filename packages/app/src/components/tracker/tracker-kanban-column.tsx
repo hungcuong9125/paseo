@@ -26,15 +26,12 @@ import type { TrackerLane, TrackerTransition } from "@/tracker/tracker-transitio
 // (per-transition labels) so a lane's i18n key is named in exactly one place.
 export function laneTranslationKey(
   lane: TrackerBoardLaneKey,
-): "ready" | "open" | "inProgress" | "done" | "cancelled" {
+): "open" | "inProgress" | "done" | "cancelled" {
   return lane === "in_progress" ? "inProgress" : lane;
 }
 
-// tracker-transitions.ts's TrackerLane stays open|in_progress|done — Ready is
-// never itself a status to transition into, only a display split of "open".
-// A card shown in the Ready lane still transitions like an Open one.
 function transitionLaneFor(lane: TrackerBoardLaneKey): TrackerLane {
-  return lane === "ready" ? "open" : lane;
+  return lane;
 }
 
 interface TrackerKanbanCardPressableProps {
@@ -173,6 +170,7 @@ export function TrackerKanbanColumn({
           childCount={childCount}
           doneCount={doneCount}
           createdAt={tracker.createdAt ?? null}
+          isBlocked={card.isBlocked}
           testID={cardTestID}
         />
       );

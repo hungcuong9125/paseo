@@ -33,6 +33,7 @@ import {
   ListChecks,
   ListFilter,
   Plus,
+  RefreshCw,
   X,
 } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -85,8 +86,8 @@ import {
 } from "@/tracker/aggregated-trackers";
 import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
 // Both List and Kanban read the same first page per section and page further
-// only on an explicit loadMore. The screen never refetches for its own
-// mutations — it patches the loaded rows and the section totals in place.
+// only on an explicit loadMore. User mutations patch the loaded rows and the
+// section totals in place; refreshes handle changes made outside Paseo.
 import { useTrackerProjectData } from "@/tracker/use-tracker-project-data";
 import { useTrackerStats } from "@/tracker/use-tracker-stats";
 import { useTrackerSearch } from "@/tracker/use-tracker-search";
@@ -260,8 +261,6 @@ function bellIconColor(theme: Theme, isHovered: boolean): string {
   return theme.colorScheme === "dark" ? theme.colors.foreground : theme.colors.palette.red[600];
 }
 const inverseColorMapping = (theme: Theme) => ({ color: theme.colors.surface0 });
-const EMPTY_READY_IDS: ReadonlySet<string> = new Set();
-
 const STAT_FILTER_TO_PRIORITY: Readonly<Partial<Record<StatFilter, TrackerPriority>>> = {
   p0: "P0",
   p1: "P1",
@@ -277,15 +276,21 @@ function isPriorityStatFilter(filter: StatFilter): boolean {
   return filter in STAT_FILTER_TO_PRIORITY;
 }
 
-// Only fetched in Kanban mode — List never renders a Ready lane. The fetch
-// itself (fetchTrackerReadyIds) is per-project resilient: a project whose
-// server predates `aitTrackerReady`, is offline, or errors just contributes
-// no ids, so that project's items stay in Open rather than blocking the fetch.
+// Only fetched in Kanban mode — List does not render readiness indicators. The
+// fetch itself (fetchTrackerReadyIds) is per-project resilient: a project whose
+// server predates `aitTrackerReady`, is offline, or errors makes readiness
+// unknown, so those items stay in Open without a Blocked badge.
+interface TrackerReadyQuery {
+  ids: ReadonlySet<string> | null;
+  refetch: () => void;
+  isFetching: boolean;
+}
+
 function useTrackerReadyIds(options: {
   viewMode: ViewMode;
   projects: readonly TrackerProjectInput[];
   selectedProjectId: string | null;
-}): ReadonlySet<string> {
+}): TrackerReadyQuery {
   const relevantProjects = useMemo(
     () =>
       options.selectedProjectId
@@ -293,7 +298,7 @@ function useTrackerReadyIds(options: {
         : options.projects,
     [options.projects, options.selectedProjectId],
   );
-  const query = useFetchQuery<ReadonlySet<string>>({
+  const query = useFetchQuery<ReadonlySet<string> | null>({
     queryKey: [
       ...trackerQueryBaseKey,
       "ready",
@@ -305,7 +310,15 @@ function useTrackerReadyIds(options: {
     dataShape: "value",
     staleTimeMs: 5_000,
   });
-  return query.data ?? EMPTY_READY_IDS;
+  const { refetch: refetchQuery } = query;
+  const refetch = useCallback(() => {
+    void refetchQuery();
+  }, [refetchQuery]);
+  return {
+    ids: query.data ?? null,
+    refetch,
+    isFetching: query.isFetching,
+  };
 }
 
 // List view's data source switch: browse mode reads `browseTrackers` — the
@@ -418,10 +431,10 @@ export function TrackerScreen(): ReactElement {
     return <View style={styles.container} />;
   }
 
-  return <TrackerScreenContent />;
+  return <TrackerScreenContent isFocused={isFocused} />;
 }
 
-function TrackerScreenContent(): ReactElement {
+function TrackerScreenContent({ isFocused }: { isFocused: boolean }): ReactElement {
   const { projects: projectSummaries } = useProjects();
   // "No projects" is a call to action, not a loading state, so it must not be
   // shown until every host has actually delivered its project list.
@@ -521,7 +534,7 @@ function TrackerScreenContent(): ReactElement {
     [viewMode, listStatFilter, kanbanStatFilter],
   );
   // Which sections to keep loaded. Kanban always needs all four — it renders
-  // all five lanes from this one shared fetch. List with a priority filter
+  // all four lanes from this one shared fetch. List with a priority filter
   // also needs all four (priority spans every status). Only a status-shaped
   // List filter (open/in_progress/done) narrows this to the exactly one
   // section it shows — `undefined` here means "all four", matching the
@@ -688,7 +701,15 @@ function TrackerScreenContent(): ReactElement {
   // above — this is the same array, kept under its own name purely for
   // readability at the Kanban call sites below.
   const kanbanTrackers = projectData.trackers;
-  const readyIds = useTrackerReadyIds({ viewMode, projects: projectInputs, selectedProjectId });
+  const {
+    ids: readyIds,
+    refetch: refetchReady,
+    isFetching: isReadyFetching,
+  } = useTrackerReadyIds({
+    viewMode,
+    projects: projectInputs,
+    selectedProjectId,
+  });
 
   const { isListSearch, searchState, listViewTrackers } = useTrackerListView({
     hasAnyProject,
@@ -793,6 +814,22 @@ function TrackerScreenContent(): ReactElement {
     projectData.refetch();
     stats.refetch();
   }, [projectData, stats]);
+  const handleRefresh = useCallback(() => {
+    projectData.refetch();
+    stats.refetch();
+    if (viewMode === "kanban") {
+      refetchReady();
+    }
+  }, [projectData, refetchReady, stats, viewMode]);
+  const isRefreshing = projectData.isLoading || stats.isLoading || isReadyFetching;
+
+  useEffect(() => {
+    if (!isFocused) {
+      return;
+    }
+    const interval = setInterval(handleRefresh, 45_000);
+    return () => clearInterval(interval);
+  }, [handleRefresh, isFocused]);
   const handleSelectProject = useCallback((projectId: string | null) => {
     setSelectedProjectId(projectId);
   }, []);
@@ -843,34 +880,27 @@ function TrackerScreenContent(): ReactElement {
         : trackerHierarchy.descendantStats(aggregated.id).childCount > 0,
     [trackerHierarchy],
   );
-  // Status totals can't express the ready-versus-blocked split within Open,
-  // so `ready` and `open` both fall back to their loaded count (laneTotal:
-  // null) — tracked separately as pas-UkLWZ.10. `laneForTracker` in
-  // tracker-board-model.ts maps `closed -> "done"` and `cancelled ->
-  // "cancelled"` as two separate lanes — the Done column renders closed items
-  // only, so its total is `closed` alone; summing in cancelled here would
-  // double-count every cancelled tracker across the board (pas-2KY5X.2).
+  // `laneForTracker` in tracker-board-model.ts maps `closed -> "done"` and
+  // `cancelled -> "cancelled"` as two separate lanes — the Done column renders
+  // closed items only, so its total is `closed` alone; summing in cancelled here
+  // would double-count every cancelled tracker across the board (pas-2KY5X.2).
   // `in_progress` and `cancelled` map straight across.
   const laneTotals = useMemo<Partial<Record<TrackerBoardLaneKey, number | null>>>(() => {
-    const { closed, cancelled, in_progress: inProgress } = projectData.sectionTotals;
-    return { ready: null, open: null, in_progress: inProgress, done: closed, cancelled };
+    const { open, closed, cancelled, in_progress: inProgress } = projectData.sectionTotals;
+    return { open, in_progress: inProgress, done: closed, cancelled };
   }, [projectData.sectionTotals]);
   const laneHasMore = useMemo<Partial<Record<TrackerBoardLaneKey, boolean>>>(() => {
     const { closed, cancelled, in_progress: inProgress, open } = projectData.sectionHasMore;
-    return { ready: open, open, in_progress: inProgress, done: closed, cancelled };
+    return { open, in_progress: inProgress, done: closed, cancelled };
   }, [projectData.sectionHasMore]);
   const laneLoadingMore = useMemo<Partial<Record<TrackerBoardLaneKey, boolean>>>(() => {
     const { closed, cancelled, in_progress: inProgress, open } = projectData.sectionLoadingMore;
-    return { ready: open, open, in_progress: inProgress, done: closed, cancelled };
+    return { open, in_progress: inProgress, done: closed, cancelled };
   }, [projectData.sectionLoadingMore]);
-  // Every lane now maps onto exactly one status section (`ready`/`open` both
-  // page the `open` section, since Ready is a client-side projection of it —
-  // see the reasoning below on why that one is left as a shared cursor
-  // instead of being split further).
+  // Every lane maps onto exactly one status section.
   const handleKanbanLoadMore = useCallback(
     (lane: TrackerBoardLaneKey) => {
       switch (lane) {
-        case "ready":
         case "open":
           projectData.loadMore("open");
           return;
@@ -1013,6 +1043,15 @@ function TrackerScreenContent(): ReactElement {
     () => (
       <>
         <TrackerErrorsButton errors={bellProjectErrors} />
+        <Button
+          variant="ghost"
+          size="xs"
+          leftIcon={RefreshCw}
+          loading={isRefreshing}
+          onPress={handleRefresh}
+          accessibilityLabel={t("tracker.kanban.refresh")}
+          testID="trackers-refresh"
+        />
         <SegmentedControl
           options={viewModeOptions}
           value={viewMode}
@@ -1023,7 +1062,7 @@ function TrackerScreenContent(): ReactElement {
         />
       </>
     ),
-    [bellProjectErrors, viewMode, setViewMode],
+    [bellProjectErrors, handleRefresh, isRefreshing, setViewMode, t, viewMode],
   );
 
   return (
@@ -1762,7 +1801,7 @@ function TrackerScreenBody({
    * inferring "broken" from "empty" (pas-2KY5X.52). */
   hasProjectErrors: boolean;
   kanbanTrackers: AggregatedTracker[];
-  kanbanReadyIds: ReadonlySet<string>;
+  kanbanReadyIds: ReadonlySet<string> | null;
   laneTotals: Partial<Record<TrackerBoardLaneKey, number | null>>;
   laneHasMore: Partial<Record<TrackerBoardLaneKey, boolean>>;
   laneLoadingMore: Partial<Record<TrackerBoardLaneKey, boolean>>;
@@ -1936,7 +1975,7 @@ function TrackerScreenBody({
     // which a ScrollView's content container can't give a child.
     //
     // No "empty" branch here on purpose — a board with genuinely nothing in
-    // it is five empty lanes, not a replacement screen, and swapping the
+    // it is four empty lanes, not a replacement screen, and swapping the
     // lanes out for a centred message would move the toolbar every time a
     // filter matched nothing. hasFilteredOutTrackers is a different case: the
     // project isn't empty, the active filters just hid everything it has

@@ -17,8 +17,6 @@ import {
 import { buildTrackerHierarchy } from "@/tracker/tracker-hierarchy";
 import { createPendingTrackerSet, type TrackerTransition } from "@/tracker/tracker-transitions";
 
-const EMPTY_READY_IDS: ReadonlySet<string> = new Set();
-
 // Narrowest a lane may be squeezed to before the board gives up on fitting
 // them all and starts scrolling instead. COLUMN_GAP/COLUMN_ROW_INSET mirror
 // the `columns`/`columnsContent` styles below and are only used to work out
@@ -51,13 +49,11 @@ export interface TrackerKanbanBoardProps {
   /** Projects the board onto a subset of lanes; see buildTrackerBoard's filter contract. */
   filter: TrackerBoardFilter;
   /**
-   * Ids of unblocked trackers, from `project.tracker.ready`. An `open` tracker
-   * whose id is here renders in the Ready lane instead of Open; everything
-   * else is unaffected. Omit (or pass an empty Set) while loading or when the
-   * server doesn't advertise the capability — the board degrades to
-   * everything-open-status-stays-Open rather than crashing.
+   * Ids of unblocked trackers, from `project.tracker.ready`. An open tracker
+   * whose id is absent renders a Blocked badge when this set is available.
+   * Omit while loading or when the server doesn't advertise the capability.
    */
-  readyIds?: ReadonlySet<string>;
+  readyIds?: ReadonlySet<string> | null;
   laneTotals: Partial<Record<TrackerBoardLaneKey, number | null>>;
   laneHasMore: Partial<Record<TrackerBoardLaneKey, boolean>>;
   laneLoadingMore: Partial<Record<TrackerBoardLaneKey, boolean>>;
@@ -95,7 +91,7 @@ export interface TrackerKanbanBoardProps {
 }
 
 /**
- * The status-lane Kanban board: up to four columns (Ready, Open, In progress, Done)
+ * The status-lane Kanban board: four columns (Todo, In progress, Done, Cancelled)
  * built from tracker-board-model.ts, tracker-kanban-card.tsx, and tracker-transitions.ts.
  *
  * Desktop renders every lane `buildTrackerBoard` makes visible, side by side, each
@@ -108,7 +104,7 @@ export function TrackerKanbanBoard({
   trackers,
   isLoading = false,
   filter,
-  readyIds = EMPTY_READY_IDS,
+  readyIds = null,
   laneTotals,
   laneHasMore,
   laneLoadingMore,
@@ -208,23 +204,8 @@ export function TrackerKanbanBoard({
   const lanesFit = availableWidth != null && availableWidth >= widthNeeded;
   const scrolls = !isCompact && !lanesFit;
 
-  // Ready and Open are two visual projections of the same `open` status
-  // cursor. Keep one pagination affordance for that shared stream, and anchor
-  // it to a lane that actually has cards so an empty lane cannot promise to
-  // load rows into its sibling.
-  let sharedOpenLane: "open" | "ready" | null = null;
-  if (board.open.length > 0) {
-    sharedOpenLane = "open";
-  } else if (board.ready.length > 0) {
-    sharedOpenLane = "ready";
-  }
-  const canPageLane = (lane: TrackerBoardLaneKey): boolean =>
-    board[lane].length > 0 &&
-    (lane === "ready" || lane === "open" ? sharedOpenLane === lane : true);
-
   const columnStyle = resolveColumnStyle({ isCompact, scrolls });
   const columnList = lanesToRender.map((lane, laneIndex) => {
-    const canLoadMore = canPageLane(lane);
     return (
       <TrackerKanbanColumn
         key={lane}
@@ -234,8 +215,8 @@ export function TrackerKanbanBoard({
         cards={board[lane]}
         hierarchy={hierarchy}
         laneTotal={laneTotals?.[lane]}
-        laneHasMore={canLoadMore ? laneHasMore?.[lane] : false}
-        laneLoadingMore={canLoadMore ? laneLoadingMore?.[lane] : false}
+        laneHasMore={laneHasMore?.[lane]}
+        laneLoadingMore={laneLoadingMore?.[lane]}
         onLoadMore={onLoadMore}
         getProjectLabel={getProjectLabel}
         isPending={isPending}

@@ -2518,20 +2518,20 @@ export const ru: TranslationResources = {
     },
     kanban: {
       lane: {
-        ready: "Бэклог",
         open: "К выполнению",
         inProgress: "В работе",
         done: "Готово",
         cancelled: "Отменено",
       },
       empty: {
-        ready: "Нет задач в бэклоге",
         open: "Нет задач к выполнению",
         inProgress: "Нет задач в работе",
         done: "Нет завершённых задач",
         cancelled: "Нет отменённых задач",
       },
       showMore: "Показать ещё {{count}}",
+      blocked: "Заблокировано",
+      refresh: "Обновить",
       moveMenu: {
         trigger: "Действия для {{title}}",
         title: "Действия",

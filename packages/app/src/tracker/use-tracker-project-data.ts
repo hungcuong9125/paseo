@@ -469,7 +469,7 @@ export interface UseTrackerProjectDataOptions {
    * fetched dataset. */
   priority?: TrackerPriority;
   /** Which status sections to keep loaded. Omitted means all four —
-   * Kanban's requirement (it renders all five lanes from this one shared
+   * Kanban's requirement (it renders all four lanes from this one shared
    * fetch) and List's own default when no status-shaped filter narrows the
    * view. List narrows this to exactly the one section a status filter
    * needs (`listVisibleStatusesForFilter` in tracker-stats.ts — a priority

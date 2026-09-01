@@ -2513,20 +2513,20 @@ export const ptBR: TranslationResources = {
     },
     kanban: {
       lane: {
-        ready: "Backlog",
         open: "A fazer",
         inProgress: "Em andamento",
         done: "Concluído",
         cancelled: "Cancelado",
       },
       empty: {
-        ready: "Nenhum item no backlog",
         open: "Nenhum item a fazer",
         inProgress: "Nenhum item em andamento",
         done: "Nenhum item concluído",
         cancelled: "Nenhum item cancelado",
       },
       showMore: "Mostrar mais {{count}}",
+      blocked: "Bloqueado",
+      refresh: "Atualizar",
       moveMenu: {
         trigger: "Ações para {{title}}",
         title: "Ações",
