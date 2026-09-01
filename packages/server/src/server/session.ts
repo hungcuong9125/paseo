@@ -4,6 +4,7 @@ import { lstat, mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises";
 import { basename, resolve, sep } from "path";
 import { homedir } from "node:os";
 import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
+import { checkAitInitialized } from "./ait-init-status.js";
 import {
   serializeAgentStreamEvent,
   type AgentSnapshotPayload,
@@ -165,6 +166,9 @@ import {
   createGitMetadataGenerator,
 } from "./session/checkout/git-metadata-generator.js";
 import { ScheduleSession } from "./session/schedule/schedule-session.js";
+import { TrackerSession } from "./session/tracker/tracker-session.js";
+import type { AitService } from "../services/ait-cli-service.js";
+import type { TrackerSyncManager } from "./tracker-sync-manager.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { WorkspaceFilesSession } from "./session/files/workspace-files-session.js";
 import { AgentConfigSession } from "./session/agent-config/agent-config-session.js";
@@ -458,6 +462,8 @@ export interface SessionOptions {
   workspaceLabelService?: WorkspaceLabelService;
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
+  aitService: AitService;
+  trackerSyncManager?: TrackerSyncManager;
   checkoutDiffManager: CheckoutDiffManager;
   github?: ForgeService;
   createAgentMcpTransport?: AgentMcpTransportFactory;
@@ -730,6 +736,7 @@ export class Session {
   private readonly voiceSession: VoiceSession;
   private readonly checkoutSession: CheckoutSession;
   private readonly scheduleSession: ScheduleSession;
+  private readonly trackerSession: TrackerSession;
   private readonly providerCatalogSession: ProviderCatalogSession;
   private readonly workspaceFilesSession: WorkspaceFilesSession;
   private readonly agentConfigSession: AgentConfigSession;
@@ -765,6 +772,8 @@ export class Session {
       workspaceLabelService,
       filesystem,
       scheduleService,
+      aitService,
+      trackerSyncManager,
       checkoutDiffManager,
       github,
       renameCurrentBranch,
@@ -902,6 +911,21 @@ export class Session {
       host: { emit: (msg) => this.emit(msg) },
       scheduleService,
       logger: this.sessionLogger,
+    });
+    this.trackerSession = new TrackerSession({
+      host: {
+        emit: (msg) => this.emit(msg),
+        refreshProjectDescriptor: async (projectId) => {
+          const project = await this.projectRegistry.get(projectId);
+          if (project) {
+            await this.emitProjectUpdate({ kind: "upsert", project });
+          }
+        },
+      },
+      aitService,
+      projectRegistry: this.projectRegistry,
+      logger: this.sessionLogger,
+      trackerSyncManager,
     });
     this.providerCatalogSession = new ProviderCatalogSession({
       host: {
@@ -1940,6 +1964,17 @@ export class Session {
 
   private async dispatchInboundMessage(msg: SessionInboundMessage, source?: object): Promise<void> {
     const promise =
+      this.dispatchAgentScopedMessage(msg, source) ?? this.dispatchHostScopedMessage(msg, source);
+    if (promise) await promise;
+  }
+
+  // Split in two only to stay under the complexity cap; the two halves are one
+  // ordered chain, so a new dispatcher goes wherever it belongs by precedence.
+  private dispatchAgentScopedMessage(
+    msg: SessionInboundMessage,
+    source?: object,
+  ): Promise<void> | null | undefined {
+    return (
       this.dispatchVoiceAndControlMessage(msg) ??
       this.dispatchAgentRewindMessage(msg, source) ??
       this.dispatchAgentRelationshipMessage(msg) ??
@@ -1948,7 +1983,15 @@ export class Session {
       this.dispatchAgentLifecycleMessage(msg) ??
       this.dispatchAgentConfigMessage(msg) ??
       this.dispatchCheckoutMessage(msg) ??
-      this.dispatchWorkspaceRecoveryMessage(msg) ??
+      this.dispatchWorkspaceRecoveryMessage(msg)
+    );
+  }
+
+  private dispatchHostScopedMessage(
+    msg: SessionInboundMessage,
+    source?: object,
+  ): Promise<void> | null | undefined {
+    return (
       this.dispatchWorkspaceLabelMessage(msg) ??
       this.dispatchWorkspaceAndProjectMessage(msg) ??
       this.dispatchWorkspaceFileMessage(msg, source) ??
@@ -1958,8 +2001,9 @@ export class Session {
       this.dispatchPluginMessage(msg) ??
       this.dispatchTerminalMessage(msg) ??
       this.dispatchScheduleMessage(msg) ??
-      this.dispatchMiscMessage(msg);
-    if (promise) await promise;
+      this.dispatchTrackerMessage(msg) ??
+      this.dispatchMiscMessage(msg)
+    );
   }
 
   private dispatchOrchestrationSkillsMessage(
@@ -2633,6 +2677,43 @@ export class Session {
     }
   }
 
+  private dispatchTrackerMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "project.tracker.list.request":
+        return this.trackerSession.handleProjectTrackerListRequest(msg);
+      case "project.tracker.stats.request":
+        return this.trackerSession.handleProjectTrackerStatsRequest(msg);
+      case "project.tracker.search.request":
+        return this.trackerSession.handleProjectTrackerSearchRequest(msg);
+      case "project.tracker.subscribe.request":
+        return this.trackerSession.handleProjectTrackerSubscribeRequest(msg);
+      case "project.tracker.unsubscribe.request":
+        return this.trackerSession.handleProjectTrackerUnsubscribeRequest(msg);
+      case "project.tracker.show.request":
+        return this.trackerSession.handleProjectTrackerShowRequest(msg);
+      case "project.tracker.create.request":
+        return this.trackerSession.handleProjectTrackerCreateRequest(msg);
+      case "project.tracker.update.request":
+        return this.trackerSession.handleProjectTrackerUpdateRequest(msg);
+      case "project.tracker.close.request":
+        return this.trackerSession.handleProjectTrackerCloseRequest(msg);
+      case "project.tracker.reopen.request":
+        return this.trackerSession.handleProjectTrackerReopenRequest(msg);
+      case "project.tracker.cancel.request":
+        return this.trackerSession.handleProjectTrackerCancelRequest(msg);
+      case "project.tracker.delete.request":
+        return this.trackerSession.handleProjectTrackerDeleteRequest(msg);
+      case "project.tracker.note_add.request":
+        return this.trackerSession.handleProjectTrackerNoteAddRequest(msg);
+      case "project.tracker.init.request":
+        return this.trackerSession.handleProjectTrackerInitRequest(msg);
+      case "project.tracker.ready.request":
+        return this.trackerSession.handleProjectTrackerReadyRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
   private async dispatchMiscMessage(msg: SessionInboundMessage): Promise<void> {
     switch (msg.type) {
       case "list_commands_request":
@@ -3056,6 +3137,10 @@ export class Session {
 
       // Emit a project.update so clients that track the project as an empty
       // project (no workspaces yet) receive the resolved name immediately.
+      // Awaited (not fire-and-forget): the descriptor build costs one cheap
+      // local `.ait/ait.db` stat, not a network round trip, and leaving this
+      // un-awaited raced the response-then-broadcast ordering tests already
+      // rely on against whatever the caller does next.
       await this.emitProjectUpdate({ kind: "upsert", project: updated });
 
       // Re-emit descriptors for every workspace under this project so the new
@@ -3110,6 +3195,10 @@ export class Session {
         type: "project.icon.set.response",
         payload: { requestId, projectId, accepted: true, error: null },
       });
+      // Awaited (not fire-and-forget): the descriptor build costs one cheap
+      // local `.ait/ait.db` stat, not a network round trip, and leaving this
+      // un-awaited raced the response-then-broadcast ordering tests already
+      // rely on against whatever the caller does next.
       await this.emitProjectUpdate({ kind: "upsert", project: updated });
 
       const affectedWorkspaceIds = (await this.workspaceRegistry.list())
@@ -5136,6 +5225,7 @@ export class Session {
       projectIconRevision: icon.revision,
       projectRootPath: project.rootPath,
       projectKind: project.kind,
+      aitInitialized: await checkAitInitialized(project.rootPath),
     };
   }
 
@@ -7612,6 +7702,8 @@ export class Session {
     this.terminalController.dispose();
 
     this.checkoutSession.cleanup();
+
+    await this.trackerSession.cleanup();
 
     this.workspaceGitObserver.dispose();
     this.workspaceFilesSession.dispose();

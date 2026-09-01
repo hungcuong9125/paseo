@@ -126,6 +126,8 @@ export interface CreateAgentCommandResult {
   background: boolean;
   initialPromptStarted: boolean;
   initialPromptError: unknown | null;
+  /** True when a finish notification is armed and will reach the caller. */
+  finishNotificationArmed: boolean;
   createdWorktree?: CreatePaseoWorktreeWorkflowResult;
 }
 
@@ -195,6 +197,22 @@ export async function createAgentCommand(
   if (input.kind === "mcp") {
     input.onCreated?.({ agentId: snapshot.id, createdWorktree: resolved.createdWorktree ?? null });
   }
+  // Armed before the prompt is dispatched, not after. The child's first turn
+  // can start and end while a post-dispatch subscribe is still being set up,
+  // and that first turn is the one the caller is waiting on.
+  const finishNotification =
+    input.kind === "mcp" && input.notifyOnFinish && input.callerAgentId
+      ? setupFinishNotification({
+          agentManager: dependencies.agentManager,
+          agentStorage: dependencies.agentStorage,
+          childAgentId: snapshot.id,
+          callerAgentId: input.callerAgentId,
+          watch: "next-turn",
+          requireParentOwnership: true,
+          logger: dependencies.logger,
+        })
+      : null;
+
   if (resolved.prompt !== undefined) {
     const sendResult = await sendInitialPrompt(dependencies, resolved, snapshot);
     initialPromptStarted = sendResult.started;
@@ -202,15 +220,25 @@ export async function createAgentCommand(
     initialPromptError = sendResult.error ?? null;
   }
 
-  if (input.kind === "mcp" && input.notifyOnFinish && input.callerAgentId && initialPromptStarted) {
-    setupFinishNotification({
-      agentManager: dependencies.agentManager,
-      agentStorage: dependencies.agentStorage,
-      childAgentId: snapshot.id,
-      callerAgentId: input.callerAgentId,
-      requireParentOwnership: true,
-      logger: dependencies.logger,
-    });
+  if (finishNotification) {
+    // The dispatch is over: name the turn it opened so a turn some other writer
+    // started meanwhile cannot be mistaken for the caller's.
+    //
+    // A prompt was handed to the provider whenever resolved.prompt was set,
+    // even if reporting it failed — the 15s run-start wait expiring says
+    // nothing about whether the run is coming, and a provider that is slow to
+    // open its first turn would otherwise lose the notification entirely.
+    // Binding null there means "the next turn to end is mine".
+    const dispatched = resolved.prompt !== undefined;
+    if (dispatched) {
+      finishNotification.bindTurn(
+        liveSnapshot.activeForegroundTurnId ??
+          dependencies.agentManager.getAgent(snapshot.id)?.activeForegroundTurnId ??
+          null,
+      );
+    } else {
+      finishNotification.cancel();
+    }
   }
 
   return {
@@ -219,6 +247,7 @@ export async function createAgentCommand(
     background: resolved.background,
     initialPromptStarted,
     initialPromptError,
+    finishNotificationArmed: finishNotification?.willNotifyCaller() ?? false,
     ...(resolved.createdWorktree ? { createdWorktree: resolved.createdWorktree } : {}),
   };
 }

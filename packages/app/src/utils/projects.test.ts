@@ -8,6 +8,7 @@ function descriptor(
   key: string,
   root: string,
   iconRevision?: string,
+  aitInitialized?: boolean,
 ): ProjectDescriptor {
   return {
     projectId: id,
@@ -17,6 +18,7 @@ function descriptor(
     projectIconRevision: iconRevision,
     projectRootPath: root,
     projectKind: "git",
+    aitInitialized,
   };
 }
 
@@ -134,6 +136,59 @@ describe("buildProjects", () => {
     expect(getProjectSummaryForHostProject(project ? [project] : [], "host-a", "prj_a")).toBe(
       project,
     );
+  });
+
+  // pas-2KY5X.28: aitInitialized has to survive the same descriptor ->
+  // HostGroup -> ProjectHostEntry pipeline fallbackRepoRoot already uses —
+  // including for a project that HAS active workspaces, since the whole
+  // point of the gate is to exclude projects the user is likely to actually
+  // be looking at, not just empty ones.
+  test("threads aitInitialized through to the host entry, for a project with active workspaces", () => {
+    const result = buildProjects({
+      hosts: [
+        {
+          serverId: "host-a",
+          serverName: "Host A",
+          isOnline: true,
+          projects: [descriptor("prj_a", "local-a", "/a/app", undefined, false)],
+          workspaces: [workspace("ws-a", "prj_a", "/a/app")],
+        },
+      ],
+    });
+
+    expect(result.projects[0]?.hosts[0]?.aitInitialized).toBe(false);
+  });
+
+  test("threads aitInitialized: true through for a project with no active workspaces", () => {
+    const result = buildProjects({
+      hosts: [
+        {
+          serverId: "host-a",
+          serverName: "Host A",
+          isOnline: true,
+          projects: [descriptor("prj_a", "local-a", "/a/app", undefined, true)],
+          workspaces: [],
+        },
+      ],
+    });
+
+    expect(result.projects[0]?.hosts[0]?.aitInitialized).toBe(true);
+  });
+
+  test("leaves aitInitialized undefined when the descriptor doesn't report it (old daemon) — never coerces to false", () => {
+    const result = buildProjects({
+      hosts: [
+        {
+          serverId: "host-a",
+          serverName: "Host A",
+          isOnline: true,
+          projects: [descriptor("prj_a", "local-a", "/a/app")],
+          workspaces: [],
+        },
+      ],
+    });
+
+    expect(result.projects[0]?.hosts[0]?.aitInitialized).toBeUndefined();
   });
 });
 

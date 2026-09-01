@@ -313,6 +313,51 @@ test("Hub management requires daemon support before dispatching requests", async
   expect(mock.sent).toEqual([]);
 });
 
+test("threads tracker list sort through the daemon request", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "tracker_sort_unit_test",
+    transportFactory: () => mock.transport,
+    reconnect: { enabled: false },
+  });
+  clients.push(client);
+
+  const connecting = client.connect();
+  mock.triggerOpen({ features: { aitTrackerSort: true } });
+  await connecting;
+
+  const listPromise = client.trackerList({
+    projectId: "prj_test",
+    sort: "newest",
+    page: { limit: 20 },
+  });
+  await Promise.resolve();
+  const request = parseSentFrame(mock.sent[0]);
+  expect(request).toMatchObject({
+    type: "project.tracker.list.request",
+    projectId: "prj_test",
+    sort: "newest",
+    page: { limit: 20 },
+  });
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "project.tracker.list.response",
+      payload: {
+        requestId: request.requestId,
+        projectId: "prj_test",
+        trackers: [],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false },
+        error: null,
+        errorCode: null,
+      },
+    }),
+  );
+  await expect(listPromise).resolves.toMatchObject({ trackers: [], hiddenCount: 0 });
+});
+
 test("sets the complete viewed timeline subscription only when the daemon supports it", async () => {
   const supportedTransport = createMockTransport();
   const supportedClient = new DaemonClient({

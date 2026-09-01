@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import type { WorkspaceDescriptorPayload } from "@getpaseo/protocol/messages";
+import type {
+  WorkspaceDescriptorPayload,
+  WorkspaceProjectDescriptorPayload,
+} from "@getpaseo/protocol/messages";
 
 import {
+  normalizeProjectDescriptor,
   normalizeWorkspaceDescriptor,
   selectAgentTurnPresentation,
   selectAgentTimelineState,
@@ -608,6 +612,39 @@ describe("normalizeWorkspaceDescriptor", () => {
         mainRepoRoot: null,
       },
     });
+  });
+});
+
+// pas-2KY5X.28: aitInitialized threads straight through from the wire
+// payload with no transformation — undefined (an old daemon, or any
+// payload that simply omits it) must stay undefined ("unknown"), never
+// coerced to false, since that's the difference between "we don't know"
+// and "gate this project out".
+describe("normalizeProjectDescriptor", () => {
+  function baseProjectPayload(): WorkspaceProjectDescriptorPayload {
+    return {
+      projectId: "prj-1",
+      projectDisplayName: "Project 1",
+      projectCustomName: null,
+      projectCustomIconRevision: null,
+      projectRootPath: "/repo",
+      projectKind: "git",
+    };
+  }
+
+  it("carries aitInitialized: false through unchanged", () => {
+    const project = normalizeProjectDescriptor({ ...baseProjectPayload(), aitInitialized: false });
+    expect(project.aitInitialized).toBe(false);
+  });
+
+  it("carries aitInitialized: true through unchanged", () => {
+    const project = normalizeProjectDescriptor({ ...baseProjectPayload(), aitInitialized: true });
+    expect(project.aitInitialized).toBe(true);
+  });
+
+  it("leaves aitInitialized undefined when the payload omits it (old daemon) — never coerces to false", () => {
+    const project = normalizeProjectDescriptor(baseProjectPayload());
+    expect(project.aitInitialized).toBeUndefined();
   });
 });
 

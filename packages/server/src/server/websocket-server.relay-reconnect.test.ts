@@ -8,6 +8,7 @@ import type { DaemonConfigStore } from "./daemon-config-store.js";
 import type { ScheduleService } from "./schedule/service.js";
 import type { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import type { WorkspaceAutoName } from "./workspace-auto-name.js";
+import type { AitService } from "../services/ait-cli-service.js";
 import { asInternals, createStub } from "./test-utils/class-mocks.js";
 import { createProviderSnapshotManagerStub } from "./test-utils/session-stubs.js";
 import {
@@ -228,6 +229,7 @@ function createServer(options?: {
   speechReadiness?: SpeechReadinessSnapshot | null;
   logger?: ReturnType<typeof createLogger>;
   startPaused?: boolean;
+  aitService?: AitService;
 }) {
   const speechReadiness = options?.speechReadiness ?? null;
   const daemonConfigStore = {
@@ -302,6 +304,15 @@ function createServer(options?: {
     undefined,
     undefined,
     createProviderSnapshotManagerStub().manager,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined, // pluginRuntime
+    undefined, // orchestrationSkills
+    undefined, // workspaceLabelService
+    options?.aitService,
   );
 }
 
@@ -412,7 +423,7 @@ async function attachRelayAndHello(params: {
 }) {
   await params.server.attachExternalSocket(params.socket, { transport: "relay" });
   params.socket.emit("message", JSON.stringify(createHelloMessage(params.clientId)));
-  expect(params.socket.sent.length).toBeGreaterThan(0);
+  await vi.waitFor(() => expect(params.socket.sent.length).toBeGreaterThan(0));
   const envelope = parseSentEnvelope(params.socket.sent[0]);
   expect(envelope.type).toBe("session");
   const serverInfo = parseServerInfoStatusPayload(envelope.message?.payload);
@@ -431,7 +442,7 @@ async function attachDirectAndHello(params: {
     createDirectRequest(),
   );
   params.socket.emit("message", JSON.stringify(createHelloMessage(params.clientId)));
-  expect(params.socket.sent.length).toBeGreaterThan(0);
+  await vi.waitFor(() => expect(params.socket.sent.length).toBeGreaterThan(0));
   const envelope = parseSentEnvelope(params.socket.sent[0]);
   expect(envelope.type).toBe("session");
   const serverInfo = parseServerInfoStatusPayload(envelope.message?.payload);
@@ -516,10 +527,12 @@ describe("relay external socket reconnect behavior", () => {
     const firstSocket = new MockSocket();
     const firstAttachment = await server.attachPluginSocket("exclusive", firstSocket);
     firstSocket.emit("message", JSON.stringify(createHelloMessage("plugin:exclusive")));
+    await vi.waitFor(() => expect(firstSocket.sent.length).toBeGreaterThan(0));
 
     const secondSocket = new MockSocket();
     const secondAttachment = await server.attachPluginSocket("exclusive", secondSocket);
     secondSocket.emit("message", JSON.stringify(createHelloMessage("plugin:exclusive")));
+    await vi.waitFor(() => expect(secondSocket.sent.length).toBeGreaterThan(0));
 
     expect(sessionMock.instances).toHaveLength(2);
     firstSocket.emit("close", 1000, "plugin stopped");
@@ -557,7 +570,7 @@ describe("relay external socket reconnect behavior", () => {
         }),
       ),
     );
-    expect(sessionMock.instances).toHaveLength(1);
+    await vi.waitFor(() => expect(sessionMock.instances).toHaveLength(1));
     const session = sessionMock.instances[0];
     expect(session.args.clientCapabilities).toEqual({
       [CLIENT_CAPS.reasoningMergeEnum]: true,
@@ -605,6 +618,7 @@ describe("relay external socket reconnect behavior", () => {
     const pluginSocket = new MockSocket();
     const attachment = await server.attachPluginSocket("startup", pluginSocket);
     pluginSocket.emit("message", JSON.stringify(createHelloMessage("plugin:startup")));
+    await vi.waitFor(() => expect(pluginSocket.sent.length).toBeGreaterThan(0));
     expect(sessionMock.instances).toHaveLength(1);
 
     server.beginAcceptingConnections();
@@ -696,6 +710,7 @@ describe("relay external socket reconnect behavior", () => {
       { principalId: "hub:daemon-1", permissions: ["hub.execute"] },
     );
     hubSocket.emit("message", JSON.stringify(createHelloMessage(clientId)));
+    await vi.waitFor(() => expect(hubSocket.sent.length).toBeGreaterThan(0));
     const hubEnvelope = parseSentEnvelope(hubSocket.sent[0]);
     const hubInfo = parseServerInfoStatusPayload(hubEnvelope.message?.payload);
 
@@ -742,6 +757,7 @@ describe("relay external socket reconnect behavior", () => {
       relayConnectionId: "relay-conn-1",
     });
     socket.emit("message", JSON.stringify(createHelloMessage("cid-control-log")));
+    await vi.waitFor(() => expect(sessionMock.instances).toHaveLength(1));
     socket.emit(
       "message",
       JSON.stringify({
@@ -1012,6 +1028,54 @@ describe("relay external socket reconnect behavior", () => {
     expect(serverInfo.features?.["terminal-size-ownership"]).toBe(true);
     expect(serverInfo.features?.agentTurnIdentity).toBeUndefined();
     expect(serverInfo.permissions).toEqual(DAEMON_PERMISSIONS);
+    await server.close();
+  });
+
+  test("advertises the installed ait sort capability", async () => {
+    const supportsSort = vi.fn(async () => true);
+    const server = createServer({
+      aitService: createStub<AitService>({ supportsSort }),
+    });
+    const socket = new MockSocket();
+
+    const serverInfo = await attachRelayAndHello({
+      server,
+      socket,
+      clientId: "cid-ait-sort-capability",
+    });
+
+    expect(serverInfo.features?.aitTrackerSort).toBe(true);
+    expect(supportsSort).toHaveBeenCalledTimes(1);
+    await server.close();
+  });
+
+  test("logs to the daemon's own logger when the ait sort probe fails, and still advertises aitTrackerSort:false (pas-2KY5X.35 correction)", async () => {
+    // supportsSort() used to swallow a probe failure internally and resolve
+    // false, which made this catch dead code — the daemon's structured pino
+    // logger never saw it. Proves the catch is reachable now that the
+    // service lets a probe malfunction propagate instead.
+    const logger = createLogger();
+    const probeError = new Error("boom: probe malfunction");
+    const supportsSort = vi.fn(async () => {
+      throw probeError;
+    });
+    const server = createServer({
+      logger,
+      aitService: createStub<AitService>({ supportsSort }),
+    });
+    const socket = new MockSocket();
+
+    const serverInfo = await attachRelayAndHello({
+      server,
+      socket,
+      clientId: "cid-ait-sort-probe-failure",
+    });
+
+    expect(serverInfo.features?.aitTrackerSort).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: probeError }),
+      "Failed to probe ait --sort capability",
+    );
     await server.close();
   });
 

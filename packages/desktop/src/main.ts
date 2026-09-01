@@ -5,6 +5,7 @@ log.transports.console.level = "info";
 log.initialize({ spyRendererConsole: true });
 
 import { inheritLoginShellEnv } from "./login-shell-env.js";
+import { shouldNoStoreAppDistPath } from "./app-dist-cache-policy.js";
 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -903,6 +904,36 @@ async function bootstrap(): Promise<void> {
   await app.whenReady();
 
   const appDistDir = getAppDistDir();
+  // Every static JS/CSS asset Expo exports under _expo/static carries a
+  // content hash in its filename (index-0ee3384c....js), so it can be cached
+  // forever without a staleness risk: a new build never reuses an old asset's
+  // URL. The entrypoint that NAMES those assets — index.html — does not carry
+  // a hash, and Chromium's disk HTTP cache does not know it's an update
+  // manifest rather than an ordinary page: without an explicit no-store, a
+  // build's index.html silently outlives that build. It gets replaced on
+  // disk (Paseo.app is swapped out whole on every install/update), but the
+  // OLD cached response for the same paseo://app URL keeps being served
+  // straight from disk with no revalidation and no error — the app looks
+  // fully launched, on the new binary, and simply never runs any code from a
+  // build after whichever one first got cached. Confirmed by reproducing it:
+  // Cache/Cache_Data's mtime stayed frozen across several app relaunches that
+  // each installed a different build's index.html. asFileResponse() strips
+  // whatever header file:// responses carry and sets this explicitly, so a
+  // fresh install is guaranteed to be live the moment the window opens next,
+  // with no manual "clear cache" step for whoever hits this.
+  const asFileResponse = async (filePath: string, noStore: boolean): Promise<Response> => {
+    const response = await net.fetch(pathToFileURL(filePath).toString());
+    if (!noStore) {
+      return response;
+    }
+    const headers = new Headers(response.headers);
+    headers.set("Cache-Control", "no-store");
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  };
   protocol.handle(APP_SCHEME, (request) => {
     const { pathname, search, hash } = new URL(request.url);
     const decodedPath = decodeURIComponent(pathname);
@@ -923,10 +954,10 @@ async function bootstrap(): Promise<void> {
 
     // SPA fallback: serve index.html for routes without a file extension
     if (!relativePath || !path.extname(relativePath)) {
-      return net.fetch(pathToFileURL(path.join(appDistDir, "index.html")).toString());
+      return asFileResponse(path.join(appDistDir, "index.html"), true);
     }
 
-    return net.fetch(pathToFileURL(filePath).toString());
+    return asFileResponse(filePath, shouldNoStoreAppDistPath(relativePath));
   });
 
   await applyAppIcon();

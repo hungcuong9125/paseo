@@ -1088,7 +1088,7 @@ export const en = {
     },
     actions: {
       addProject: "Add project",
-      newWorkspace: "New workspace",
+      newWorkspace: "Workspace",
       hosts: "Hosts",
       home: "Home",
       settings: "Settings",
@@ -1108,6 +1108,7 @@ export const en = {
     sections: {
       sessions: "History",
       schedules: "Schedules",
+      tracker: "Tracker",
     },
     worktreeSetup: {
       title: "Set up worktree scripts",
@@ -2732,6 +2733,61 @@ export const en = {
         saving: "Saving...",
         cancel: "Cancel",
       },
+    },
+  },
+  tracker: {
+    card: {
+      childProgress: "{{done}}/{{count}}",
+      claimedBy: "Claimed by {{name}}",
+      created: "Created {{time}}",
+      closed: "Closed {{time}}",
+    },
+    kanban: {
+      lane: {
+        open: "Todo",
+        inProgress: "In progress",
+        done: "Done",
+        cancelled: "Cancelled",
+      },
+      empty: {
+        open: "No todo items",
+        inProgress: "No items in progress",
+        done: "No done items",
+        cancelled: "No cancelled items",
+      },
+      showMore: "Show {{count}} more",
+      blocked: "Blocked",
+      refresh: "Refresh",
+      moveMenu: {
+        trigger: "Actions for {{title}}",
+        title: "Actions",
+      },
+      moveTo: {
+        open: "Move to Open",
+        inProgress: "Move to In progress",
+        done: "Move to Done",
+        cancelled: "Move to Cancelled",
+      },
+      type: {
+        tasks: "Tasks",
+        epics: "Epics",
+        initiatives: "Initiatives",
+        all: "All",
+      },
+      error: {
+        transitionFailed: "Couldn't move {{title}}. Try again.",
+        deleteFailed: "Couldn't delete {{title}}. Try again.",
+      },
+    },
+    list: {
+      section: {
+        open: "Todo",
+        inProgress: "In progress",
+        done: "Done",
+        cancelled: "Cancelled",
+      },
+      showMore: "Show {{count}} more",
+      loadMore: "Load more",
     },
   },
 } as const;

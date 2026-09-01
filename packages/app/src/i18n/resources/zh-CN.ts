@@ -1091,6 +1091,7 @@ export const zhCN: TranslationResources = {
     sections: {
       sessions: "历史",
       schedules: "计划",
+      tracker: "跟踪器",
     },
     worktreeSetup: {
       title: "设置 worktree scripts",
@@ -2596,6 +2597,61 @@ export const zhCN: TranslationResources = {
         saving: "正在保存...",
         cancel: "取消",
       },
+    },
+  },
+  tracker: {
+    card: {
+      childProgress: "{{done}}/{{count}}",
+      claimedBy: "由 {{name}} 认领",
+      created: "创建于 {{time}}",
+      closed: "关闭于 {{time}}",
+    },
+    kanban: {
+      lane: {
+        open: "待办",
+        inProgress: "进行中",
+        done: "已完成",
+        cancelled: "已取消",
+      },
+      empty: {
+        open: "没有待办的事项",
+        inProgress: "没有进行中的事项",
+        done: "没有已完成的事项",
+        cancelled: "没有已取消的事项",
+      },
+      showMore: "显示另外 {{count}} 项",
+      blocked: "已阻塞",
+      refresh: "刷新",
+      moveMenu: {
+        trigger: "{{title}} 的操作",
+        title: "操作",
+      },
+      moveTo: {
+        open: "移动到待处理",
+        inProgress: "移动到进行中",
+        done: "移动到已完成",
+        cancelled: "移动到已取消",
+      },
+      type: {
+        tasks: "任务",
+        epics: "史诗",
+        initiatives: "计划",
+        all: "全部",
+      },
+      error: {
+        transitionFailed: "无法移动 {{title}}。请重试。",
+        deleteFailed: "无法删除 {{title}}。请重试。",
+      },
+    },
+    list: {
+      section: {
+        open: "待办",
+        inProgress: "进行中",
+        done: "已完成",
+        cancelled: "已取消",
+      },
+      showMore: "显示另外 {{count}} 项",
+      loadMore: "加载更多",
     },
   },
 };

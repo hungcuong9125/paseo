@@ -1111,6 +1111,7 @@ export const ja: TranslationResources = {
     sections: {
       sessions: "履歴",
       schedules: "スケジュール",
+      tracker: "トラッカー",
     },
     worktreeSetup: {
       title: "ワークツリースクリプトを設定",
@@ -2654,6 +2655,61 @@ export const ja: TranslationResources = {
         saving: "保存中...",
         cancel: "キャンセル",
       },
+    },
+  },
+  tracker: {
+    card: {
+      childProgress: "{{done}}/{{count}}",
+      claimedBy: "{{name}} が担当",
+      created: "{{time}}に作成",
+      closed: "{{time}}にクローズ",
+    },
+    kanban: {
+      lane: {
+        open: "やること",
+        inProgress: "進行中",
+        done: "完了",
+        cancelled: "キャンセル",
+      },
+      empty: {
+        open: "やることの項目はありません",
+        inProgress: "進行中の項目はありません",
+        done: "完了した項目はありません",
+        cancelled: "キャンセルした項目はありません",
+      },
+      showMore: "他 {{count}} 件を表示",
+      blocked: "ブロック済み",
+      refresh: "更新",
+      moveMenu: {
+        trigger: "{{title}} の操作",
+        title: "操作",
+      },
+      moveTo: {
+        open: "未着手へ移動",
+        inProgress: "進行中へ移動",
+        done: "完了へ移動",
+        cancelled: "キャンセルへ移動",
+      },
+      type: {
+        tasks: "タスク",
+        epics: "エピック",
+        initiatives: "イニシアチブ",
+        all: "すべて",
+      },
+      error: {
+        transitionFailed: "{{title}} を移動できませんでした。もう一度お試しください。",
+        deleteFailed: "{{title}} を削除できませんでした。もう一度お試しください。",
+      },
+    },
+    list: {
+      section: {
+        open: "やること",
+        inProgress: "進行中",
+        done: "完了",
+        cancelled: "キャンセル",
+      },
+      showMore: "他 {{count}} 件を表示",
+      loadMore: "さらに読み込む",
     },
   },
 } as const;

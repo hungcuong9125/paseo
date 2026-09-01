@@ -43,6 +43,12 @@ export function useReplicaQuery<
   return useQuery(replicaQueryOptions(input));
 }
 
+export function useReplicaQueries<TData>(
+  inputs: ReplicaQueryInput<TData, Error, TData, QueryKey>[],
+): UseQueryResult<TData, Error>[] {
+  return useQueries({ queries: inputs.map((input) => replicaQueryOptions(input)) });
+}
+
 export function useFetchQuery<
   TQueryFnData,
   TError = Error,

@@ -18,6 +18,16 @@ import {
 } from "@getpaseo/protocol/messages";
 import { validateWSOutboundMessage } from "@getpaseo/protocol/validation/ws-outbound";
 import type {
+  TrackerDetail,
+  TrackerNote,
+  TrackerPriority,
+  TrackerSort,
+  TrackerStatus,
+  TrackerSummary,
+  TrackerType,
+} from "@getpaseo/protocol/tracker/types";
+import type { TrackerErrorCode, TrackerStatsCounts } from "@getpaseo/protocol/tracker/rpc-schemas";
+import type {
   AgentStreamEventPayload,
   AgentSnapshotPayload,
   ProjectPlacementPayload,
@@ -867,6 +877,16 @@ type CorrelatedResponsePayload<TType extends CorrelatedResponseType> = Extract<
   { type: TType }
 >["payload"];
 
+export class TrackerRpcError extends Error {
+  readonly code: TrackerErrorCode;
+
+  constructor(code: TrackerErrorCode, message: string) {
+    super(message);
+    this.name = "TrackerRpcError";
+    this.code = code;
+  }
+}
+
 class DaemonRpcError extends Error {
   readonly requestId: string;
   readonly requestType?: string;
@@ -1090,6 +1110,7 @@ export class DaemonClient {
     }
   >();
   private terminalDirectorySubscriptions = new Map<string, { cwd: string; workspaceId?: string }>();
+  private trackerSubscriptions = new Map<string, { projectId: string; all: boolean }>();
   private fileSubscriptions = new Map<
     string,
     { cwd: string; path: string; onUpdate: (version: FileVersion) => void }
@@ -1375,6 +1396,7 @@ export class DaemonClient {
     this.rejectPingProbe(new Error("Daemon client closed"));
     this.terminalStreams.clearSlots();
     this.fileSubscriptions.clear();
+    this.trackerSubscriptions.clear();
     this.lastServerInfoMessage = null;
     if (this.runtimeMetricsInterval) {
       clearInterval(this.runtimeMetricsInterval);
@@ -2475,6 +2497,18 @@ export class DaemonClient {
       })
         .then((payload) => subscription.onUpdate(payload.initial))
         .catch(() => undefined);
+    }
+  }
+
+  private resubscribeTrackerSubscriptions(): void {
+    for (const [subscriptionId, subscription] of this.trackerSubscriptions) {
+      this.sendSessionMessage({
+        type: "project.tracker.subscribe.request",
+        requestId: this.createRequestId(),
+        subscriptionId,
+        projectId: subscription.projectId,
+        all: subscription.all,
+      });
     }
   }
 
@@ -5546,6 +5580,367 @@ export class DaemonClient {
     });
   }
 
+  async trackerList(options: {
+    projectId: string;
+    all?: boolean;
+    status?: TrackerStatus;
+    trackerType?: TrackerType;
+    priority?: TrackerPriority;
+    sort?: TrackerSort;
+    page?: { limit: number; cursor?: string };
+    requestId?: string;
+  }): Promise<{
+    trackers: TrackerSummary[];
+    hiddenCount: number;
+    pageInfo?: { nextCursor: string | null; hasMore: boolean; totalCount?: number };
+  }> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.list.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.tracker.list.request",
+          projectId: options.projectId,
+          ...(options.all !== undefined ? { all: options.all } : {}),
+          ...(options.status !== undefined ? { status: options.status } : {}),
+          ...(options.trackerType !== undefined ? { trackerType: options.trackerType } : {}),
+          ...(options.priority !== undefined ? { priority: options.priority } : {}),
+          ...(options.sort !== undefined ? { sort: options.sort } : {}),
+          ...(options.page !== undefined
+            ? {
+                page: {
+                  limit: options.page.limit,
+                  ...(options.page.cursor !== undefined ? { cursor: options.page.cursor } : {}),
+                },
+              }
+            : {}),
+        },
+      });
+    if (payload.error) {
+      throw new TrackerRpcError(payload.errorCode ?? "unknown", payload.error);
+    }
+    return {
+      trackers: payload.trackers,
+      hiddenCount: payload.hiddenCount,
+      // Absent when the daemon served the complete unpaginated result (old CLI
+      // binary fallback or a request without `page`) — not "no more pages".
+      ...(payload.pageInfo !== undefined ? { pageInfo: payload.pageInfo } : {}),
+    };
+  }
+
+  async trackerStats(options: { projectId: string; requestId?: string }): Promise<{
+    counts: TrackerStatsCounts | null;
+    error: string | null;
+    errorCode: TrackerErrorCode | null;
+  }> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.stats.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.tracker.stats.request",
+          projectId: options.projectId,
+        },
+      });
+    return {
+      counts: payload.counts,
+      error: payload.error,
+      errorCode: payload.errorCode,
+    };
+  }
+
+  async trackerSearch(options: {
+    projectId: string;
+    query: string;
+    page: { limit: number; cursor?: string };
+    requestId?: string;
+  }): Promise<{
+    trackers: TrackerSummary[];
+    pageInfo: { nextCursor: string | null; hasMore: boolean };
+  }> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.search.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.tracker.search.request",
+          projectId: options.projectId,
+          query: options.query,
+          page: {
+            limit: options.page.limit,
+            ...(options.page.cursor !== undefined ? { cursor: options.page.cursor } : {}),
+          },
+        },
+      });
+    if (payload.error) {
+      throw new TrackerRpcError(payload.errorCode ?? "unknown", payload.error);
+    }
+    return { trackers: payload.trackers, pageInfo: payload.pageInfo };
+  }
+
+  async trackerReady(options: {
+    projectId: string;
+    requestId?: string;
+  }): Promise<{ readyIds: string[] }> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.ready.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.tracker.ready.request",
+          projectId: options.projectId,
+        },
+      });
+    if (payload.error) {
+      throw new TrackerRpcError(payload.errorCode ?? "unknown", payload.error);
+    }
+    return { readyIds: payload.readyIds };
+  }
+
+  async trackerSubscribe(options: {
+    projectId: string;
+    all?: boolean;
+    subscriptionId?: string;
+    requestId?: string;
+  }): Promise<
+    Extract<SessionOutboundMessage, { type: "project.tracker.subscribe.response" }>["payload"]
+  > {
+    const subscriptionId = options.subscriptionId ?? crypto.randomUUID();
+    const all = options.all === true;
+    this.trackerSubscriptions.set(subscriptionId, { projectId: options.projectId, all });
+    const requestId = this.createRequestId(options.requestId);
+    try {
+      return await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.subscribe.response">(
+        {
+          requestId,
+          message: {
+            type: "project.tracker.subscribe.request",
+            projectId: options.projectId,
+            subscriptionId,
+            all,
+          },
+        },
+      );
+    } catch (error) {
+      this.trackerSubscriptions.delete(subscriptionId);
+      throw error;
+    }
+  }
+
+  trackerUnsubscribe(subscriptionId: string): void {
+    this.trackerSubscriptions.delete(subscriptionId);
+    this.sendSessionMessage({
+      type: "project.tracker.unsubscribe.request",
+      requestId: this.createRequestId(),
+      subscriptionId,
+    });
+  }
+
+  async trackerShow(options: {
+    projectId: string;
+    trackerId: string;
+    requestId?: string;
+  }): Promise<TrackerDetail> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.show.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.tracker.show.request",
+          projectId: options.projectId,
+          trackerId: options.trackerId,
+        },
+      });
+    if (payload.error || !payload.tracker) {
+      throw new TrackerRpcError(
+        payload.errorCode ?? "unknown",
+        payload.error ?? "Tracker not found",
+      );
+    }
+    return payload.tracker;
+  }
+
+  async trackerCreate(options: {
+    projectId: string;
+    title: string;
+    trackerType?: TrackerType;
+    priority?: TrackerPriority;
+    parentId?: string;
+    description?: string;
+    requestId?: string;
+  }): Promise<TrackerSummary> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.create.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.tracker.create.request",
+          projectId: options.projectId,
+          title: options.title,
+          ...(options.trackerType ? { trackerType: options.trackerType } : {}),
+          ...(options.priority ? { priority: options.priority } : {}),
+          ...(options.parentId ? { parentId: options.parentId } : {}),
+          ...(options.description ? { description: options.description } : {}),
+        },
+      });
+    if (payload.error || !payload.tracker) {
+      throw new TrackerRpcError(payload.errorCode ?? "unknown", payload.error ?? "Create failed");
+    }
+    return payload.tracker;
+  }
+
+  async trackerUpdate(options: {
+    projectId: string;
+    trackerId: string;
+    title?: string;
+    status?: "open" | "in_progress";
+    priority?: TrackerPriority;
+    description?: string;
+    requestId?: string;
+  }): Promise<TrackerSummary> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.update.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.tracker.update.request",
+          projectId: options.projectId,
+          trackerId: options.trackerId,
+          ...(options.title !== undefined ? { title: options.title } : {}),
+          ...(options.status !== undefined ? { status: options.status } : {}),
+          ...(options.priority !== undefined ? { priority: options.priority } : {}),
+          ...(options.description !== undefined ? { description: options.description } : {}),
+        },
+      });
+    if (payload.error || !payload.tracker) {
+      throw new TrackerRpcError(payload.errorCode ?? "unknown", payload.error ?? "Update failed");
+    }
+    return payload.tracker;
+  }
+
+  async trackerClose(options: {
+    projectId: string;
+    trackerId: string;
+    note?: string;
+    requestId?: string;
+  }): Promise<TrackerSummary> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.close.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.tracker.close.request",
+          projectId: options.projectId,
+          trackerId: options.trackerId,
+          ...(options.note ? { note: options.note } : {}),
+        },
+      });
+    if (payload.error || !payload.tracker) {
+      throw new TrackerRpcError(payload.errorCode ?? "unknown", payload.error ?? "Close failed");
+    }
+    return payload.tracker;
+  }
+
+  async trackerReopen(options: {
+    projectId: string;
+    trackerId: string;
+    requestId?: string;
+  }): Promise<TrackerSummary> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.reopen.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.tracker.reopen.request",
+          projectId: options.projectId,
+          trackerId: options.trackerId,
+        },
+      });
+    if (payload.error || !payload.tracker) {
+      throw new TrackerRpcError(payload.errorCode ?? "unknown", payload.error ?? "Reopen failed");
+    }
+    return payload.tracker;
+  }
+
+  async trackerCancel(options: {
+    projectId: string;
+    trackerId: string;
+    reason?: string;
+    requestId?: string;
+  }): Promise<TrackerSummary> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.cancel.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.tracker.cancel.request",
+          projectId: options.projectId,
+          trackerId: options.trackerId,
+          ...(options.reason ? { reason: options.reason } : {}),
+        },
+      });
+    if (payload.error || !payload.tracker) {
+      throw new TrackerRpcError(payload.errorCode ?? "unknown", payload.error ?? "Cancel failed");
+    }
+    return payload.tracker;
+  }
+
+  // Permanent — the tracker no longer exists on success, so there's no
+  // updated record to return, only the ids `ait` actually removed.
+  async trackerDelete(options: {
+    projectId: string;
+    trackerId: string;
+    cascade?: boolean;
+    requestId?: string;
+  }): Promise<string[]> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.delete.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.tracker.delete.request",
+          projectId: options.projectId,
+          trackerId: options.trackerId,
+          ...(options.cascade ? { cascade: options.cascade } : {}),
+        },
+      });
+    if (payload.error || !payload.deletedIds) {
+      throw new TrackerRpcError(payload.errorCode ?? "unknown", payload.error ?? "Delete failed");
+    }
+    return payload.deletedIds;
+  }
+
+  async trackerAddNote(options: {
+    projectId: string;
+    trackerId: string;
+    body: string;
+    requestId?: string;
+  }): Promise<TrackerNote> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.note_add.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.tracker.note_add.request",
+          projectId: options.projectId,
+          trackerId: options.trackerId,
+          body: options.body,
+        },
+      });
+    if (payload.error || !payload.note) {
+      throw new TrackerRpcError(payload.errorCode ?? "unknown", payload.error ?? "Add note failed");
+    }
+    return payload.note;
+  }
+
+  async trackerInit(options: {
+    projectId: string;
+    prefix?: string;
+    requestId?: string;
+  }): Promise<{ initialised: boolean }> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"project.tracker.init.response">({
+        requestId: options.requestId,
+        message: {
+          type: "project.tracker.init.request",
+          projectId: options.projectId,
+          ...(options.prefix ? { prefix: options.prefix } : {}),
+        },
+      });
+    if (payload.error) {
+      throw new TrackerRpcError(payload.errorCode ?? "unknown", payload.error);
+    }
+    return { initialised: payload.initialised };
+  }
+
   onTerminalStreamEvent(handler: (event: TerminalStreamEvent) => void): () => void {
     return this.terminalStreams.onEvent(handler);
   }
@@ -6059,6 +6454,7 @@ export class DaemonClient {
           this.resubscribeCheckoutDiffSubscriptions();
           this.resubscribeTerminalDirectorySubscriptions();
           this.resubscribeFileSubscriptions();
+          this.resubscribeTrackerSubscriptions();
           this.flushPendingSendQueue();
           this.resolveConnect();
         }
