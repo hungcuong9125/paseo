@@ -12,6 +12,8 @@ import type pino from "pino";
 import type { ProjectRegistry, WorkspaceRegistry } from "./workspace-registry.js";
 import type { ProjectUpdate } from "./workspace-reconciliation-service.js";
 import type { ScheduleService } from "./schedule/service.js";
+import { createAitService, type AitService } from "../services/ait-cli-service.js";
+import { TrackerSyncManager } from "./tracker-sync-manager.js";
 import type { CheckoutDiffManager, CheckoutDiffMetrics } from "./checkout-diff-manager.js";
 import type { DaemonConfigStore, MutableDaemonConfig } from "./daemon-config-store.js";
 import {
@@ -549,6 +551,9 @@ export class VoiceAssistantWebSocketServer {
   private readonly workspaceRegistry: WorkspaceRegistry;
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly scheduleService: ScheduleService;
+  private readonly aitService: AitService;
+  private readonly trackerSyncManager: TrackerSyncManager;
+  private unsubscribeProjectMutations: (() => void) | null = null;
   private readonly checkoutDiffManager: CheckoutDiffManager;
   private readonly github: ForgeService;
   private readonly workspaceGitService: WorkspaceGitService;
@@ -600,6 +605,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly directorySync = new DirectorySyncService();
   private readonly pluginRuntime: SessionOptions["pluginRuntime"];
   private readonly orchestrationSkills: SessionOptions["orchestrationSkills"];
+  private aitTrackerSort: boolean | undefined;
 
   constructor(
     server: HTTPServer,
@@ -647,6 +653,7 @@ export class VoiceAssistantWebSocketServer {
     pluginRuntime?: SessionOptions["pluginRuntime"],
     orchestrationSkills?: SessionOptions["orchestrationSkills"],
     workspaceLabelService?: WorkspaceLabelService,
+    aitService?: AitService,
   ) {
     this.logger = logger.child({ module: "websocket-server" });
     this.workspaceSetupRuntime = workspaceSetupRuntime;
@@ -673,6 +680,15 @@ export class VoiceAssistantWebSocketServer {
       checkoutDiffManager,
     });
     this.scheduleService = requiredServices.scheduleService;
+    this.aitService = aitService ?? createAitService();
+    this.trackerSyncManager = new TrackerSyncManager({
+      aitService: this.aitService,
+      projectRegistry: this.projectRegistry,
+      onAitInitializedChanged: (projectId) => this.publishProjectUpdateForProject(projectId),
+    });
+    void this.startTrackerProjectWatches().catch((error) => {
+      this.logger.warn({ err: error }, "Failed to start AIT initialization watches");
+    });
     this.checkoutDiffManager = requiredServices.checkoutDiffManager;
     this.github = github ?? createGitHubService();
     this.workspaceGitService = workspaceGitService ?? createFallbackWorkspaceGitService();
@@ -938,12 +954,59 @@ export class VoiceAssistantWebSocketServer {
     );
   }
 
-  public publishProjectUpdate(update: ProjectUpdate): void {
-    for (const session of this.listSessions()) {
-      void session
-        .emitProjectUpdate(update)
-        .catch((error) => this.logger.warn({ err: error }, "Failed to publish project update"));
-    }
+  public async publishProjectUpdate(update: ProjectUpdate): Promise<void> {
+    // Concurrent across sessions (each one's own cheap local `.ait/ait.db`
+    // check runs in parallel, not serialized session-by-session), but
+    // awaited overall — a caller that does care about delivery order
+    // relative to whatever it does next can rely on this actually
+    // finishing, and it's what stopped this from racing session.ts's own
+    // rename/icon-set callers against their assertions in tests.
+    //
+    // Each session's failure is caught on its own: one broken session must not
+    // cost the others their update, and the callers that fire this without
+    // awaiting would otherwise turn a rejection into an unhandled one.
+    await Promise.all(
+      this.listSessions().map((session) =>
+        session
+          .emitProjectUpdate(update)
+          .catch((error) => this.logger.warn({ err: error }, "Failed to publish project update")),
+      ),
+    );
+  }
+
+  private async publishProjectUpdateForProject(projectId: string): Promise<void> {
+    const project = await this.projectRegistry.get(projectId);
+    if (!project || project.archivedAt) return;
+    await this.publishProjectUpdate({ kind: "upsert", project });
+  }
+
+  private async startTrackerProjectWatches(): Promise<void> {
+    this.unsubscribeProjectMutations =
+      this.projectRegistry.subscribeToMutations?.((mutation) => {
+        if (mutation.kind === "upsert" && mutation.project && !mutation.project.archivedAt) {
+          return this.trackerSyncManager.watchProject(mutation.projectId).catch((error) => {
+            this.logger.warn(
+              { err: error, projectId: mutation.projectId },
+              "Failed to update AIT initialization watch",
+            );
+          });
+        }
+        return this.trackerSyncManager.unwatchProject(mutation.projectId).catch((error) => {
+          this.logger.warn(
+            { err: error, projectId: mutation.projectId },
+            "Failed to remove AIT initialization watch",
+          );
+        });
+      }) ?? null;
+
+    // Only gated projects need a global watch; tracker subscriptions observe
+    // initialized projects, while RPC failures surface stale true states.
+    const projects = await this.projectRegistry.list();
+    await Promise.all(
+      projects
+        .filter((project) => !project.archivedAt)
+        .map((project) => this.trackerSyncManager.watchProject(project.projectId)),
+    );
   }
 
   public publishSpeechReadiness(readiness: SpeechReadinessSnapshot | null): void {
@@ -1023,6 +1086,8 @@ export class VoiceAssistantWebSocketServer {
 
   public async close(): Promise<void> {
     this.prepareForShutdown();
+    this.unsubscribeProjectMutations?.();
+    this.unsubscribeProjectMutations = null;
     this.unsubscribeSpeechReadiness?.();
     this.unsubscribeSpeechReadiness = null;
     this.unsubscribeDaemonConfigChange?.();
@@ -1094,6 +1159,7 @@ export class VoiceAssistantWebSocketServer {
     await Promise.all(cleanupPromises);
     this.providerSnapshotManager.destroy();
     this.checkoutDiffManager.dispose();
+    await this.trackerSyncManager.close();
     await this.workspaceGitService.dispose();
     this.pendingConnections.clear();
     this.sessions.clear();
@@ -1413,6 +1479,8 @@ export class VoiceAssistantWebSocketServer {
       workspaceLabelService: this.workspaceLabelService ?? undefined,
       directorySync: this.directorySync,
       scheduleService: this.scheduleService,
+      aitService: this.aitService,
+      trackerSyncManager: this.trackerSyncManager,
       checkoutDiffManager: this.checkoutDiffManager,
       github: this.github,
       workspaceGitService: this.workspaceGitService,
@@ -1484,11 +1552,11 @@ export class VoiceAssistantWebSocketServer {
     return pending;
   }
 
-  private handleHello(params: {
+  private async handleHello(params: {
     ws: WebSocketLike;
     message: WSHelloMessage;
     pending: PendingConnection;
-  }): void {
+  }): Promise<void> {
     const { ws, message, pending } = params;
 
     if (message.protocolVersion !== WS_PROTOCOL_VERSION) {
@@ -1529,6 +1597,13 @@ export class VoiceAssistantWebSocketServer {
       this.clearPendingConnection(ws);
       pending.connectionLogger.warn({ clientId }, "Rejected reserved plugin clientId");
       ws.close(WS_CLOSE_INVALID_HELLO, "Invalid plugin clientId");
+      return;
+    }
+
+    // Re-checked after the await: the connection can be torn down while the
+    // capability refresh is in flight.
+    await this.refreshAitTrackerSortCapability();
+    if (!this.pendingConnections.has(ws)) {
       return;
     }
 
@@ -1616,6 +1691,22 @@ export class VoiceAssistantWebSocketServer {
     );
   }
 
+  private async refreshAitTrackerSortCapability(): Promise<void> {
+    const previous = this.aitTrackerSort;
+    let supported = false;
+    if (this.aitService.supportsSort) {
+      try {
+        supported = await this.aitService.supportsSort();
+      } catch (error) {
+        this.logger.warn({ err: error }, "Failed to probe ait --sort capability");
+      }
+    }
+    this.aitTrackerSort = supported;
+    if (previous !== undefined && previous !== supported) {
+      this.broadcastCapabilitiesUpdate();
+    }
+  }
+
   private buildServerInfoStatusPayload(session: Session): ServerInfoStatusPayload {
     return {
       status: "server_info",
@@ -1635,6 +1726,10 @@ export class VoiceAssistantWebSocketServer {
         providersSnapshot: true,
         // COMPAT(providersSnapshotCwd): added in v0.3.2, remove gate after 2027-02-10.
         providersSnapshotCwd: true,
+        // COMPAT(aitTrackerStats): added in v0.4.0, remove after 2027-02-19.
+        aitTrackerStats: true,
+        // COMPAT(aitTrackerSort): added in v0.4.1, remove gate after 2027-02-19.
+        ...(this.aitTrackerSort !== undefined ? { aitTrackerSort: this.aitTrackerSort } : {}),
         // COMPAT(checkoutForgeSetAutoMerge): added in v0.2.0-beta.1. Remove the
         // feature gate and legacy fallback after 2027-01-17 once the supported
         // daemon floor is >= v0.2.0.
@@ -1730,6 +1825,14 @@ export class VoiceAssistantWebSocketServer {
         commitsList: true,
         // COMPAT(commitBaseClassification): added in v0.2.0, remove gate after 2027-01-23.
         commitBaseClassification: true,
+        // COMPAT(aitTracker): added in v0.4.1, remove gate after 2027-02-19.
+        aitTracker: true,
+        // COMPAT(aitTrackerLive): added in v0.4.1, remove gate after 2027-02-19.
+        aitTrackerLive: true,
+        // COMPAT(aitTrackerReady): added in v0.4.1, remove gate after 2027-02-19.
+        aitTrackerReady: true,
+        // COMPAT(aitProjectInitStatus): added in v0.4.1, remove gate after 2027-02-19.
+        aitProjectInitStatus: true,
         // COMPAT(providerRemoval): added in v0.1.105, drop the gate when floor >= v0.1.105.
         providerRemoval: true,
         // COMPAT(importSessionWorkspaceTarget): added in v0.1.110, remove gate after 2027-01-16.
@@ -2122,14 +2225,14 @@ export class VoiceAssistantWebSocketServer {
     return true;
   }
 
-  private handlePendingConnectionMessage(params: {
+  private async handlePendingConnectionMessage(params: {
     ws: WebSocketLike;
     message: WSInboundMessage;
     pendingConnection: PendingConnection;
-  }): void {
+  }): Promise<void> {
     const { ws, message, pendingConnection } = params;
     if (message.type === "hello") {
-      this.handleHello({
+      await this.handleHello({
         ws,
         message,
         pending: pendingConnection,
@@ -2210,10 +2313,12 @@ export class VoiceAssistantWebSocketServer {
       }
 
       if (pendingConnection) {
-        this.handlePendingConnectionMessage({
+        void this.handlePendingConnectionMessage({
           ws,
           message,
           pendingConnection,
+        }).catch((error: unknown) => {
+          this.handleRawMessageError({ ws, data, error, log: pendingConnection.connectionLogger });
         });
         return;
       }

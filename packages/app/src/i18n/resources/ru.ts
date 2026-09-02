@@ -1116,6 +1116,7 @@ export const ru: TranslationResources = {
     sections: {
       sessions: "История",
       schedules: "Расписания",
+      tracker: "Трекер",
     },
     worktreeSetup: {
       title: "Настроить скрипты worktree",
@@ -2679,6 +2680,61 @@ export const ru: TranslationResources = {
         saving: "Сохранение...",
         cancel: "Отмена",
       },
+    },
+  },
+  tracker: {
+    card: {
+      childProgress: "{{done}}/{{count}}",
+      claimedBy: "Закреплено за {{name}}",
+      created: "Создано {{time}}",
+      closed: "Закрыто {{time}}",
+    },
+    kanban: {
+      lane: {
+        open: "К выполнению",
+        inProgress: "В работе",
+        done: "Готово",
+        cancelled: "Отменено",
+      },
+      empty: {
+        open: "Нет задач к выполнению",
+        inProgress: "Нет задач в работе",
+        done: "Нет завершённых задач",
+        cancelled: "Нет отменённых задач",
+      },
+      showMore: "Показать ещё {{count}}",
+      blocked: "Заблокировано",
+      refresh: "Обновить",
+      moveMenu: {
+        trigger: "Действия для {{title}}",
+        title: "Действия",
+      },
+      moveTo: {
+        open: "Переместить в «Открыто»",
+        inProgress: "Переместить в «В работе»",
+        done: "Переместить в «Готово»",
+        cancelled: "Переместить в «Отменено»",
+      },
+      type: {
+        tasks: "Задачи",
+        epics: "Эпики",
+        initiatives: "Инициативы",
+        all: "Все",
+      },
+      error: {
+        transitionFailed: "Не удалось переместить {{title}}. Попробуйте снова.",
+        deleteFailed: "Не удалось удалить {{title}}. Попробуйте снова.",
+      },
+    },
+    list: {
+      section: {
+        open: "К выполнению",
+        inProgress: "В работе",
+        done: "Готово",
+        cancelled: "Отменено",
+      },
+      showMore: "Показать ещё {{count}}",
+      loadMore: "Загрузить ещё",
     },
   },
 };
