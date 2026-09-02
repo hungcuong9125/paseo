@@ -26,6 +26,7 @@ vi.mock("./acp-agent.js", () => ({
       mockState.superConstructorOptions.push(options);
     }
   },
+  findSelectConfigOption: vi.fn(),
 }));
 
 import { GenericACPAgentClient } from "./generic-acp-agent.js";
@@ -80,6 +81,31 @@ describe("GenericACPAgentClient", () => {
       capabilities: {
         supportsMcpServers: false,
       },
+    });
+  });
+
+  test("installs the Antigravity thinking bridge from configured thinking options", () => {
+    const _client = new GenericACPAgentClient({
+      logger: createTestLogger(),
+      command: ["/Users/test/.local/bin/agy-acp"],
+      providerId: "custom-antigravity-seat",
+      configuredModels: [
+        {
+          id: "gemini-3.8-flash",
+          label: "Gemini 3.8 Flash",
+          thinkingOptions: [
+            { id: "high", label: "High" },
+            { id: "medium", label: "Medium", isDefault: true },
+            { id: "low", label: "Low" },
+          ],
+        },
+      ],
+    });
+    void _client;
+
+    expect(mockState.superConstructorOptions.at(-1)).toMatchObject({
+      providerModelWriter: expect.any(Function),
+      thinkingOptionWriter: expect.any(Function),
     });
   });
 });

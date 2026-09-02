@@ -42,6 +42,7 @@ import {
   writeCopilotProviderMode,
 } from "./copilot-acp-agent.js";
 import { GenericACPAgentClient } from "./generic-acp-agent.js";
+import { createAntigravityACPThinkingBridge } from "./antigravity-acp.js";
 import {
   buildGrokNewSessionMeta,
   buildGrokSetSessionModelMeta,
@@ -1247,6 +1248,64 @@ describe("ACPAgentSession Zed parity", () => {
       "claude-acp does not expose ACP thought-level selection",
     );
     expect(internals.connection.setSessionConfigOption).not.toHaveBeenCalled();
+  });
+
+  test("sends Antigravity thinking through the configured model variant", async () => {
+    const bridge = createAntigravityACPThinkingBridge([
+      {
+        id: "gemini-3.8-flash",
+        label: "Gemini 3.8 Flash",
+        thinkingOptions: [
+          { id: "high", label: "High" },
+          { id: "medium", label: "Medium", isDefault: true },
+          { id: "low", label: "Low" },
+        ],
+      },
+    ]);
+    const session = new ACPAgentSession(
+      {
+        provider: "acp",
+        cwd: "/tmp/paseo-acp-test",
+        model: "gemini-3.8-flash",
+        thinkingOptionId: "medium",
+      },
+      {
+        provider: "acp",
+        logger: createTestLogger(),
+        defaultCommand: ["agy-acp"],
+        defaultModes: [],
+        capabilities: DEFAULT_ACP_TEST_CAPABILITIES,
+        ...bridge!,
+      },
+    );
+    const internals = asInternals<ACPConfiguredOverrideInternals>(session);
+    const configOptions = [
+      selectConfigOption("model", [
+        "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
+        "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)",
+        "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)",
+      ]),
+    ];
+    const setSessionConfigOption = vi.fn(async () => ({ configOptions }));
+    internals.sessionId = "session-1";
+    internals.currentModel = "gemini-3.8-flash";
+    internals.configOptions = configOptions;
+    internals.connection = {
+      setSessionMode: vi.fn(),
+      setSessionConfigOption,
+    };
+
+    await session.setThinkingOption("low");
+
+    expect(setSessionConfigOption).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      configId: "model-option",
+      value: "gemini-3.8-flash-low",
+    });
+    await expect(session.getRuntimeInfo()).resolves.toMatchObject({
+      model: "gemini-3.8-flash",
+      thinkingOptionId: "low",
+    });
   });
 
   test("passes generic ACP permission requests through to the user", async () => {

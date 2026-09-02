@@ -430,6 +430,9 @@ interface ACPAgentClientOptions {
     context: ACPProviderModeWriterContext,
   ) => Promise<ACPProviderModeWriteResult>;
   beforeModeWriter?: (context: ACPProviderModeWriterContext) => Promise<ACPBeforeModeWriteResult>;
+  providerModelWriter?: (
+    context: ACPProviderModelWriterContext,
+  ) => Promise<ACPProviderModelWriteResult>;
   thinkingOptionWriter?: (context: ACPThinkingOptionWriterContext) => Promise<void>;
   buildNewSessionMeta?: (config: AgentSessionConfig) => { [key: string]: unknown } | undefined;
   buildSetSessionModelMeta?: (
@@ -460,6 +463,9 @@ interface ACPAgentSessionOptions {
     context: ACPProviderModeWriterContext,
   ) => Promise<ACPProviderModeWriteResult>;
   beforeModeWriter?: (context: ACPProviderModeWriterContext) => Promise<ACPBeforeModeWriteResult>;
+  providerModelWriter?: (
+    context: ACPProviderModelWriterContext,
+  ) => Promise<ACPProviderModelWriteResult>;
   thinkingOptionWriter?: (context: ACPThinkingOptionWriterContext) => Promise<void>;
   buildNewSessionMeta?: (config: AgentSessionConfig) => { [key: string]: unknown } | undefined;
   buildSetSessionModelMeta?: (
@@ -596,6 +602,22 @@ export interface ACPThinkingOptionWriterContext {
   modelId: string | null;
   availableModels: AvailableACPModel[] | null;
   sessionMeta: { [key: string]: unknown } | null;
+  configOptions: SessionConfigOption[];
+}
+
+export interface ACPProviderModelWriterContext {
+  connection: ClientSideConnection;
+  sessionId: string;
+  requestedModelId: string;
+  currentThinkingOptionId: string | null;
+  configOptions: SessionConfigOption[];
+}
+
+export interface ACPProviderModelWriteResult {
+  handled: boolean;
+  currentModelId?: string;
+  currentThinkingOptionId?: string;
+  configOptions?: SessionConfigOption[];
 }
 
 export interface ACPSessionModelMetaInput {
@@ -878,6 +900,9 @@ export class ACPAgentClient implements AgentClient {
   private readonly beforeModeWriter?: (
     context: ACPProviderModeWriterContext,
   ) => Promise<ACPBeforeModeWriteResult>;
+  private readonly providerModelWriter?: (
+    context: ACPProviderModelWriterContext,
+  ) => Promise<ACPProviderModelWriteResult>;
   private readonly thinkingOptionWriter?: (
     context: ACPThinkingOptionWriterContext,
   ) => Promise<void>;
@@ -914,6 +939,7 @@ export class ACPAgentClient implements AgentClient {
     this.toolSnapshotTransformer = options.toolSnapshotTransformer;
     this.providerModeWriter = options.providerModeWriter;
     this.beforeModeWriter = options.beforeModeWriter;
+    this.providerModelWriter = options.providerModelWriter;
     this.thinkingOptionWriter = options.thinkingOptionWriter;
     this.buildNewSessionMeta = options.buildNewSessionMeta;
     this.buildSetSessionModelMeta = options.buildSetSessionModelMeta;
@@ -945,6 +971,7 @@ export class ACPAgentClient implements AgentClient {
         toolSnapshotTransformer: this.toolSnapshotTransformer,
         providerModeWriter: this.providerModeWriter,
         beforeModeWriter: this.beforeModeWriter,
+        providerModelWriter: this.providerModelWriter,
         thinkingOptionWriter: this.thinkingOptionWriter,
         buildNewSessionMeta: this.buildNewSessionMeta,
         buildSetSessionModelMeta: this.buildSetSessionModelMeta,
@@ -997,6 +1024,7 @@ export class ACPAgentClient implements AgentClient {
       toolSnapshotTransformer: this.toolSnapshotTransformer,
       providerModeWriter: this.providerModeWriter,
       beforeModeWriter: this.beforeModeWriter,
+      providerModelWriter: this.providerModelWriter,
       thinkingOptionWriter: this.thinkingOptionWriter,
       buildNewSessionMeta: this.buildNewSessionMeta,
       buildSetSessionModelMeta: this.buildSetSessionModelMeta,
@@ -1489,6 +1517,9 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   private readonly beforeModeWriter?: (
     context: ACPProviderModeWriterContext,
   ) => Promise<ACPBeforeModeWriteResult>;
+  private readonly providerModelWriter?: (
+    context: ACPProviderModelWriterContext,
+  ) => Promise<ACPProviderModelWriteResult>;
   private readonly thinkingOptionWriter?: (
     context: ACPThinkingOptionWriterContext,
   ) => Promise<void>;
@@ -1556,6 +1587,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     this.toolSnapshotTransformer = options.toolSnapshotTransformer;
     this.providerModeWriter = options.providerModeWriter;
     this.beforeModeWriter = options.beforeModeWriter;
+    this.providerModelWriter = options.providerModelWriter;
     this.thinkingOptionWriter = options.thinkingOptionWriter;
     this.buildNewSessionMeta = options.buildNewSessionMeta;
     this.buildSetSessionModelMeta = options.buildSetSessionModelMeta;
@@ -1996,6 +2028,29 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       throw new Error("ACP session not initialized");
     }
 
+    if (this.providerModelWriter) {
+      const result = await this.providerModelWriter({
+        connection: this.connection,
+        sessionId: this.sessionId,
+        requestedModelId: modelId,
+        currentThinkingOptionId: this.thinkingOptionId,
+        configOptions: this.configOptions,
+      });
+      if (result.handled) {
+        if (result.configOptions) {
+          this.configOptions = this.transformConfigOptions(result.configOptions);
+        }
+        this.currentModel = result.currentModelId ?? modelId;
+        this.thinkingOptionId = result.currentThinkingOptionId ?? this.thinkingOptionId;
+        this.pushEvent({
+          type: "model_changed",
+          provider: this.provider,
+          runtimeInfo: this.runtimeInfo(),
+        });
+        return;
+      }
+    }
+
     if (selection.hasAvailableModels) {
       if (!selection.availableModel) {
         this.warnInvalidSelection(
@@ -2086,6 +2141,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
         modelId: this.currentModel,
         availableModels: this.availableModels,
         sessionMeta: this.sessionMeta,
+        configOptions: this.configOptions,
       });
       this.thinkingOptionId = thinkingOptionId;
       this.pushEvent({

@@ -2,7 +2,11 @@ import type { Logger } from "pino";
 import { z } from "zod";
 
 import type { AgentCapabilityFlags } from "../agent-sdk-types.js";
-import { checkProviderLaunchAvailable, resolveProviderLaunch } from "../provider-launch-config.js";
+import {
+  checkProviderLaunchAvailable,
+  resolveProviderLaunch,
+  type ProviderProfileModel,
+} from "../provider-launch-config.js";
 import {
   ACPAgentClient,
   type ACPCatalogModelResolver,
@@ -11,6 +15,7 @@ import {
   DEFAULT_ACP_CAPABILITIES,
   type ACPExtensionCommandsParser,
 } from "./acp-agent.js";
+import { createAntigravityACPThinkingBridge, isAntigravityACPProvider } from "./antigravity-acp.js";
 import {
   buildGrokNewSessionMeta,
   buildGrokSetSessionModelMeta,
@@ -57,6 +62,7 @@ interface GenericACPAgentClientOptions {
   configFeatureOptions?: ACPConfigFeatureOption[];
   extensionCommandsParser?: ACPExtensionCommandsParser;
   catalogModelResolver?: ACPCatalogModelResolver;
+  configuredModels?: ProviderProfileModel[];
 }
 
 export class GenericACPAgentClient extends ACPAgentClient {
@@ -68,6 +74,9 @@ export class GenericACPAgentClient extends ACPAgentClient {
   constructor(options: GenericACPAgentClientOptions) {
     const providerParams = parseGenericACPProviderParams(options.providerParams);
     const grokAcp = isGrokACPProvider(options.providerId, options.command);
+    const antigravityThinkingBridge = isAntigravityACPProvider(options.providerId, options.command)
+      ? createAntigravityACPThinkingBridge(options.configuredModels ?? [])
+      : null;
     super({
       provider: "acp",
       logger: options.logger,
@@ -83,6 +92,7 @@ export class GenericACPAgentClient extends ACPAgentClient {
       configFeatureOptions: options.configFeatureOptions,
       extensionCommandsParser: options.extensionCommandsParser,
       catalogModelResolver: options.catalogModelResolver,
+      ...antigravityThinkingBridge,
       ...(grokAcp
         ? {
             thinkingOptionWriter: writeGrokThinkingOption,
