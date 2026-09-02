@@ -794,6 +794,7 @@ function addDerivedProviders(
             providerId,
             label: override.label ?? providerId,
             providerParams: override.params,
+            configuredModels: [...(override.models ?? []), ...(override.additionalModels ?? [])],
           };
           if (providerId === "cursor") {
             return new CursorACPAgentClient(acpOptions);

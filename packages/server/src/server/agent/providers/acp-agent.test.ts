@@ -42,6 +42,7 @@ import {
   writeCopilotProviderMode,
 } from "./copilot-acp-agent.js";
 import { GenericACPAgentClient } from "./generic-acp-agent.js";
+import { createAntigravityACPThinkingBridge } from "./antigravity-acp.js";
 import { parseKiroExtensionCommands } from "./kiro-acp-agent.js";
 import { transformPiModels } from "./pi/agent.js";
 import type { AgentStreamEvent } from "../agent-sdk-types.js";
@@ -1117,6 +1118,82 @@ describe("ACPAgentSession Zed parity", () => {
       type: "thinking_option_changed",
       provider: "claude-acp",
       thinkingOptionId: "high",
+    });
+  });
+
+  test("uses configured Antigravity model variants when ACP has no thought-level option", async () => {
+    const bridge = createAntigravityACPThinkingBridge([
+      {
+        id: "gemini-3.8-flash",
+        label: "Gemini 3.8 Flash",
+        thinkingOptions: [
+          { id: "high", label: "High" },
+          { id: "medium", label: "Medium", isDefault: true },
+          { id: "low", label: "Low" },
+        ],
+      },
+    ]);
+    const session = new ACPAgentSession(
+      {
+        provider: "acp",
+        cwd: "/tmp/paseo-acp-test",
+        model: "gemini-3.8-flash",
+        thinkingOptionId: "medium",
+      },
+      {
+        provider: "acp",
+        logger: createTestLogger(),
+        defaultCommand: ["agy-acp"],
+        defaultModes: [],
+        capabilities: {
+          supportsStreaming: true,
+          supportsSessionPersistence: true,
+          supportsDynamicModes: true,
+          supportsMcpServers: true,
+          supportsReasoningStream: true,
+          supportsToolInvocations: true,
+        },
+        ...bridge!,
+      },
+    );
+    const internals = asInternals<ACPConfiguredOverrideInternals>(session);
+    const setSessionConfigOption = vi.fn(async () => ({
+      configOptions: [
+        selectConfigOption(
+          "model",
+          [
+            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
+            "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)",
+            "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)",
+          ],
+          "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)",
+        ),
+      ],
+    }));
+    internals.sessionId = "session-1";
+    internals.currentModel = "gemini-3.8-flash";
+    internals.configOptions = [
+      selectConfigOption("model", [
+        "gemini-3.8-flash-high\tGemini 3.8 Flash (High)",
+        "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)",
+        "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)",
+      ]),
+    ];
+    internals.connection = {
+      setSessionMode: vi.fn(),
+      setSessionConfigOption,
+    };
+
+    await session.setThinkingOption("low");
+
+    expect(setSessionConfigOption).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      configId: "model-option",
+      value: "gemini-3.8-flash-low",
+    });
+    await expect(session.getRuntimeInfo()).resolves.toMatchObject({
+      model: "gemini-3.8-flash",
+      thinkingOptionId: "low",
     });
   });
 
