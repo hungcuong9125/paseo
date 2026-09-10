@@ -14,6 +14,7 @@ import { iconButtonChromeGlyphSize } from "@/components/ui/icon-button-chrome";
 
 interface MenuHeaderProps {
   title?: string;
+  leftContent?: ReactNode;
   rightContent?: ReactNode;
   borderless?: boolean;
 }
@@ -141,13 +142,14 @@ export function WindowSidebarMenuToggle({ style, ...props }: SidebarMenuTogglePr
   );
 }
 
-export function MenuHeader({ title, rightContent, borderless }: MenuHeaderProps) {
+export function MenuHeader({ title, leftContent, rightContent, borderless }: MenuHeaderProps) {
   return (
     <ScreenHeader
       left={
         <>
           <SidebarMenuToggle />
           {title && <ScreenTitle>{title}</ScreenTitle>}
+          {leftContent}
         </>
       }
       right={rightContent}

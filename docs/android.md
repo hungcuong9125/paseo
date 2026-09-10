@@ -126,10 +126,12 @@ F-Droid builds should set `PASEO_FDROID_BUILD=1` when running Expo prebuild:
 
 ```bash
 cd packages/app
-PASEO_FDROID_BUILD=1 APP_VARIANT=production npx expo prebuild --platform android --clean --non-interactive
+PASEO_FDROID_BUILD=1 APP_VARIANT=production npx expo prebuild --platform android --clean --non-interactive --no-install
 cd android
 PASEO_FDROID_BUILD=1 ./gradlew assembleRelease --no-daemon --max-workers=1 -Dorg.gradle.parallel=false
 ```
+
+`expo prebuild` installs JavaScript dependencies inside the project directory on its own, and for npm it deletes `packages/app/node_modules` first. `packages/app` is a workspace child whose `node_modules` is owned by the root install, so that step can leave it stripped of packages — a sudden wall of `Cannot find module` errors in `packages/app` that were not there before the build. `--no-install` skips that step, since the root install already covers the workspace; if `packages/app/node_modules` is ever left incomplete, `npm install` at the repo root restores it.
 
 The flag must be present for both prebuild and Gradle because Gradle starts Metro for the release bundle. Keep the source build serial and daemon-free as shown above: compiling every Expo module can exhaust memory when Gradle workers run in parallel. The profile enables source-built Expo modules, excludes the proprietary camera, Firebase notification, and Expo development-client native modules, disables Gradle dependency metadata, and substitutes JavaScript stubs for camera and notifications. The resulting app supports direct and pasted-link pairing but not QR scanning or push notifications.
 
@@ -143,7 +145,7 @@ PASEO_FDROID_BUILD=1 ./gradlew assembleRelease \
 
 Supported values are `armeabi-v7a`, `arm64-v8a`, `x86`, and `x86_64`. The F-Droid profile filters native libraries to that ABI and changes the APK version code to `baseVersionCode * 10 + abiSuffix`, where the suffixes are ordered `1` through `4` in that same sequence. F-Droid metadata should use four build blocks with `VercodeOperation` entries `10 * %c + 1` through `10 * %c + 4` and pass the matching `reactNativeArchitectures` value in each build command. Builds without a single architecture keep the base version code.
 
-Keep the excluded npm packages installed. Normal builds use them, while the F-Droid profile removes only their Android native modules and config plugins. Paseo always applies `expo-gradle-jvmargs` with `-Xmx4096m` and `-XX:MaxMetaspaceSize=1024m` so local Expo prebuilds have enough Gradle heap whether they use precompiled AARs or source-built Expo modules.
+The F-Droid profile excludes only those packages' Android native modules and config plugins; their JavaScript packages must stay installed for normal and web builds. If a prebuild strips `packages/app/node_modules`, `npm install` at the repo root restores it (see the note on `--no-install` above). Paseo always applies `expo-gradle-jvmargs` with `-Xmx4096m` and `-XX:MaxMetaspaceSize=1024m` so local Expo prebuilds have enough Gradle heap whether they use precompiled AARs or source-built Expo modules.
 
 The EAS `production-apk` profile uses the large Android resource class. Release builds compile the native ABIs and run Hermes bundling in the same Gradle invocation; the default worker can exhaust its remaining memory and kill Hermes with exit code 137 even when Gradle's own heap is correctly sized.
 
