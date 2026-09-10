@@ -35,6 +35,7 @@ import {
   Plus,
   RefreshCw,
   X,
+  type LucideIcon,
 } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
@@ -65,6 +66,7 @@ import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { SkeletonPulse, useSkeletonPulse } from "@/components/ui/skeleton";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
+import { CONTROL_HEIGHTS } from "@/components/ui/control-geometry";
 import { SearchField } from "@/components/ui/search-field";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
@@ -101,7 +103,7 @@ import {
 } from "@/tracker/tracker-stats";
 import type { TrackerTransition } from "@/tracker/tracker-transitions";
 import { useSessionStore } from "@/stores/session-store";
-import type { Theme } from "@/styles/theme";
+import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { resolveTrackerScreenBodyState, type TrackerScreenBodyState } from "./tracker-screen-state";
 
 type StatFilter = TrackerStatFilter;
@@ -1044,30 +1046,36 @@ function TrackerScreenContent({ isFocused }: { isFocused: boolean }): ReactEleme
     [bellProjectErrors],
   );
 
+  const selectListView = useCallback(() => setViewMode("list"), [setViewMode]);
+  const selectKanbanView = useCallback(() => setViewMode("kanban"), [setViewMode]);
+
   const headerRightContent = useMemo(
     () => (
-      <>
-        <Button
-          variant="ghost"
-          size="sm"
-          leftIcon={RefreshCw}
+      <View style={styles.headerActions}>
+        <TrackerHeaderIconButton
+          accessibilityLabel={t("tracker.kanban.refresh")}
           loading={isRefreshing}
           onPress={handleRefresh}
-          accessibilityLabel={t("tracker.kanban.refresh")}
           testID="trackers-refresh"
+          icon={RefreshCw}
         />
-        <SegmentedControl
-          options={viewModeOptions}
-          value={viewMode}
-          onValueChange={setViewMode}
-          size="sm"
-          hideLabels
-          style={styles.headerViewModes}
-          testID="trackers-view-mode"
+        <TrackerHeaderIconButton
+          accessibilityLabel="List"
+          active={viewMode === "list"}
+          onPress={selectListView}
+          testID="trackers-view-list"
+          icon={ListChecks}
         />
-      </>
+        <TrackerHeaderIconButton
+          accessibilityLabel="Kanban"
+          active={viewMode === "kanban"}
+          onPress={selectKanbanView}
+          testID="trackers-view-kanban"
+          icon={LayoutGrid}
+        />
+      </View>
     ),
-    [handleRefresh, isRefreshing, setViewMode, t, viewMode],
+    [handleRefresh, isRefreshing, selectKanbanView, selectListView, t, viewMode],
   );
 
   return (
@@ -1076,6 +1084,7 @@ function TrackerScreenContent({ isFocused }: { isFocused: boolean }): ReactEleme
         title="Tracker"
         leftContent={headerLeftContent}
         rightContent={headerRightContent}
+        contentPadding
       />
       <TrackerScreenBody
         contentWidth={contentWidth.value}
@@ -1594,7 +1603,7 @@ function TrackerErrorsBellIcon({
   );
   return (
     <>
-      <ThemedBell size={20} uniProps={bellColorMapping} />
+      <ThemedBell size={18} uniProps={bellColorMapping} />
       {count > 0 ? (
         <View style={styles.errorsBadge}>
           <Text style={styles.errorsBadgeText}>{count}</Text>
@@ -1688,7 +1697,7 @@ function TrackerErrorsButton({ errors }: { errors: TrackerProjectError[] }): Rea
         </DropdownMenuTrigger>
       </View>
       <DropdownMenuContent
-        align="end"
+        align="start"
         width={360}
         scrollable
         onPointerEnter={cancelHoverClose}
@@ -2678,26 +2687,111 @@ function TrackersToolbar({
   );
 }
 
-function renderListIcon({ color, size }: { color: string; size: number }): ReactElement {
-  return <ListChecks color={color} size={size} />;
+const activeHeaderIconMapping = (theme: Theme) => ({ color: theme.colors.foreground });
+const mutedHeaderIconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+
+function HeaderGlyph({
+  icon: Icon,
+  size,
+  color,
+}: {
+  icon: LucideIcon;
+  size: number;
+  color: string;
+}): ReactElement {
+  return <Icon size={size} color={color} />;
 }
 
-function renderKanbanIcon({ color, size }: { color: string; size: number }): ReactElement {
-  return <LayoutGrid color={color} size={size} />;
+const ThemedHeaderGlyph = withUnistyles(HeaderGlyph);
+
+function HeaderGlyphSpinner({ color }: { color: string }): ReactElement {
+  return <LoadingSpinner size="small" color={color} />;
 }
 
-const viewModeOptions: SegmentedControlOption<ViewMode>[] = [
-  { value: "list", label: "List", icon: renderListIcon, testID: "trackers-view-list" },
-  { value: "kanban", label: "Kanban", icon: renderKanbanIcon, testID: "trackers-view-kanban" },
-];
+const ThemedHeaderGlyphSpinner = withUnistyles(HeaderGlyphSpinner);
+
+const SELECTED_ACCESSIBILITY_STATE = { selected: true };
+const UNSELECTED_ACCESSIBILITY_STATE = { selected: false };
+
+function TrackerHeaderIconButton({
+  accessibilityLabel,
+  active = false,
+  loading = false,
+  onPress,
+  testID,
+  icon,
+}: {
+  accessibilityLabel: string;
+  active?: boolean;
+  loading?: boolean;
+  onPress: () => void;
+  testID: string;
+  icon: LucideIcon;
+}): ReactElement {
+  const pressableStyle = useCallback(
+    ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
+      styles.headerActionButton,
+      active && styles.headerActionButtonActive,
+      !active && hovered && styles.headerActionButtonHover,
+      pressed && styles.headerActionButtonPressed,
+    ],
+    [active],
+  );
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={active ? SELECTED_ACCESSIBILITY_STATE : UNSELECTED_ACCESSIBILITY_STATE}
+      testID={testID}
+      onPress={onPress}
+      style={pressableStyle}
+    >
+      {({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) =>
+        loading ? (
+          <ThemedHeaderGlyphSpinner uniProps={mutedHeaderIconMapping} />
+        ) : (
+          <ThemedHeaderGlyph
+            icon={icon}
+            size={ICON_SIZE.sm}
+            uniProps={
+              active || Boolean(hovered) || pressed
+                ? activeHeaderIconMapping
+                : mutedHeaderIconMapping
+            }
+          />
+        )
+      }
+    </Pressable>
+  );
+}
 
 const styles = StyleSheet.create((theme) => ({
   container: {
     flex: 1,
     backgroundColor: theme.colors.surface0,
   },
-  headerViewModes: {
+  headerActions: {
+    flexDirection: "row",
+    alignItems: "center",
     gap: theme.spacing[2],
+  },
+  headerActionButton: {
+    minHeight: CONTROL_HEIGHTS.compact - 4,
+    paddingHorizontal: theme.spacing[2],
+    borderRadius: theme.borderRadius.md,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  headerActionButtonActive: {
+    backgroundColor: theme.colors.surface3,
+  },
+  headerActionButtonHover: {
+    backgroundColor: theme.colors.surface2,
+  },
+  headerActionButtonPressed: {
+    backgroundColor: theme.colors.surface3,
   },
   centered: {
     flex: 1,

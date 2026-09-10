@@ -19,6 +19,8 @@ interface ScreenHeaderProps {
   rightStyle?: StyleProp<ViewStyle>;
   borderless?: boolean;
   onRowLayout?: (event: LayoutChangeEvent) => void;
+  /** Use the same horizontal padding as screen content (12 compact / 24 wide). */
+  contentPadding?: boolean;
 }
 
 /**
@@ -32,13 +34,16 @@ export function ScreenHeader({
   rightStyle,
   borderless,
   onRowLayout,
+  contentPadding,
 }: ScreenHeaderProps) {
   const { theme } = useUnistyles();
   const insets = useSafeAreaInsets();
   const isMobile = useIsCompactFormFactor();
   // Only add extra padding on mobile for better touch targets; on desktop, only use safe area insets
   const topPadding = isMobile ? HEADER_TOP_PADDING_MOBILE : 0;
-  const baseHorizontalPadding = isMobile ? theme.spacing[2] : theme.spacing[3];
+  const compactPadding = contentPadding ? theme.spacing[3] : theme.spacing[2];
+  const widePadding = contentPadding ? theme.spacing[6] : theme.spacing[3];
+  const baseHorizontalPadding = isMobile ? compactPadding : widePadding;
 
   const innerStyle = useMemo(
     () => [styles.inner, { paddingTop: insets.top + topPadding }],

@@ -288,8 +288,13 @@ vi.mock("@/utils/copy-to-clipboard", () => ({
 }));
 
 vi.mock("@/components/headers/menu-header", () => ({
-  MenuHeader: (props: { rightContent?: React.ReactNode }) =>
-    React.createElement("div", { "data-testid": "menu-header" }, props.rightContent ?? null),
+  MenuHeader: (props: { leftContent?: React.ReactNode; rightContent?: React.ReactNode }) =>
+    React.createElement(
+      "div",
+      { "data-testid": "menu-header" },
+      props.leftContent ?? null,
+      props.rightContent ?? null,
+    ),
 }));
 
 vi.mock("@/components/tracker/tracker-detail-sheet", () => ({

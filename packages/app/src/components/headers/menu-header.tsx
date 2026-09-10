@@ -17,6 +17,7 @@ interface MenuHeaderProps {
   leftContent?: ReactNode;
   rightContent?: ReactNode;
   borderless?: boolean;
+  contentPadding?: boolean;
 }
 
 interface SidebarMenuToggleProps {
@@ -142,12 +143,18 @@ export function WindowSidebarMenuToggle({ style, ...props }: SidebarMenuTogglePr
   );
 }
 
-export function MenuHeader({ title, leftContent, rightContent, borderless }: MenuHeaderProps) {
+export function MenuHeader({
+  title,
+  leftContent,
+  rightContent,
+  borderless,
+  contentPadding,
+}: MenuHeaderProps) {
   return (
     <ScreenHeader
       left={
         <>
-          <SidebarMenuToggle />
+          <SidebarMenuToggle style={contentPadding ? styles.contentPaddingToggle : undefined} />
           {title && <ScreenTitle>{title}</ScreenTitle>}
           {leftContent}
         </>
@@ -155,6 +162,7 @@ export function MenuHeader({ title, leftContent, rightContent, borderless }: Men
       right={rightContent}
       leftStyle={styles.left}
       borderless={borderless}
+      contentPadding={contentPadding}
     />
   );
 }
@@ -165,6 +173,9 @@ const styles = StyleSheet.create((theme) => ({
       xs: 0,
       md: -theme.spacing[2],
     },
+  },
+  contentPaddingToggle: {
+    marginLeft: -6,
   },
   left: {
     gap: theme.spacing[2],
