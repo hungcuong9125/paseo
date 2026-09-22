@@ -118,6 +118,8 @@ export interface MenuSurfaceProps {
   testID?: string;
   /** Limits ordinary app shortcuts to the time this menu owns keyboard focus. */
   keyboardFocusScope?: KeyboardFocusScope;
+  onPointerEnter?: () => void;
+  onPointerLeave?: () => void;
 }
 
 /**
@@ -206,6 +208,8 @@ function MenuPopoverSurface({
   scrollable = false,
   testID,
   keyboardFocusScope,
+  onPointerEnter,
+  onPointerLeave,
 }: MenuSurfaceProps): ReactElement | null {
   const menu = useMenuContext("MenuSurface");
   const { value: surfaceValue, getAnchor } = useSubAnchors();
@@ -262,6 +266,8 @@ function MenuPopoverSurface({
             scrollable={scrollable}
             testID={testID}
             keyboardFocusScope={keyboardFocusScope}
+            onPointerEnter={onPointerEnter}
+            onPointerLeave={onPointerLeave}
           >
             <MenuPage depth={0}>{children}</MenuPage>
           </AnchoredSurface>
