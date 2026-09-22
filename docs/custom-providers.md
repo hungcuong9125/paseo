@@ -671,6 +671,26 @@ Example: relabel a discovered model without replacing the full list:
 
 When an `additionalModels` entry has the same `id` as a discovered model, it updates that model in place.
 
+### Antigravity ACP thinking options
+
+`agy-acp` exposes thinking levels as model variants such as `gemini-3.8-flash-high` instead of an
+ACP `thought_level` option. Configure the base model ID and its `thinkingOptions`; Paseo appends
+the selected thinking option ID when creating the session or changing thinking:
+
+```json
+{
+  "id": "gemini-3.8-flash",
+  "label": "Gemini 3.8 Flash",
+  "thinkingOptions": [
+    { "id": "high", "label": "High" },
+    { "id": "medium", "label": "Medium", "isDefault": true },
+    { "id": "low", "label": "Low" }
+  ]
+}
+```
+
+Keep the configured ID at `gemini-3.8-flash`. Do not add the thinking suffix to it.
+
 ---
 
 ## Provider override reference
