@@ -7,6 +7,7 @@ import {
   ArrowUp,
   CalendarClock,
   History,
+  ListChecks,
   Plus,
   Search,
   type LucideIcon,
@@ -38,6 +39,7 @@ const moveDownIcon = <ThemedArrowDown size={ICON_SIZE.sm} uniProps={mutedColorMa
 
 const BUILTIN_ICONS: Record<BuiltinSidebarNavId, LucideIcon> = {
   "new-workspace": Plus,
+  tracker: ListChecks,
   history: History,
   search: Search,
   schedules: CalendarClock,

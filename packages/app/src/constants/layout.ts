@@ -44,6 +44,20 @@ export function useIsCompactFormFactor(): boolean {
   return rt.breakpoint === "xs" || rt.breakpoint === "sm";
 }
 
+/**
+ * Reactive hook — true only at the `xs` breakpoint. Deliberately narrower
+ * than useIsCompactFormFactor (`xs` + `sm`, "does this fit a single-panel
+ * shell"): a tablet or narrow desktop window is `sm`, not mobile, and a
+ * caller that means "is this a phone" — not "is this a single-panel layout"
+ * — needs this one instead (pas-2KY5X.22: the tracker page step borrowed
+ * useIsCompactFormFactor and took a tablet window down the mobile-sized
+ * page step by mistake).
+ */
+export function useIsMobileBreakpoint(): boolean {
+  const { rt } = useUnistyles();
+  return rt.breakpoint === "xs";
+}
+
 // SplitContainer relies on dnd-kit and DOM-backed accessibility helpers.
 // Keep that capability distinct from desktop-width layout so touch tablets
 // can use the desktop shell without entering web-only code paths.

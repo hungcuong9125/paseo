@@ -1160,6 +1160,7 @@ export const ar: TranslationResources = {
       sessions: "السجل",
       search: "بحث",
       schedules: "الجداول",
+      tracker: "المتابعة",
     },
     worktreeSetup: {
       title: "إعداد البرامج النصية لشجرة العمل",
@@ -2697,6 +2698,61 @@ export const ar: TranslationResources = {
         saving: "جارٍ الحفظ...",
         cancel: "يلغي",
       },
+    },
+  },
+  tracker: {
+    card: {
+      childProgress: "{{done}}/{{count}}",
+      claimedBy: "تمت المطالبة به بواسطة {{name}}",
+      created: "تم الإنشاء {{time}}",
+      closed: "أُغلق {{time}}",
+    },
+    kanban: {
+      lane: {
+        open: "مهام",
+        inProgress: "قيد التنفيذ",
+        done: "منجز",
+        cancelled: "ملغى",
+      },
+      empty: {
+        open: "لا توجد مهام",
+        inProgress: "لا توجد عناصر قيد التنفيذ",
+        done: "لا توجد عناصر منجزة",
+        cancelled: "لا توجد عناصر ملغاة",
+      },
+      showMore: "عرض {{count}} المزيد",
+      blocked: "محظور",
+      refresh: "تحديث",
+      moveMenu: {
+        trigger: "إجراءات {{title}}",
+        title: "الإجراءات",
+      },
+      moveTo: {
+        open: "نقل إلى مفتوح",
+        inProgress: "نقل إلى قيد التنفيذ",
+        done: "نقل إلى منجز",
+        cancelled: "نقل إلى ملغى",
+      },
+      type: {
+        tasks: "المهام",
+        epics: "الملاحم",
+        initiatives: "المبادرات",
+        all: "الكل",
+      },
+      error: {
+        transitionFailed: "تعذر نقل {{title}}. حاول مرة أخرى.",
+        deleteFailed: "تعذر حذف {{title}}. حاول مرة أخرى.",
+      },
+    },
+    list: {
+      section: {
+        open: "مهام",
+        inProgress: "قيد التنفيذ",
+        done: "مكتمل",
+        cancelled: "ملغى",
+      },
+      showMore: "عرض {{count}} المزيد",
+      loadMore: "تحميل المزيد",
     },
   },
 };
