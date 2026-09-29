@@ -65,7 +65,9 @@ import {
   sendPromptToAgent,
   setupFinishNotification,
   waitForAgentRunStartWithTimeout,
+  type FinishNotificationRegistration,
 } from "../agent-prompt.js";
+import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import { respondToAgentPermission } from "../permission-response.js";
 import {
   archiveAgentCommand,
@@ -519,6 +521,127 @@ function resolveChildAgentCwd(params: {
   }
 
   return resolvePathFromBase(params.parentCwd, requestedCwd);
+}
+
+/**
+ * Whether an agent-scoped `send_agent_prompt` should arm a finish notification
+ * when the caller did not say either way.
+ *
+ * Everything defaults to true except prompting your own parent. Reporting
+ * upward used to subscribe the child to the parent's next completion, so the
+ * parent's reply woke the child, whose reply woke the parent, forever. One
+ * observed Lead spent 45 of its 91 notifications on that ping-pong and burned
+ * 24 context compressions on it.
+ */
+async function defaultsToNotifyOnFinish(
+  agentStorage: AgentStorage,
+  callerAgentId: string | undefined,
+  targetAgentId: string,
+): Promise<boolean> {
+  if (!callerAgentId) {
+    return false;
+  }
+  const callerRecord = await agentStorage.get(callerAgentId);
+  return getParentAgentIdFromLabels(callerRecord?.labels) !== targetAgentId;
+}
+
+/**
+ * Names the turn a dispatch just opened so the watch armed before it reports
+ * that turn and no other. Waiting for the run to start is what makes the id
+ * readable; when the wait expires the watch falls back to "the next turn to
+ * end is mine", which is still better than never firing.
+ */
+async function bindFinishNotificationToDispatchedTurn(
+  agentManager: AgentManager,
+  agentId: string,
+  registration: FinishNotificationRegistration,
+  logger: Logger,
+): Promise<void> {
+  try {
+    await waitForAgentRunStartWithTimeout(agentManager, agentId);
+  } catch (error) {
+    logger.debug({ err: error, agentId }, "Run start wait expired before binding finish watch");
+  }
+  registration.bindTurn(agentManager.getAgent(agentId)?.activeForegroundTurnId ?? null);
+}
+
+async function resolveBlockingSendResult(input: {
+  agentManager: AgentManager;
+  agentStorage: AgentStorage;
+  agentId: string;
+  callerAgentId: string | undefined;
+  wantsNotification: boolean;
+  logger: Logger;
+}): Promise<Record<string, unknown>> {
+  const result = await waitForAgentWithTimeout(input.agentManager, input.agentId, {
+    waitForActive: true,
+  });
+
+  // A wait holding a permission request did not time out — the child is parked
+  // until this caller answers it. Arming a watch there tells the caller to stop
+  // polling and move on, leaving the child blocked on the one thing only it can
+  // resolve.
+  const lateNotification = armLateFinishNotification({
+    agentManager: input.agentManager,
+    agentStorage: input.agentStorage,
+    agentId: input.agentId,
+    callerAgentId: input.callerAgentId,
+    wanted: input.wantsNotification && result.status === "running" && !result.permission,
+    logger: input.logger,
+  });
+
+  return {
+    success: true,
+    status: result.status,
+    lastMessage: result.lastMessage,
+    permission: sanitizePermissionRequest(result.permission),
+    ...(lateNotification?.willNotifyCaller()
+      ? {
+          guidance:
+            "The wait timed out but the agent is still running. You will be notified when it finishes; do not poll.",
+        }
+      : {}),
+  };
+}
+
+/**
+ * A blocking wait giving up does not mean the caller stopped caring. Without a
+ * watch on the turn still in flight its result reaches nobody: the caller ends
+ * its turn on the timeout message and sits idle while the child works on.
+ */
+function armLateFinishNotification(input: {
+  agentManager: AgentManager;
+  agentStorage: AgentStorage;
+  agentId: string;
+  callerAgentId: string | undefined;
+  wanted: boolean;
+  logger: Logger;
+}): FinishNotificationRegistration | null {
+  if (!input.wanted || !input.callerAgentId) {
+    return null;
+  }
+  return setupFinishNotification({
+    agentManager: input.agentManager,
+    agentStorage: input.agentStorage,
+    childAgentId: input.agentId,
+    callerAgentId: input.callerAgentId,
+    watch: "next-turn",
+    expectedTurnId: input.agentManager.getAgent(input.agentId)?.activeForegroundTurnId ?? undefined,
+    logger: input.logger,
+  });
+}
+
+function resolveCreateAgentGuidance(input: {
+  finishNotificationArmed: boolean;
+  expectedNotification: boolean;
+}): string | undefined {
+  if (input.finishNotificationArmed) {
+    return "You will get notified when the created agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.";
+  }
+  if (input.expectedNotification) {
+    return "No finish notification could be armed for this agent. Poll get_agent_status instead.";
+  }
+  return undefined;
 }
 
 const TerminalSummarySchema = z.object({
@@ -1139,9 +1262,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     notifyOnFinish: z
       .boolean()
       .optional()
-      .default(true)
       .describe(
-        "Get notified when the prompted agent finishes, errors, or needs permission. Set false only for truly fire-and-forget prompts.",
+        "Get notified when the prompted agent finishes, errors, or needs permission. Defaults to true, except when you are prompting your own parent — reporting upward does not subscribe you to the parent's next turn. Set false for truly fire-and-forget prompts.",
       ),
   };
   const topLevelSendAgentPromptInputSchema = {
@@ -1465,6 +1587,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         snapshot,
         background: createdInBackground,
         initialPromptStarted,
+        finishNotificationArmed,
       } = await createAgentCommand(
         {
           agentManager,
@@ -1533,10 +1656,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
 
       // Return immediately for async creation.
       const currentSnapshot = agentManager.getAgent(snapshot.id) ?? snapshot;
-      const guidance =
-        callerAgentId && notifyOnFinish && initialPromptStarted
-          ? "You will get notified when the created agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives."
-          : undefined;
+      const guidance = resolveCreateAgentGuidance({
+        finishNotificationArmed,
+        expectedNotification: Boolean(callerAgentId && notifyOnFinish),
+      });
       const response = {
         content: [],
         structuredContent: ensureValidJson({
@@ -1912,63 +2035,74 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       prompt,
       sessionMode,
       background = Boolean(callerAgentId),
-      notifyOnFinish = Boolean(callerAgentId),
+      notifyOnFinish,
     }) => {
-      function armFinishNotification(): boolean {
-        if (!callerAgentId || !notifyOnFinish) {
-          return false;
-        }
-        setupFinishNotification({
+      const wantsNotification =
+        notifyOnFinish ?? (await defaultsToNotifyOnFinish(agentStorage, callerAgentId, agentId));
+      const shouldNotifyOnFinish = Boolean(callerAgentId && wantsNotification && background);
+
+      // Armed before the prompt goes out so a fast turn cannot finish inside
+      // the gap between dispatch and subscribe.
+      const finishNotification =
+        shouldNotifyOnFinish && callerAgentId
+          ? setupFinishNotification({
+              agentManager,
+              agentStorage,
+              childAgentId: agentId,
+              callerAgentId,
+              watch: "next-turn",
+              logger: childLogger,
+            })
+          : null;
+
+      let dispatch: Awaited<ReturnType<typeof sendPromptToAgent>>;
+      try {
+        dispatch = await sendPromptToAgent({
           agentManager,
           agentStorage,
-          childAgentId: agentId,
-          callerAgentId,
+          agentId,
+          prompt,
+          sessionMode,
           logger: childLogger,
         });
-        return true;
+      } catch (error) {
+        finishNotification?.cancel();
+        throw error;
       }
 
-      const { disposition } = await sendPromptToAgent({
-        agentManager,
-        agentStorage,
-        agentId,
-        prompt,
-        sessionMode,
-        logger: childLogger,
-      });
+      if (dispatch.disposition === "out_of_band") {
+        // Out-of-band commands never open a turn, so nothing would ever fire.
+        finishNotification?.cancel();
+      } else if (finishNotification) {
+        await bindFinishNotificationToDispatchedTurn(
+          agentManager,
+          agentId,
+          finishNotification,
+          childLogger,
+        );
+      }
 
       // If not running in background, wait for completion
       if (!background) {
-        const result = await waitForAgentWithTimeout(agentManager, agentId, {
-          waitForActive: true,
-        });
-        // The wait ran out while the agent keeps working, so its result arrives as a
-        // finish notification instead of in this response.
-        const notifying =
-          result.timedOut &&
-          agentManager.getAgent(agentId)?.lifecycle === "running" &&
-          armFinishNotification();
-
-        const responseData = {
-          success: true,
-          status: result.status,
-          lastMessage: result.lastMessage,
-          permission: sanitizePermissionRequest(result.permission),
-          ...(notifying ? { guidance: PROMPTED_AGENT_NOTIFICATION_GUIDANCE } : {}),
-        };
-        const validJson = ensureValidJson(responseData);
-
-        const response = {
+        return {
           content: [],
-          structuredContent: validJson,
+          structuredContent: ensureValidJson(
+            await resolveBlockingSendResult({
+              agentManager,
+              agentStorage,
+              agentId,
+              callerAgentId,
+              wantsNotification,
+              logger: childLogger,
+            }),
+          ),
         };
-        return response;
       }
 
-      const notifying = armFinishNotification();
-
       // Return once the provider has accepted the turn, so the status reports it running.
-      if (disposition === "turn_started") {
+      // Skip the wait when a finish notification already bound the dispatched turn above —
+      // waiting again here would race the run's own completion and throw "no pending run".
+      if (dispatch.disposition === "turn_started" && !finishNotification) {
         await waitForAgentRunStartWithTimeout(agentManager, agentId);
       }
       const currentSnapshot = agentManager.getAgent(agentId);
@@ -1978,7 +2112,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         status: currentSnapshot?.lifecycle ?? "idle",
         lastMessage: null,
         permission: null,
-        ...(notifying ? { guidance: PROMPTED_AGENT_NOTIFICATION_GUIDANCE } : {}),
+        // Read the watch, not the request. An out-of-band prompt opens no turn
+        // and cancels it, and promising a notification there leaves the caller
+        // waiting on something that will never arrive.
+        ...(finishNotification?.willNotifyCaller()
+          ? { guidance: PROMPTED_AGENT_NOTIFICATION_GUIDANCE }
+          : {}),
       };
       const validJson = ensureValidJson(responseData);
 
