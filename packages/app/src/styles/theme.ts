@@ -39,6 +39,7 @@ export const baseColors = {
   // Slate scale
   slate: {
     200: "#e2e8f0",
+    400: "#94a3b8",
   },
 
   // Blue scale
@@ -92,6 +93,12 @@ export const baseColors = {
   // Yellow scale
   yellow: {
     400: "#fbbf24",
+    600: "#ca8a04",
+  },
+
+  // Sky scale (cyan-blue) — used by the priority heatmap P3.
+  sky: {
+    600: "#0284c7",
   },
 
   // Purple scale
