@@ -1665,10 +1665,7 @@ export class VoiceAssistantWebSocketServer {
       return;
     }
 
-    if (!pluginId) {
-      await this.refreshAitTrackerSortCapability();
-      if (!this.pendingConnections.has(ws)) return;
-    }
+    if (!(await this.refreshAitForExternalHello(ws))) return;
     this.clearPendingConnection(ws);
     const admitted = pending.admission;
     if (!admitted) throw new Error("Admitted hello has no session admission");
@@ -1708,6 +1705,11 @@ export class VoiceAssistantWebSocketServer {
       },
       "Client connected via hello",
     );
+  }
+
+  private async refreshAitForExternalHello(ws: WebSocketLike): Promise<boolean> {
+    if (!this.pluginSocketIds.has(ws)) await this.refreshAitTrackerSortCapability();
+    return this.pendingConnections.has(ws);
   }
 
   private async refreshAitTrackerSortCapability(): Promise<void> {
