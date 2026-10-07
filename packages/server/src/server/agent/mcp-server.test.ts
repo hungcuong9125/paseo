@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { z } from "zod";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
-import { createAgentMcpServer } from "./mcp-server.js";
+import { createAgentMcpServer as createMcpServer } from "./mcp-server.js";
 import { createAgentMailbox } from "./agent-prompt.js";
 import type { AgentMailbox } from "./agent-mailbox/service.js";
 import { MemoryMailboxStore } from "./agent-mailbox/store.js";
@@ -71,6 +71,25 @@ import type { BrowserToolsBroker, BrowserToolsExecuteInput } from "../browser-to
 import type { BrowserToolsResponsePayload } from "../browser-tools/errors.js";
 import { readPaseoWorktreeMetadata } from "../../utils/worktree-metadata.js";
 import { createWorkspaceProvisioningService } from "../session/workspace-provisioning/workspace-provisioning-service.js";
+
+function createAgentMcpServer(options: Parameters<typeof createMcpServer>[0]) {
+  if (
+    typeof options.agentManager.getMailbox === "function" &&
+    typeof options.agentManager.setMailbox === "function" &&
+    !options.agentManager.getMailbox()
+  ) {
+    options.agentManager.setMailbox(
+      createAgentMailbox({
+        agentManager: options.agentManager,
+        agentStorage: options.agentStorage,
+        store: new MemoryMailboxStore(),
+        resolvePolicy: async () => ({ enabled: false, resumeOnStartup: false }),
+        logger: options.logger,
+      }),
+    );
+  }
+  return createMcpServer(options);
+}
 
 const REPO_CWD = resolvePath("/tmp/repo");
 const TARGET_CWD = resolvePath("/tmp/target");

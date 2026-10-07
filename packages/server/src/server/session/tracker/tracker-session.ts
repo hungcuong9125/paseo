@@ -68,41 +68,39 @@ export class TrackerSession {
     this.logger.warn({ err: error, requestType }, "Trackers request failed");
   }
 
-  private async readFullTrackers(projectId: string, cwd: string): Promise<TrackerSummary[]> {
-    if (this.trackerSyncManager) {
-      const snapshot = await this.trackerSyncManager.getSnapshot(projectId, true);
-      if (snapshot.error) {
-        throw new AitCliError(snapshot.errorCode ?? "unknown", snapshot.error);
-      }
-      return snapshot.trackers;
+  private requireTrackerSyncManager(): TrackerSyncManager {
+    if (!this.trackerSyncManager) {
+      throw new Error("Tracker snapshot manager is required");
     }
-    const result = await this.aitService.listTrackers({ cwd, all: true });
-    return result.trackers;
+    return this.trackerSyncManager;
+  }
+
+  private async readFullTrackers(projectId: string): Promise<TrackerSummary[]> {
+    const snapshot = await this.requireTrackerSyncManager().getSnapshot(projectId, true);
+    if (snapshot.error) {
+      throw new AitCliError(snapshot.errorCode ?? "unknown", snapshot.error);
+    }
+    return snapshot.trackers;
   }
 
   async handleProjectTrackerListRequest(
     request: Extract<SessionInboundMessage, { type: "project.tracker.list.request" }>,
   ): Promise<void> {
-    // Paginated or filtered requests hit aitService for the visible page. The
-    // manager still supplies the full snapshot used for daemon-side subtree
-    // counts. Kanban's requests never carry these fields and keep taking the
-    // unchanged legacy path below.
     if (request.page || request.status || request.trackerType || request.priority || request.sort) {
       await this.handlePaginatedListRequest(request);
       return;
     }
     try {
-      const cwd = await this.resolveCwd(request.projectId);
-      const snapshot = this.trackerSyncManager
-        ? await this.trackerSyncManager.list(request.projectId, request.all === true)
-        : null;
-      if (snapshot?.error) {
+      const snapshot = await this.requireTrackerSyncManager().list(
+        request.projectId,
+        request.all === true,
+      );
+      if (snapshot.error) {
         throw new AitCliError(snapshot.errorCode ?? "unknown", snapshot.error);
       }
-      const { trackers: resultTrackers, hiddenCount } =
-        snapshot ?? (await this.aitService.listTrackers({ cwd, all: request.all }));
+      const { trackers: resultTrackers, hiddenCount } = snapshot;
       const fullTrackers =
-        request.all === true ? resultTrackers : await this.readFullTrackers(request.projectId, cwd);
+        request.all === true ? resultTrackers : await this.readFullTrackers(request.projectId);
       this.host.emit({
         type: "project.tracker.list.response",
         payload: {
@@ -148,7 +146,7 @@ export class TrackerSession {
         limit: request.page?.limit,
         offset,
       });
-      const fullTrackers = await this.readFullTrackers(request.projectId, cwd);
+      const fullTrackers = await this.readFullTrackers(request.projectId);
       this.host.emit({
         type: "project.tracker.list.response",
         payload: {
@@ -156,8 +154,6 @@ export class TrackerSession {
           projectId: request.projectId,
           trackers: withTrackerSubtreeStats(result.trackers, fullTrackers),
           hiddenCount: result.hiddenCount,
-          // Omitted entirely when the service fell back to an unpaginated old
-          // CLI binary — absence means "complete result", not "no more pages".
           ...(result.pageInfo ? { pageInfo: result.pageInfo } : {}),
           error: null,
           errorCode: null,
@@ -182,8 +178,7 @@ export class TrackerSession {
     request: Extract<SessionInboundMessage, { type: "project.tracker.stats.request" }>,
   ): Promise<void> {
     try {
-      const cwd = await this.resolveCwd(request.projectId);
-      const trackers = await this.readFullTrackers(request.projectId, cwd);
+      const trackers = await this.readFullTrackers(request.projectId);
       this.host.emit({
         type: "project.tracker.stats.response",
         payload: {

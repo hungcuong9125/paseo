@@ -23,17 +23,27 @@ function makeSession(
         ? ({ projectId: PROJECT_ID, rootPath: CWD } as Awaited<ReturnType<ProjectRegistry["get"]>>)
         : null,
   });
+  const aitService = createStub<AitService>(ait);
+  const readSnapshot = async (projectId: string, all?: boolean) => {
+    const project = await projectRegistry.get(projectId);
+    if (!project) throw new AitCliError("not_found", `Project not found: ${projectId}`);
+    const result = await aitService.listTrackers({ cwd: project.rootPath, all });
+    return { ...result, epoch: 1, generation: 1, error: null, errorCode: null };
+  };
   const session = new TrackerSession({
     host: {
       emit: (message) => emitted.push(message),
       refreshProjectDescriptor,
     },
-    aitService: createStub<AitService>(ait),
+    aitService,
     projectRegistry,
     logger: pino({ level: "silent" }),
-    ...(trackerSyncManager
-      ? { trackerSyncManager: createStub<TrackerSyncManager>(trackerSyncManager) }
-      : {}),
+    trackerSyncManager: createStub<TrackerSyncManager>({
+      getSnapshot: readSnapshot,
+      list: readSnapshot,
+      requestRefresh: async () => undefined,
+      ...trackerSyncManager,
+    }),
   });
   return { session, emitted };
 }
@@ -173,7 +183,7 @@ describe("TrackerSession", () => {
     expect(response?.payload.error).toContain("prj_does_not_exist");
   });
 
-  it("preserves manager AIT errors in the legacy list response", async () => {
+  it("preserves manager AIT errors in the list response", async () => {
     const { session, emitted } = makeSession(
       {},
       {

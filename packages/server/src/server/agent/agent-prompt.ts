@@ -11,8 +11,8 @@ import { randomUUID } from "node:crypto";
 
 import type { AgentManager, ManagedAgent } from "./agent-manager.js";
 import { AgentMailbox, type MailboxDelivery } from "./agent-mailbox/service.js";
-import { DISABLED_MAILBOX_POLICY, type MailboxPolicy } from "./agent-mailbox/policy.js";
-import { MemoryMailboxStore, type MailboxStore } from "./agent-mailbox/store.js";
+import type { MailboxPolicy } from "./agent-mailbox/policy.js";
+import type { MailboxStore } from "./agent-mailbox/store.js";
 import type { AgentStorage } from "./agent-storage.js";
 import { ensureAgentLoaded } from "./agent-loading.js";
 import { isStaleProviderSessionError } from "./stale-provider-session-error.js";
@@ -405,7 +405,7 @@ export async function sendPromptToAgent(
   if (sender.kind === "mailbox") {
     return await dispatchPrompt(params);
   }
-  const mailbox = getAgentMailbox(params.agentManager, params.agentStorage, params.logger);
+  const mailbox = getAgentMailbox(params.agentManager);
   if (hasInterruptAuthority(sender, record?.labels)) {
     // Someone with authority prompting is the cue a person's stop is over.
     await mailbox.resume(params.agentId);
@@ -586,39 +586,18 @@ export function createAgentMailbox(params: CreateAgentMailboxParams): AgentMailb
   });
 }
 
-/**
- * The daemon registers a durable mailbox at boot. Anything that runs an
- * AgentManager without one (tests, tools) gets an in-memory mailbox with every
- * agent's mailbox off, which still serializes finish notifications.
- */
-export function getAgentMailbox(
-  agentManager: AgentManager,
-  agentStorage: AgentStorage,
-  logger: Logger,
-): AgentMailbox {
+export function getAgentMailbox(agentManager: AgentManager): AgentMailbox {
   const registered = agentManager.getMailbox();
-  if (registered) {
-    return registered;
-  }
-  const fallback = createAgentMailbox({
-    agentManager,
-    agentStorage,
-    store: new MemoryMailboxStore(),
-    resolvePolicy: async () => DISABLED_MAILBOX_POLICY,
-    logger,
-  });
-  agentManager.setMailbox(fallback);
-  return fallback;
+  if (!registered) throw new Error("Agent mailbox must be registered before dispatching prompts");
+  return registered;
 }
 
 /** Whether prompts without interrupt authority wait in this agent's mailbox. */
 export async function isMailboxEnabled(
   agentManager: AgentManager,
-  agentStorage: AgentStorage,
   agentId: string,
-  logger: Logger,
 ): Promise<boolean> {
-  const mailbox = getAgentMailbox(agentManager, agentStorage, logger);
+  const mailbox = getAgentMailbox(agentManager);
   return (await mailbox.resolvePolicy(agentId)).enabled;
 }
 
@@ -783,7 +762,7 @@ export function setupFinishNotification(
     requireParentOwnership = false,
     logger,
   } = params;
-  const mailbox = getAgentMailbox(agentManager, agentStorage, logger);
+  const mailbox = getAgentMailbox(agentManager);
   // The watch is written into the caller's mailbox so a restart that kills the
   // child mid-turn still tells the caller, instead of leaving it waiting.
   const watchId = `watch_${randomUUID()}`;

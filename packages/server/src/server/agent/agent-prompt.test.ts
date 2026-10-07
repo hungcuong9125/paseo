@@ -163,6 +163,15 @@ function createHarness(options?: {
     };
   });
 
+  agentManager.setMailbox(
+    createAgentMailbox({
+      agentManager,
+      agentStorage,
+      store: new MemoryMailboxStore(),
+      resolvePolicy: async () => ({ enabled: false, resumeOnStartup: false }),
+      logger: createTestLogger(),
+    }),
+  );
   return {
     agentManager,
     agentStorage,
@@ -253,6 +262,15 @@ test("sendPromptToAgent forwards the client message id as run options", async ()
     agentStorage,
     "get",
     vi.fn(async () => null),
+  );
+  agentManager.setMailbox(
+    createAgentMailbox({
+      agentManager,
+      agentStorage,
+      store: new MemoryMailboxStore(),
+      resolvePolicy: async () => ({ enabled: false, resumeOnStartup: false }),
+      logger: createTestLogger(),
+    }),
   );
 
   await sendPromptToAgent({
@@ -889,7 +907,7 @@ test("a queued prompt arms its sender's finish watch when it is delivered", asyn
 
 test("a finish watch is on disk while armed and gone once its notice is queued", async () => {
   const harness = createHarness({ agents: { child: {} } });
-  const mailbox = getAgentMailbox(harness.agentManager, harness.agentStorage, createTestLogger());
+  const mailbox = getAgentMailbox(harness.agentManager);
 
   const registration = watchNextTurn(harness, "child");
   await vi.waitFor(async () => expect(await mailbox.listWatches(CALLER)).toHaveLength(1));

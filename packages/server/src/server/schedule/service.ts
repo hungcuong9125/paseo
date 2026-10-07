@@ -833,7 +833,7 @@ export class ScheduleService {
     });
     if (
       this.agentManager.hasInFlightRun(agent.id) &&
-      !(await isMailboxEnabled(this.agentManager, this.agentStorage, agent.id, this.logger))
+      !(await isMailboxEnabled(this.agentManager, agent.id))
     ) {
       throw new Error(`Agent ${agent.id} already has an active run`);
     }

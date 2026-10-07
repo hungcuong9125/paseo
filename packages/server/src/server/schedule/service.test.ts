@@ -83,6 +83,17 @@ type TestScheduleServiceOptions = Omit<
 };
 
 function createScheduleService(options: TestScheduleServiceOptions): ScheduleService {
+  if (!options.agentManager.getMailbox()) {
+    options.agentManager.setMailbox(
+      createAgentMailbox({
+        agentManager: options.agentManager,
+        agentStorage: options.agentStorage,
+        store: new MemoryMailboxStore(),
+        resolvePolicy: async () => ({ enabled: false, resumeOnStartup: false }),
+        logger: options.logger,
+      }),
+    );
+  }
   let workspaceCounter = 0;
   const workspaces = new Map<string, PersistedWorkspaceRecord>();
   const workspaceGitService = createNoopWorkspaceGitService();
