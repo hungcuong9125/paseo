@@ -70,13 +70,8 @@ export interface MailboxStore {
 }
 
 const FILE_SUFFIX = ".json";
-const PREVIOUS_SUFFIX = ".json.prev";
 
-/**
- * One file per agent, `<agentId>.json`, written durably. The version it
- * replaces is kept as `<agentId>.json.prev`, so a corrupt or missing current
- * file falls back to it instead of losing the whole box.
- */
+/** One current file per agent, atomically replaced and fsynced. */
 export class FileMailboxStore implements MailboxStore {
   constructor(
     private readonly directory: string,
@@ -84,11 +79,7 @@ export class FileMailboxStore implements MailboxStore {
   ) {}
 
   async load(agentId: string): Promise<MailboxFile | null> {
-    const current = await this.readFile(agentId, this.currentPath(agentId));
-    if (current) {
-      return current;
-    }
-    return await this.readFile(agentId, this.previousPath(agentId));
+    return await this.readFile(agentId, this.currentPath(agentId));
   }
 
   async save(file: MailboxFile): Promise<void> {
@@ -97,19 +88,11 @@ export class FileMailboxStore implements MailboxStore {
       return;
     }
     const currentPath = this.currentPath(file.agentId);
-    try {
-      await fs.rename(currentPath, this.previousPath(file.agentId));
-    } catch (error) {
-      if (!isMissingFileError(error)) {
-        throw error;
-      }
-    }
     await writeFileDurable(currentPath, JSON.stringify(file, null, 2), { mode: PRIVATE_FILE_MODE });
   }
 
   async remove(agentId: string): Promise<void> {
     await fs.rm(this.currentPath(agentId), { force: true });
-    await fs.rm(this.previousPath(agentId), { force: true });
     await syncDirectory(this.directory);
   }
 
@@ -143,10 +126,6 @@ export class FileMailboxStore implements MailboxStore {
     return path.join(this.directory, `${encodeURIComponent(agentId)}${FILE_SUFFIX}`);
   }
 
-  private previousPath(agentId: string): string {
-    return path.join(this.directory, `${encodeURIComponent(agentId)}${PREVIOUS_SUFFIX}`);
-  }
-
   private async readFile(agentId: string, filePath: string): Promise<MailboxFile | null> {
     let raw: string;
     try {
@@ -157,21 +136,11 @@ export class FileMailboxStore implements MailboxStore {
       }
       throw error;
     }
-    try {
-      const parsed = MailboxFileSchema.parse(JSON.parse(raw));
-      if (parsed.agentId !== agentId) {
-        throw new Error(`Mailbox file belongs to ${parsed.agentId}`);
-      }
-      return parsed;
-    } catch (error) {
-      const quarantinePath = `${filePath}.corrupt-${Date.now()}`;
-      await fs.rename(filePath, quarantinePath);
-      this.logger.error(
-        { err: error, agentId, quarantinePath },
-        "Quarantined unreadable mailbox file",
-      );
-      return null;
+    const parsed = MailboxFileSchema.parse(JSON.parse(raw));
+    if (parsed.agentId !== agentId) {
+      throw new Error(`Mailbox file belongs to ${parsed.agentId}`);
     }
+    return parsed;
   }
 }
 
@@ -203,9 +172,6 @@ export class MemoryMailboxStore implements MailboxStore {
 function mailboxNameStem(name: string): string | null {
   if (name.startsWith(".")) {
     return null;
-  }
-  if (name.endsWith(PREVIOUS_SUFFIX)) {
-    return name.slice(0, -PREVIOUS_SUFFIX.length);
   }
   if (name.endsWith(FILE_SUFFIX)) {
     return name.slice(0, -FILE_SUFFIX.length);

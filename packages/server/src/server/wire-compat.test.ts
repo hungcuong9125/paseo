@@ -358,6 +358,9 @@ describe("wire compatibility", () => {
             projectIconRevision: "automatic:none:v1",
             projectRootPath: "/tmp/project",
             projectKind: "git",
+            // rootPath doesn't exist on disk in this fixture, so the fresh
+            // `.ait/ait.db` check (pas-2KY5X.28) correctly reports false.
+            aitInitialized: false,
           },
         },
       },

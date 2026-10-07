@@ -1,5 +1,5 @@
 import { router, usePathname } from "expo-router";
-import { CalendarClock, History, Plus, Search } from "lucide-react-native";
+import { CalendarClock, History, ListChecks, Plus, Search } from "lucide-react-native";
 import { memo, useCallback, useMemo, useRef, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import { View, type StyleProp, type ViewStyle } from "react-native";
@@ -21,6 +21,7 @@ import {
   buildNewWorkspaceRoute,
   buildSchedulesRoute,
   buildSessionsRoute,
+  buildTrackerRoute,
 } from "@/utils/host-routes";
 
 interface SidebarNavRowProps {
@@ -173,7 +174,28 @@ function SidebarSchedulesRow({ onBeforeNavigate }: SidebarNavRowProps) {
   );
 }
 
+function SidebarTrackerRow({ onBeforeNavigate }: SidebarNavRowProps) {
+  const { t } = useTranslation();
+  const pathname = usePathname();
+  const handlePress = useCallback(() => {
+    onBeforeNavigate?.();
+    router.push(buildTrackerRoute());
+  }, [onBeforeNavigate]);
+
+  return (
+    <SidebarHeaderRow
+      icon={ListChecks}
+      label={t(builtinSidebarNavLabelKey("tracker"))}
+      onPress={handlePress}
+      isActive={pathname.includes("/tracker")}
+      testID="sidebar-tracker"
+      variant="compact"
+    />
+  );
+}
+
 const BUILTIN_ROWS: Record<BuiltinSidebarNavId, ComponentType<SidebarNavRowProps>> = {
+  tracker: SidebarTrackerRow,
   "new-workspace": SidebarNewWorkspaceRow,
   history: SidebarHistoryRow,
   search: SidebarSearchRow,

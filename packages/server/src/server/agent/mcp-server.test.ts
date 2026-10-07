@@ -4156,7 +4156,7 @@ describe("send_agent_prompt MCP tool", () => {
       expect(response.structuredContent).toMatchObject({
         status: "running",
         guidance:
-          "You will get notified when the prompted agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.",
+          "The wait timed out but the agent is still running. You will be notified when it finishes; do not poll.",
       });
       expect(response.structuredContent.lastMessage).toContain("timed out after 30s");
 

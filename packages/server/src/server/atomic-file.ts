@@ -60,14 +60,17 @@ export async function syncDirectory(directory: string): Promise<void> {
   let handle: Awaited<ReturnType<typeof fs.open>>;
   try {
     handle = await fs.open(directory, "r");
-  } catch {
-    // Windows cannot open a directory for fsync; NTFS journals the rename.
-    return;
+  } catch (error) {
+    if (process.platform === "win32" && isUnsupportedDirectorySync(error)) {
+      // NTFS journals the rename; Windows cannot open a directory for fsync.
+      return;
+    }
+    throw error;
   }
   try {
     await handle.sync();
   } catch (error) {
-    if (!isUnsupportedDirectorySync(error)) {
+    if (process.platform !== "win32" || !isUnsupportedDirectorySync(error)) {
       throw error;
     }
   } finally {
