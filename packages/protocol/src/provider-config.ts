@@ -33,6 +33,13 @@ export const ProviderPaseoToolsPolicySchema = z.object({
   disabledTools: z.array(z.string()).optional(),
 });
 
+export const MailboxSettingsSchema = z.object({
+  enabled: z.boolean().optional(),
+  resumeOnStartup: z.boolean().optional(),
+});
+
+export type MailboxSettings = z.infer<typeof MailboxSettingsSchema>;
+
 const ProviderProfileThinkingOptionSchema = z.object({
   id: z.string(),
   label: z.string(),
@@ -61,6 +68,7 @@ export const ProviderOverrideSchema = z.object({
   additionalModels: z.array(ProviderProfileModelSchema).optional(),
   disallowedTools: z.array(z.string()).optional(),
   paseoTools: ProviderPaseoToolsPolicySchema.optional(),
+  mailbox: MailboxSettingsSchema.optional(),
   enabled: z.boolean().optional(),
   order: z.number().optional(),
 });

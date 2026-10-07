@@ -6,6 +6,7 @@ import {
   type ManagedAgent,
 } from "./agent-manager.js";
 import type { StoredAgentRecord } from "./agent-storage.js";
+import type { AgentMailbox } from "./agent-mailbox/service.js";
 import type { AgentProviderNotice } from "./agent-sdk-types.js";
 
 export type LifecycleAgentSnapshot = Pick<ManagedAgent, "id" | "cwd" | "lifecycle">;
@@ -14,6 +15,7 @@ export interface LifecycleAgentManager {
   getAgent(agentId: string): LifecycleAgentSnapshot | null;
   hasInFlightRun(agentId: string): boolean;
   cancelAgentRun(agentId: string): Promise<AgentRunCancellationResult>;
+  getMailbox?(): Pick<AgentMailbox, "pause"> | null;
   clearAgentAttention(agentId: string): Promise<void>;
   archiveAgent(agentId: string): Promise<{ archivedAt: string }>;
   archiveSnapshot(agentId: string, archivedAt: string): Promise<StoredAgentRecord>;
@@ -93,10 +95,32 @@ async function requestAgentRunCancellation(
   };
 }
 
-export async function cancelAgentRunCommand(
+/**
+ * An interrupt the daemon decides on by itself, such as the Hub's. It is not a
+ * person's stop, so the agent's mailbox keeps draining.
+ */
+export async function interruptAgentRunAutomatically(
   dependencies: Pick<AgentLifecycleCommandDependencies, "agentManager" | "logger">,
   agentId: string,
 ): Promise<CancelAgentRunResult> {
+  return await cancelAgentRunCommand(dependencies, agentId, { pauseMailbox: false });
+}
+
+export async function cancelAgentRunCommand(
+  dependencies: Pick<AgentLifecycleCommandDependencies, "agentManager" | "logger">,
+  agentId: string,
+  options?: {
+    /**
+     * Default true: a stop also holds the agent's mailbox, so mail that was
+     * waiting does not start the next turn the moment this one ends. Only an
+     * explicit stop pauses; replacing a turn internally never does.
+     */
+    pauseMailbox?: boolean;
+  },
+): Promise<CancelAgentRunResult> {
+  if (options?.pauseMailbox !== false) {
+    await dependencies.agentManager.getMailbox?.()?.pause(agentId);
+  }
   const result = await requestAgentRunCancellation(dependencies, agentId);
   if (result.cancellation.status === "refused") {
     dependencies.logger.warn(

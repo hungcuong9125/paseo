@@ -55,6 +55,8 @@ $PASEO_HOME/
 │       └── {agentId}.json               # One file per agent
 ├── schedules/
 │   └── {scheduleId}.json                # One file per schedule
+├── mailbox/
+│   └── {agentId}.json                   # Agent mailbox (section 8)
 ├── projects/
 │   ├── projects.json                    # Project registry
 │   ├── workspaces.json                  # Workspace registry
@@ -312,6 +314,11 @@ Browser tools also require `daemon.browserTools.enabled` and a connected browser
 This policy controls the catalog presented to an agent. It is not an authorization boundary for
 agents that can access the host through a shell.
 
+Each entry may also set `mailbox: { "enabled": true, "resumeOnStartup": false }`, and
+`agents.mailbox` sets the same two fields globally. The agent label `paseo.mailbox` (`on` or `off`)
+beats the entry, which beats the global value; everything defaults off. These are read once at
+daemon start. See [agent-lifecycle.md](agent-lifecycle.md#mailbox) for what the mailbox does.
+
 `daemon.mcp.injectIntoAgents` is the global override. When it is `false`, no provider receives
 Paseo tools; otherwise the provider policy applies. Provider and global policy are resolved when a
 session is created, resumed, imported, or reloaded, so configuration changes affect the next
@@ -562,6 +569,20 @@ These small files are not validated as full Zod schemas but are persisted under 
 | `paseo.pid`           | JSON `{ pid, startedAt, ... }`                                 | PID lock; prevents two daemons sharing one `$PASEO_HOME`.                         |
 | `local-credential`    | 32 random bytes encoded as base64url text                      | Rotated before each listen and deleted on shutdown; mode `0600`.                  |
 | `daemon.log`          | Pino log output                                                | Default location; path/rotation configurable via `log.file` in `config.json`.     |
+
+---
+
+## 8. Agent Mailbox
+
+**Path:** `$PASEO_HOME/mailbox/{agentId}.json`, mode `0600`. Schema: `agent/agent-mailbox/store.ts`.
+It holds the agent's waiting prompts, its `paused` flag, and the finish watches it armed, and exists
+only while one of those is non-empty. Writes fsync the file and then the directory, which
+`writeFileAtomic` does not. The replaced version is kept as `.prev`; an unparseable file is renamed
+`.corrupt-{timestamp}` and `.prev` is used; a mailbox that cannot be read is logged and skipped at
+boot. Delivery is at least once: an entry leaves only when its turn is seen completing. A failed,
+interrupted, or never-started turn, or a crash, puts it back marked `redelivered`, retried after
+5 s, 20 s, 80 s, then 5 min. After 5 such turns it is `held` on disk, and newer mail still flows,
+until a person or the parent prompts the agent.
 
 ---
 

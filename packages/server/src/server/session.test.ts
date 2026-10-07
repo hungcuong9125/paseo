@@ -389,6 +389,7 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
       listAgents: vi.fn(() => []),
       listProviderSubagentActivity: vi.fn(() => []),
       subscribe: vi.fn(() => () => {}),
+      getMailbox: vi.fn(() => null),
       ...options.agentManager,
     }),
     agentStorage: asAgentStorage({

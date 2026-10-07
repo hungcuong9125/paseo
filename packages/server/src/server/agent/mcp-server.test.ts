@@ -11,6 +11,9 @@ import { z } from "zod";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { createAgentMcpServer } from "./mcp-server.js";
+import { createAgentMailbox } from "./agent-prompt.js";
+import type { AgentMailbox } from "./agent-mailbox/service.js";
+import { MemoryMailboxStore } from "./agent-mailbox/store.js";
 import { AgentManager, type ManagedAgent } from "./agent-manager.js";
 import { AgentStorage, type StoredAgentRecord } from "./agent-storage.js";
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
@@ -215,7 +218,12 @@ interface TestDeps {
 }
 
 function buildAgentManagerSpies() {
+  let mailbox: AgentMailbox | null = null;
   return {
+    getMailbox: vi.fn(() => mailbox),
+    setMailbox: vi.fn((next: AgentMailbox | null) => {
+      mailbox = next;
+    }),
     createAgent: vi.fn(),
     waitForAgentEvent: vi.fn().mockResolvedValue({
       status: "idle",
@@ -3830,9 +3838,141 @@ class HeldTurnAgentClient implements AgentClient {
   }
 }
 
+describe("cancel_agent MCP tool", () => {
+  const logger = createTestLogger();
+
+  function familyDeps() {
+    const deps = createTestDeps();
+    const running = (id: string) =>
+      ({ id, cwd: process.cwd(), lifecycle: "running" }) as ManagedAgent;
+    deps.spies.agentManager.getAgent.mockImplementation((agentId: string) => running(agentId));
+    deps.spies.agentManager.hasInFlightRun.mockReturnValue(true);
+    deps.spies.agentManager.cancelAgentRun.mockResolvedValue({ status: "settled" });
+    deps.spies.agentStorage.get.mockImplementation(async (agentId: string) =>
+      agentId === "child-agent" ? { labels: { [PARENT_AGENT_ID_LABEL]: "parent-agent" } } : null,
+    );
+    return deps;
+  }
+
+  it("refuses a subagent cancelling its parent's run", async () => {
+    const deps = familyDeps();
+    const server = await createAgentMcpServer({
+      agentManager: deps.agentManager,
+      agentStorage: deps.agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "child-agent",
+      logger,
+    });
+
+    const response = await invokeToolWithParsedInput(registeredTool(server, "cancel_agent"), {
+      agentId: "parent-agent",
+    });
+
+    expect(response.structuredContent).toEqual({
+      success: false,
+      error: "A subagent cannot cancel its parent agent's run.",
+    });
+    expect(deps.spies.agentManager.cancelAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("lets a parent cancel its subagent's run", async () => {
+    const deps = familyDeps();
+    const server = await createAgentMcpServer({
+      agentManager: deps.agentManager,
+      agentStorage: deps.agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "parent-agent",
+      logger,
+    });
+
+    const response = await invokeToolWithParsedInput(registeredTool(server, "cancel_agent"), {
+      agentId: "child-agent",
+    });
+
+    expect(response.structuredContent).toEqual({ success: true });
+    expect(deps.spies.agentManager.cancelAgentRun).toHaveBeenCalledWith("child-agent");
+  });
+});
+
 describe("send_agent_prompt MCP tool", () => {
   const logger = createTestLogger();
   const existingCwd = process.cwd();
+
+  function busyAgentWithMailbox(deps: TestDeps) {
+    const busy = {
+      id: "busy-agent",
+      cwd: existingCwd,
+      lifecycle: "running",
+      currentModeId: null,
+      availableModes: [],
+      config: { title: "Busy" },
+    } as ManagedAgent;
+    deps.spies.agentManager.getAgent.mockImplementation((agentId: string) =>
+      agentId === "busy-agent" ? busy : null,
+    );
+    deps.spies.agentManager.hasInFlightRun.mockImplementation(
+      (agentId: string) => agentId === "busy-agent",
+    );
+    const mailbox = createAgentMailbox({
+      agentManager: deps.agentManager,
+      agentStorage: deps.agentStorage,
+      store: new MemoryMailboxStore(),
+      resolvePolicy: async () => ({ enabled: true, resumeOnStartup: false }),
+      logger,
+    });
+    deps.agentManager.setMailbox(mailbox);
+    return mailbox;
+  }
+
+  it("answers a queued background prompt at once and promises the finish notification", async () => {
+    const deps = createTestDeps();
+    const mailbox = busyAgentWithMailbox(deps);
+    const server = await createAgentMcpServer({
+      agentManager: deps.agentManager,
+      agentStorage: deps.agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "peer-agent",
+      logger,
+    });
+
+    const response = await invokeToolWithParsedInput(registeredTool(server, "send_agent_prompt"), {
+      agentId: "busy-agent",
+      prompt: "Review my change",
+    });
+
+    expect(response.structuredContent).toMatchObject({ success: true, status: "running" });
+    expect(response.structuredContent.guidance).toContain("waits in its mailbox (position 1)");
+    expect(response.structuredContent.guidance).toContain("You will get notified");
+    expect(deps.spies.agentManager.streamAgent).not.toHaveBeenCalled();
+    expect(deps.spies.agentManager.waitForAgentRunStart).not.toHaveBeenCalled();
+    const [entry] = await mailbox.listEntries("busy-agent");
+    expect(entry).toMatchObject({
+      source: { kind: "agent", senderAgentId: "peer-agent" },
+      notifyCallerAgentId: "peer-agent",
+    });
+    mailbox.stop();
+  });
+
+  it("does not block a top-level caller on a queued prompt", async () => {
+    const deps = createTestDeps();
+    const mailbox = busyAgentWithMailbox(deps);
+    const server = await createAgentMcpServer({
+      agentManager: deps.agentManager,
+      agentStorage: deps.agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      logger,
+    });
+
+    const response = await invokeToolWithParsedInput(registeredTool(server, "send_agent_prompt"), {
+      agentId: "busy-agent",
+      prompt: "Status?",
+    });
+
+    expect(response.structuredContent.guidance).toContain("waits in its mailbox (position 1)");
+    expect(deps.spies.agentManager.waitForAgentEvent).not.toHaveBeenCalled();
+    expect(deps.spies.agentManager.waitForAgentRunStart).not.toHaveBeenCalled();
+    mailbox.stop();
+  });
 
   it("defaults agent-scoped prompts to background finish notifications", async () => {
     const { agentManager, agentStorage, spies } = createTestDeps();

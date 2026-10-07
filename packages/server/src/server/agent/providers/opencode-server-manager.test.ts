@@ -125,11 +125,11 @@ test("uses role-specific command and environment when empty settings initialize 
             "--port",
             String(profile.port),
           ],
-          options: expect.objectContaining({
-            envOverlay: expect.objectContaining(profile.runtimeSettings.env),
-          }),
         }),
       ]);
+      expect(runtime.spawnCalls[0]?.options.baseEnv?.OPENCODE_CONFIG_DIR).toBe(
+        profile.runtimeSettings.env?.OPENCODE_CONFIG_DIR,
+      );
     }
 
     await Promise.all(acquisitions.map((acquisition) => acquisition.release()));

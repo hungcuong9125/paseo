@@ -2394,14 +2394,17 @@ export class ACPAgentSession implements AgentSession, ACPClient {
 
     const thinkingOptionWriter = this.thinkingOptionWriter;
     if (thinkingOptionWriter) {
-      await this.runACPRequest(() => thinkingOptionWriter({
-        connection: this.connection,
-        sessionId: this.sessionId,
-        thinkingOptionId,
-        modelId: this.currentModel,
-        availableModels: this.availableModels,
-        sessionMeta: this.sessionMeta,
-      }));
+      const { connection, sessionId } = this;
+      await this.runACPRequest(() =>
+        thinkingOptionWriter({
+          connection,
+          sessionId,
+          thinkingOptionId,
+          modelId: this.currentModel,
+          availableModels: this.availableModels,
+          sessionMeta: this.sessionMeta,
+        }),
+      );
       this.thinkingOptionId = thinkingOptionId;
       this.pushEvent({
         type: "thinking_option_changed",
