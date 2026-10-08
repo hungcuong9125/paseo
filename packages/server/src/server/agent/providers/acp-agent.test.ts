@@ -1419,7 +1419,8 @@ describe("ACPAgentSession Zed parity", () => {
   test("sends Antigravity thinking through its exact configured model variant", async () => {
     const baseModelId = "gemini-3.8-flash";
     const highVariant = `${baseModelId}-high\tGemini 3.8 Flash (High)`;
-    const lowVariant = `${baseModelId}-low\tGemini 3.8 Flash (Low)`;
+    const lowVariantId = `${baseModelId}-low`;
+    const lowVariant = `${lowVariantId}\tGemini 3.8 Flash (Low)`;
     const modelOption: SessionConfigOption = {
       id: "model",
       name: "Model",
@@ -1467,7 +1468,7 @@ describe("ACPAgentSession Zed parity", () => {
     expect(setSessionConfigOption).toHaveBeenCalledWith({
       sessionId: "session-1",
       configId: "model",
-      value: lowVariant,
+      value: lowVariantId,
     });
     await expect(session.getRuntimeInfo()).resolves.toMatchObject({
       model: highVariant,
@@ -1518,7 +1519,7 @@ describe("ACPAgentSession Zed parity", () => {
     expect(setSessionConfigOption).toHaveBeenCalledWith({
       sessionId: "session-1",
       configId: "model",
-      value: variant,
+      value: `${baseModelId}-medium`,
     });
     await expect(session.getRuntimeInfo()).resolves.toMatchObject({
       model: baseModelId,
@@ -1541,7 +1542,7 @@ describe("ACPAgentSession Zed parity", () => {
     expect(internals.connection.setSessionConfigOption).not.toHaveBeenCalled();
   });
 
-  test("Antigravity maps a configured model to the exact advertised variant value", async () => {
+  test("Antigravity sends the configured model variant ID without its display label", async () => {
     const modelId = "gemini-3.8-flash";
     const variant = `${modelId}-low\tGemini 3.8 Flash (Low)`;
     const configOption: SessionConfigOption = {
@@ -1581,7 +1582,7 @@ describe("ACPAgentSession Zed parity", () => {
     expect(setSessionConfigOption).toHaveBeenCalledWith({
       sessionId: "session-1",
       configId: "model",
-      value: variant,
+      value: `${modelId}-low`,
     });
   });
 

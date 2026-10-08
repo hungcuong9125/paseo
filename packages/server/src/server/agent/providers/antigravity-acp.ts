@@ -67,7 +67,7 @@ export function createAntigravityACPThinkingBridge(
     const response = await input.connection.setSessionConfigOption({
       sessionId: input.sessionId,
       configId: option.id,
-      value: choice.value,
+      value: variantId,
     });
     return response.configOptions;
   }
