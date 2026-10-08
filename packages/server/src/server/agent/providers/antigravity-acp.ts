@@ -7,6 +7,7 @@ import {
   type ACPProviderModelWriterContext,
   type ACPProviderModelWriteResult,
   type ACPThinkingOptionWriterContext,
+  type ACPThinkingOptionWriteResult,
   type SelectConfigOption,
 } from "./acp-agent.js";
 
@@ -14,7 +15,9 @@ export interface AntigravityACPThinkingBridge {
   providerModelWriter: (
     context: ACPProviderModelWriterContext,
   ) => Promise<ACPProviderModelWriteResult>;
-  thinkingOptionWriter: (context: ACPThinkingOptionWriterContext) => Promise<void>;
+  thinkingOptionWriter: (
+    context: ACPThinkingOptionWriterContext,
+  ) => Promise<ACPThinkingOptionWriteResult>;
 }
 
 export function isAntigravityACPProvider(
@@ -78,6 +81,9 @@ export function createAntigravityACPThinkingBridge(
       if (!model?.thinkingOptions?.length) return { handled: false };
 
       const thinkingOption =
+        model.thinkingOptions.find(
+          (option) => `${model.id}-${option.id}` === context.requestedModelId.split("\t", 1)[0],
+        ) ??
         model.thinkingOptions.find((option) => option.id === context.currentThinkingOptionId) ??
         model.thinkingOptions.find((option) => option.isDefault) ??
         model.thinkingOptions[0]!;
@@ -108,13 +114,14 @@ export function createAntigravityACPThinkingBridge(
           `Unknown Antigravity thinking option "${context.thinkingOptionId}" for model "${model.id}"`,
         );
       }
-      await selectModelVariant({
+      const configOptions = await selectModelVariant({
         connection: context.connection,
         sessionId: context.sessionId,
         configOptions: context.configOptions,
         modelId: model.id,
         thinkingOptionId: context.thinkingOptionId,
       });
+      return { configOptions };
     },
   };
 }

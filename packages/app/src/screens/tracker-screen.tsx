@@ -69,6 +69,7 @@ import { SearchField } from "@/components/ui/search-field";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
+import { toErrorMessage } from "@/utils/error-messages";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
@@ -79,6 +80,7 @@ import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
 import { useHydratedWorkspaceServerIds } from "@/stores/session-store-hooks";
 import {
   fetchTrackerReadyIds,
+  trackerKey,
   trackerQueryBaseKey,
   type AggregatedTracker,
   type TrackerProjectError,
@@ -702,7 +704,7 @@ function TrackerScreenContent({ isFocused }: { isFocused: boolean }): ReactEleme
   // readability at the Kanban call sites below.
   const kanbanTrackers = projectData.trackers;
   const {
-    ids: readyIds,
+    ids: readyTrackerKeys,
     refetch: refetchReady,
     isFetching: isReadyFetching,
   } = useTrackerReadyIds({
@@ -716,7 +718,7 @@ function TrackerScreenContent({ isFocused }: { isFocused: boolean }): ReactEleme
     viewMode,
     search,
     selectedProjectId,
-    projects: projectInputs,
+    projects: initializedProjectInputs,
     listStatFilter,
     browseTrackers: projectData.trackers,
   });
@@ -783,8 +785,8 @@ function TrackerScreenContent({ isFocused }: { isFocused: boolean }): ReactEleme
     [projectData, stats],
   );
   const removeTrackersAndRefreshStats = useCallback(
-    (ids: string[]) => {
-      projectData.removeTrackers(ids);
+    (ids: string[], project: AggregatedTracker) => {
+      projectData.removeTrackers(ids, project);
       stats.refetch();
     },
     [projectData, stats],
@@ -804,12 +806,15 @@ function TrackerScreenContent({ isFocused }: { isFocused: boolean }): ReactEleme
     // `ait init` doesn't return a tracker to patch in — a fresh first-page
     // load is the only way to move this project out of its `uninitialised`
     // error state.
-    void initMutations.initTracker().then(() => {
-      projectData.refetch();
-      stats.refetch();
-      return undefined;
-    });
-  }, [initMutations, projectData, stats]);
+    void initMutations
+      .initTracker()
+      .then(() => {
+        projectData.refetch();
+        stats.refetch();
+        return undefined;
+      })
+      .catch((error: unknown) => toast.error(toErrorMessage(error)));
+  }, [initMutations, projectData, stats, toast]);
   const handleRetry = useCallback(() => {
     projectData.refetch();
     stats.refetch();
@@ -822,14 +827,18 @@ function TrackerScreenContent({ isFocused }: { isFocused: boolean }): ReactEleme
     }
   }, [projectData, refetchReady, stats, viewMode]);
   const isRefreshing = projectData.isLoading || stats.isLoading || isReadyFetching;
+  const refreshRef = useRef(handleRefresh);
+  useEffect(() => {
+    refreshRef.current = handleRefresh;
+  }, [handleRefresh]);
 
   useEffect(() => {
     if (!isFocused) {
       return;
     }
-    const interval = setInterval(handleRefresh, 45_000);
+    const interval = setInterval(() => refreshRef.current(), 45_000);
     return () => clearInterval(interval);
-  }, [handleRefresh, isFocused]);
+  }, [isFocused]);
   const handleSelectProject = useCallback((projectId: string | null) => {
     setSelectedProjectId(projectId);
   }, []);
@@ -864,20 +873,16 @@ function TrackerScreenContent({ isFocused }: { isFocused: boolean }): ReactEleme
   // shape — the runtime objects in `kanbanTrackers` are still the exact
   // AggregatedTracker instances we passed in, so lookup-by-id recovers
   // serverId/projectId safely (see TrackerKanbanBoardProps contract).
-  const kanbanTrackerById = useMemo(
-    () => new Map(kanbanTrackers.map((tracker) => [tracker.id, tracker])),
-    [kanbanTrackers],
-  );
   // Prefers the tracker's own server-computed childCount (accurate over the
   // full subtree, even for a tracker whose descendants aren't loaded on this
   // page) and only falls back to the locally-built hierarchy — which can only
   // ever see whatever pages happened to load — when an old daemon predates
   // the feature and leaves childCount undefined.
   const resolveHasChildren = useCallback(
-    (aggregated: Pick<AggregatedTracker, "id" | "childCount">): boolean =>
+    (aggregated: AggregatedTracker): boolean =>
       aggregated.childCount !== undefined
         ? aggregated.childCount > 0
-        : trackerHierarchy.descendantStats(aggregated.id).childCount > 0,
+        : trackerHierarchy.descendantStats(trackerKey(aggregated)).childCount > 0,
     [trackerHierarchy],
   );
   // `laneForTracker` in tracker-board-model.ts maps `closed -> "done"` and
@@ -921,12 +926,8 @@ function TrackerScreenContent({ isFocused }: { isFocused: boolean }): ReactEleme
   // to rely on a caller-side refresh to pick up — patched in directly instead
   // of re-fetching or waiting on a live-push re-render.
   const handleKanbanTransition = useCallback(
-    async (trackerId: string, transition: TrackerTransition): Promise<void> => {
+    async (aggregated: AggregatedTracker, transition: TrackerTransition): Promise<void> => {
       try {
-        const aggregated = kanbanTrackerById.get(trackerId);
-        if (!aggregated) {
-          throw new Error(`Unknown tracker: ${trackerId}`);
-        }
         const client = useSessionStore.getState().sessions[aggregated.serverId]?.client;
         if (!client) {
           throw new Error(t("common.errors.daemonClientUnavailable"));
@@ -939,10 +940,10 @@ function TrackerScreenContent({ isFocused }: { isFocused: boolean }): ReactEleme
         void queryClient.invalidateQueries({ queryKey: trackerQueryBaseKey });
       }
     },
-    [kanbanTrackerById, queryClient, t, patchTrackerAndRefreshStats],
+    [queryClient, t, patchTrackerAndRefreshStats],
   );
   const handleKanbanTransitionError = useCallback(
-    (_trackerId: string, message: string) => toast.error(message),
+    (_tracker: AggregatedTracker, message: string) => toast.error(message),
     [toast],
   );
   // Cascade mirrors the List row's identical rule: `ait` itself refuses a
@@ -953,12 +954,8 @@ function TrackerScreenContent({ isFocused }: { isFocused: boolean }): ReactEleme
   // only when that daemon predates the feature, so this agrees with whatever
   // "Remove"/"Delete tree" copy the card's own confirm dialog showed.
   const handleKanbanDelete = useCallback(
-    async (trackerId: string): Promise<void> => {
+    async (aggregated: AggregatedTracker): Promise<void> => {
       try {
-        const aggregated = kanbanTrackerById.get(trackerId);
-        if (!aggregated) {
-          throw new Error(`Unknown tracker: ${trackerId}`);
-        }
         const client = useSessionStore.getState().sessions[aggregated.serverId]?.client;
         if (!client) {
           throw new Error(t("common.errors.daemonClientUnavailable"));
@@ -969,32 +966,21 @@ function TrackerScreenContent({ isFocused }: { isFocused: boolean }): ReactEleme
           trackerId: aggregated.id,
           cascade: hasChildren,
         });
-        removeTrackersAndRefreshStats(removedIds);
+        removeTrackersAndRefreshStats(removedIds, aggregated);
       } finally {
         void queryClient.invalidateQueries({ queryKey: trackerQueryBaseKey });
       }
     },
-    [kanbanTrackerById, resolveHasChildren, t, removeTrackersAndRefreshStats, queryClient],
+    [resolveHasChildren, t, removeTrackersAndRefreshStats, queryClient],
   );
   const handleKanbanDeleteError = useCallback(
-    (_trackerId: string, message: string) => toast.error(message),
+    (_tracker: AggregatedTracker, message: string) => toast.error(message),
     [toast],
   );
-  const getKanbanHasChildren = useCallback(
-    (trackerId: string) => {
-      const aggregated = kanbanTrackerById.get(trackerId);
-      return aggregated ? resolveHasChildren(aggregated) : false;
-    },
-    [kanbanTrackerById, resolveHasChildren],
-  );
+  const getKanbanHasChildren = resolveHasChildren;
   const handleKanbanCardPress = useCallback(
-    (trackerId: string) => {
-      const aggregated = kanbanTrackerById.get(trackerId);
-      if (aggregated) {
-        setSelectedTracker(aggregated);
-      }
-    },
-    [kanbanTrackerById],
+    (tracker: AggregatedTracker) => setSelectedTracker(tracker),
+    [],
   );
   const handleOpenEdit = useCallback(
     (tracker: AggregatedTracker) => setEditingTracker(tracker),
@@ -1002,28 +988,32 @@ function TrackerScreenContent({ isFocused }: { isFocused: boolean }): ReactEleme
   );
   const handleCloseEdit = useCallback(() => setEditingTracker(null), []);
   const handleKanbanEdit = useCallback(
-    (trackerId: string) => {
-      const aggregated = kanbanTrackerById.get(trackerId);
-      if (aggregated) {
-        setEditingTracker(aggregated);
-      }
-    },
-    [kanbanTrackerById],
+    (tracker: AggregatedTracker) => setEditingTracker(tracker),
+    [],
   );
+  const { insertTracker } = projectData;
+  const { refetch: refetchStats } = stats;
   const handleTrackerCreated = useCallback(
     (tracker: TrackerSummary, project: TrackerProjectInput) => {
-      patchTrackerAndRefreshStats({ ...tracker, ...project });
+      insertTracker({ ...tracker, ...project });
+      refetchStats();
     },
-    [patchTrackerAndRefreshStats],
+    [insertTracker, refetchStats],
   );
   const handleDetailMutated = useCallback(
     (summary: TrackerSummary) => {
       if (!selectedTracker) {
         return;
       }
-      patchTrackerAndRefreshStats({ ...selectedTracker, ...summary });
+      const { serverId, projectId } = selectedTracker;
+      const key = trackerKey({ serverId, projectId, id: summary.id });
+      const previous = projectData.trackers.find((tracker) => trackerKey(tracker) === key);
+      patchTrackerAndRefreshStats({
+        ...(previous ?? selectedTracker),
+        ...summary,
+      });
     },
-    [selectedTracker, patchTrackerAndRefreshStats],
+    [selectedTracker, patchTrackerAndRefreshStats, projectData.trackers],
   );
   const contentWidth = useContentWidth();
   // Same patch mechanism as the row/detail mutation paths — merges the fresh
@@ -1068,6 +1058,21 @@ function TrackerScreenContent({ isFocused }: { isFocused: boolean }): ReactEleme
   return (
     <View style={styles.container} ref={contentWidth.ref} onLayout={contentWidth.onLayout}>
       <MenuHeader title="Tracker" rightContent={headerRightContent} />
+      {isListSearch && searchState.projectErrors.length > 0 ? (
+        <View style={styles.searchErrorBlock}>
+          {searchState.projectErrors.map((error) => (
+            <Alert
+              key={`${error.serverId}:${error.projectId}`}
+              variant="error"
+              size="sm"
+              description={error.message}
+            />
+          ))}
+          <Button variant="ghost" onPress={searchState.retry}>
+            {t("project.actions.tryAgain")}
+          </Button>
+        </View>
+      ) : null}
       <TrackerScreenBody
         contentWidth={contentWidth.value}
         bodyState={bodyState}
@@ -1077,7 +1082,7 @@ function TrackerScreenContent({ isFocused }: { isFocused: boolean }): ReactEleme
         statsLoading={stats.isLoading}
         hasProjectErrors={allProjectErrors.length > 0}
         kanbanTrackers={kanbanTrackers}
-        kanbanReadyIds={readyIds}
+        kanbanReadyTrackerKeys={readyTrackerKeys}
         laneTotals={laneTotals}
         laneHasMore={laneHasMore}
         laneLoadingMore={laneLoadingMore}
@@ -1515,6 +1520,19 @@ function extractProjectDir(message: string): string | null {
   return AIT_DB_PATH_PATTERN.exec(message)?.[1] ?? null;
 }
 
+export function buildAitInitCommand(projectDir: string | null): string {
+  if (!projectDir) return "ait init";
+  if (/^[a-zA-Z]:/.test(projectDir) || projectDir.startsWith("\\\\")) {
+    const codeUnits = Array.from({ length: projectDir.length }, (_, index) =>
+      projectDir.charCodeAt(index),
+    ).join(",");
+    const pathExpression = `[string]::Concat([char[]](${codeUnits}))`;
+    return `powershell.exe -NoProfile -Command "Set-Location -ErrorAction Stop -LiteralPath (${pathExpression}); ait init"`;
+  }
+  const quotedProjectDir = `'${projectDir.replace(/'/g, "'\\''")}'`;
+  return `cd ${quotedProjectDir} && ait init`;
+}
+
 function TrackerErrorRow({ error }: { error: TrackerProjectError }): ReactElement {
   // A gate-derived error (pas-2KY5X.28) carries projectRootPath directly —
   // no RPC error message to regex-parse, since no request was ever sent.
@@ -1522,7 +1540,7 @@ function TrackerErrorRow({ error }: { error: TrackerProjectError }): ReactElemen
   // predates aitProjectInitStatus, or a project that fails for some other
   // reason after passing the gate (cli_missing, a transient RPC error, ...).
   const projectDir = error.projectRootPath ?? extractProjectDir(error.message);
-  const command = projectDir ? `cd "${projectDir}" && ait init` : "ait init";
+  const command = buildAitInitCommand(projectDir);
   const [copied, setCopied] = useState(false);
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1745,7 +1763,7 @@ function TrackerScreenBody({
   statsLoading,
   hasProjectErrors,
   kanbanTrackers,
-  kanbanReadyIds,
+  kanbanReadyTrackerKeys,
   laneTotals,
   laneHasMore,
   laneLoadingMore,
@@ -1808,7 +1826,7 @@ function TrackerScreenBody({
    * inferring "broken" from "empty" (pas-2KY5X.52). */
   hasProjectErrors: boolean;
   kanbanTrackers: AggregatedTracker[];
-  kanbanReadyIds: ReadonlySet<string> | null;
+  kanbanReadyTrackerKeys: ReadonlySet<string> | null;
   laneTotals: Partial<Record<TrackerBoardLaneKey, number | null>>;
   laneHasMore: Partial<Record<TrackerBoardLaneKey, boolean>>;
   laneLoadingMore: Partial<Record<TrackerBoardLaneKey, boolean>>;
@@ -1819,7 +1837,7 @@ function TrackerScreenBody({
   onLoadMore: (status: TrackerStatus) => void;
   onTrackerPatched: (tracker: AggregatedTracker) => void;
   onEditTracker: (tracker: AggregatedTracker) => void;
-  onTrackersRemoved: (ids: string[]) => void;
+  onTrackersRemoved: (ids: string[], project: AggregatedTracker) => void;
   listVariant: "sections" | "flat";
   onLoadMoreAll: () => void;
   hasMoreAll: boolean;
@@ -1853,13 +1871,13 @@ function TrackerScreenBody({
   activeSearch: string;
   onSearchInputChange: (value: string) => void;
   onOpenTracker: (tracker: AggregatedTracker) => void;
-  onKanbanTransition: (trackerId: string, transition: TrackerTransition) => Promise<void>;
-  onKanbanTransitionError: (trackerId: string, message: string) => void;
-  onKanbanEdit: (trackerId: string) => void;
-  onKanbanDelete: (trackerId: string) => Promise<void>;
-  onKanbanDeleteError: (trackerId: string, message: string) => void;
-  getKanbanHasChildren: (trackerId: string) => boolean;
-  onKanbanCardPress: (trackerId: string) => void;
+  onKanbanTransition: (tracker: AggregatedTracker, transition: TrackerTransition) => Promise<void>;
+  onKanbanTransitionError: (tracker: AggregatedTracker, message: string) => void;
+  onKanbanEdit: (tracker: AggregatedTracker) => void;
+  onKanbanDelete: (tracker: AggregatedTracker) => Promise<void>;
+  onKanbanDeleteError: (tracker: AggregatedTracker, message: string) => void;
+  getKanbanHasChildren: (tracker: AggregatedTracker) => boolean;
+  onKanbanCardPress: (tracker: AggregatedTracker) => void;
   onCreate: () => void;
   onOpenProject: () => void;
   onInitialise: () => void;
@@ -1871,8 +1889,7 @@ function TrackerScreenBody({
   // kanbanTrackers, so this cast mirrors the same safe pattern used to recover
   // serverId/projectId in TrackerScreenContent.
   const getKanbanProjectLabel = useCallback(
-    (tracker: TrackerSummary): string | null =>
-      showProjectLabel ? ((tracker as AggregatedTracker).projectName ?? null) : null,
+    (tracker: AggregatedTracker): string | null => (showProjectLabel ? tracker.projectName : null),
     [showProjectLabel],
   );
 
@@ -2001,7 +2018,7 @@ function TrackerScreenBody({
               isLoading={isLoading}
               trackers={kanbanTrackers}
               filter={statFilter}
-              readyIds={kanbanReadyIds}
+              readyTrackerKeys={kanbanReadyTrackerKeys}
               laneTotals={laneTotals}
               laneHasMore={laneHasMore}
               laneLoadingMore={laneLoadingMore}
@@ -2735,6 +2752,11 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
     paddingTop: { xs: 0, sm: 0, md: theme.spacing[4] },
     paddingBottom: theme.spacing[2],
+  },
+  searchErrorBlock: {
+    gap: theme.spacing[2],
+    paddingHorizontal: { xs: theme.spacing[3], md: theme.spacing[6] },
+    paddingTop: theme.spacing[2],
   },
   // No flexWrap: a group that doesn't fit scrolls or shrinks in place. Wrapping
   // would silently move a group to a line the layout never asked for, which is

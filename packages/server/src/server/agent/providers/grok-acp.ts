@@ -1,6 +1,7 @@
 import path from "node:path";
 
-import type { ClientSideConnection } from "@agentclientprotocol/sdk";
+import type { ClientSideConnection, SessionConfigOption } from "@agentclientprotocol/sdk";
+import type { ACPThinkingOptionWriteResult } from "./acp-agent.js";
 
 import type { AgentSelectOption } from "../agent-sdk-types.js";
 
@@ -8,6 +9,7 @@ export const GROK_REASONING_EFFORT_META_KEY = "reasoningEffort";
 export const GROK_SESSION_CONFIG_META_KEY = "x.ai/sessionConfig";
 
 export interface GrokThinkingOptionWriteInput {
+  configOptions: SessionConfigOption[];
   connection: ClientSideConnection;
   sessionId: string;
   thinkingOptionId: string;
@@ -94,7 +96,7 @@ export function deriveGrokCurrentThinkingOptionId(input: {
 
 export async function writeGrokThinkingOption(
   context: GrokThinkingOptionWriteInput,
-): Promise<void> {
+): Promise<ACPThinkingOptionWriteResult> {
   const { connection, sessionId, thinkingOptionId, modelId, availableModels, sessionMeta } =
     context;
   if (!modelId) {
@@ -113,13 +115,14 @@ export async function writeGrokThinkingOption(
     modelMeta: model?._meta,
     sessionMeta,
   });
-  if (allowedOptions.length > 0) {
-    const allowedIds = allowedOptions.map((option) => option.id);
-    if (!allowedIds.includes(thinkingOptionId)) {
-      throw new Error(
-        `Unknown Grok reasoning effort "${thinkingOptionId}". Allowed: ${allowedIds.join(", ")}`,
-      );
-    }
+  if (allowedOptions.length === 0) {
+    throw new Error(`Model "${modelId}" does not advertise allowed reasoning efforts`);
+  }
+  const allowedIds = allowedOptions.map((option) => option.id);
+  if (!allowedIds.includes(thinkingOptionId)) {
+    throw new Error(
+      `Unknown Grok reasoning effort "${thinkingOptionId}". Allowed: ${allowedIds.join(", ")}`,
+    );
   }
 
   await connection.unstable_setSessionModel({
@@ -127,6 +130,7 @@ export async function writeGrokThinkingOption(
     modelId,
     _meta: { [GROK_REASONING_EFFORT_META_KEY]: thinkingOptionId },
   });
+  return { configOptions: null };
 }
 
 function modelSupportsReasoningEffort(

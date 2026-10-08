@@ -46,7 +46,76 @@ function makeTracker(id: string): TrackerSummary {
 }
 
 describe("useTrackerSearch", () => {
-  it("stops offering more when one project's later page fails", async () => {
+  it("keeps an initial project error visible while another project loads more", async () => {
+    runtimeState.getClient.mockReturnValue({
+      trackerSearch: vi.fn(async (args: { projectId: string; page?: { cursor?: string } }) => {
+        if (args.projectId === PROJECT_A.projectId) throw new Error("Project A unavailable");
+        if (args.page?.cursor)
+          return { trackers: [makeTracker("b2")], pageInfo: { nextCursor: null, hasMore: false } };
+        return { trackers: [makeTracker("b1")], pageInfo: { nextCursor: "next", hasMore: true } };
+      }),
+    });
+    const { result, unmount } = renderHook(() =>
+      useTrackerSearch({
+        projects: [PROJECT_A, PROJECT_B],
+        selectedProjectId: null,
+        query: "search",
+        enabled: true,
+        pageSize: 1,
+      }),
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.projectErrors.map((error) => error.projectId)).toEqual([
+      PROJECT_A.projectId,
+    ]);
+    act(() => result.current.loadMore());
+    await waitFor(() => expect(result.current.isLoadingMore).toBe(false));
+    expect(result.current.results.map((row) => row.id)).toEqual(["b1", "b2"]);
+    expect(result.current.projectErrors.map((error) => error.projectId)).toEqual([
+      PROJECT_A.projectId,
+    ]);
+    unmount();
+  });
+  it("releases load-more state when a new search supersedes its pending page", async () => {
+    const pending = Promise.withResolvers<{
+      trackers: TrackerSummary[];
+      pageInfo: { nextCursor: null; hasMore: false };
+    }>();
+    const trackerSearch = vi.fn(async (args: { query: string; page?: { cursor?: string } }) => {
+      if (args.page?.cursor) return pending.promise;
+      return {
+        trackers: [makeTracker(args.query)],
+        pageInfo: { nextCursor: "next", hasMore: true },
+      };
+    });
+    runtimeState.getClient.mockReturnValue({ trackerSearch });
+    const { result, rerender, unmount } = renderHook(
+      ({ query }) =>
+        useTrackerSearch({
+          projects: [PROJECT_A],
+          selectedProjectId: null,
+          query,
+          enabled: true,
+          pageSize: 1,
+        }),
+      { initialProps: { query: "first" } },
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    act(() => result.current.loadMore());
+    expect(result.current.isLoadingMore).toBe(true);
+    rerender({ query: "second" });
+    await waitFor(() => expect(result.current.results[0]?.id).toBe("second"));
+    expect(result.current.isLoadingMore).toBe(false);
+    await act(async () =>
+      pending.resolve({
+        trackers: [makeTracker("stale")],
+        pageInfo: { nextCursor: null, hasMore: false },
+      }),
+    );
+    expect(result.current.results.map((tracker) => tracker.id)).toEqual(["second"]);
+    unmount();
+  });
+  it("surfaces a later-page failure and keeps that cursor available for retry", async () => {
     const trackerSearch = vi.fn(async (args: { projectId: string; page?: { cursor?: string } }) => {
       const cursor = args.page?.cursor;
       if (args.projectId === "prj-a" && cursor === undefined) {
@@ -93,7 +162,10 @@ describe("useTrackerSearch", () => {
     await waitFor(() => expect(result.current.isLoadingMore).toBe(false));
 
     expect(result.current.results.map((tracker) => tracker.id)).toEqual(["a-1", "b-1", "b-2"]);
-    expect(result.current.hasMore).toBe(false);
+    expect(result.current.hasMore).toBe(true);
+    expect(result.current.projectErrors).toEqual([
+      expect.objectContaining({ projectId: "prj-a", message: "project A search failed" }),
+    ]);
     expect(trackerSearch.mock.calls).toEqual(
       expect.arrayContaining([
         [
@@ -129,6 +201,6 @@ describe("useTrackerSearch", () => {
     await act(async () => {
       await Promise.resolve();
     });
-    expect(trackerSearch).toHaveBeenCalledTimes(4);
+    expect(trackerSearch).toHaveBeenCalledTimes(5);
   });
 });

@@ -19,6 +19,8 @@ export function useSkeletonPulse(active = true): Animated.Value {
   const pulse = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     if (!active) {
+      pulse.stopAnimation();
+      pulse.setValue(0);
       return;
     }
     const animation = Animated.loop(

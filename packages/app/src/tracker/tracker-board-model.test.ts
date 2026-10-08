@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
+import { trackerKey, type AggregatedTracker } from "@/tracker/aggregated-trackers";
 import { buildTrackerBoard, type TrackerBoardFilter } from "./tracker-board-model";
 
-function tracker(overrides: Partial<TrackerSummary> & Pick<TrackerSummary, "id">): TrackerSummary {
+function tracker(
+  overrides: Partial<AggregatedTracker> & Pick<AggregatedTracker, "id">,
+): AggregatedTracker {
   return {
+    serverId: "host-a",
+    serverName: "Host A",
+    projectId: "prj-a",
+    projectName: "Project A",
     title: overrides.id,
     type: "task",
     status: "open",
@@ -14,6 +20,15 @@ function tracker(overrides: Partial<TrackerSummary> & Pick<TrackerSummary, "id">
 }
 
 describe("buildTrackerBoard", () => {
+  it("keeps readiness separate for equal issue IDs in different projects", () => {
+    const first = tracker({ id: "same", projectId: "first" });
+    const second = tracker({ id: "same", projectId: "second" });
+    const board = buildTrackerBoard([first, second], "all", new Set([trackerKey(first)]));
+    expect(board.open.map((card) => [card.tracker.projectId, card.isBlocked])).toEqual([
+      ["first", false],
+      ["second", true],
+    ]);
+  });
   it("partitions trackers into open, in_progress, done, and cancelled lanes by status", () => {
     const trackers = [
       tracker({ id: "a", status: "open" }),
@@ -38,9 +53,11 @@ describe("buildTrackerBoard", () => {
       tracker({ id: "doing", status: "in_progress" }),
       tracker({ id: "finished", status: "closed" }),
     ];
-    const readyIds = new Set(["unblocked", "doing", "finished"]);
+    const readyTrackerKeys = new Set(
+      ["unblocked", "doing", "finished"].map((id) => trackerKey(tracker({ id }))),
+    );
 
-    const board = buildTrackerBoard(trackers, "all", readyIds);
+    const board = buildTrackerBoard(trackers, "all", readyTrackerKeys);
 
     expect(board.visibleLanes).toEqual(["open", "in_progress", "done", "cancelled"]);
     expect(board.open.map((card) => card.tracker.id)).toEqual(["blocked", "unblocked"]);
@@ -50,7 +67,7 @@ describe("buildTrackerBoard", () => {
     expect(board.done.map((card) => card.tracker.id)).toEqual(["finished"]);
   });
 
-  it("leaves everything open-status in Open when readyIds is not supplied, never crashing", () => {
+  it("leaves everything open-status in Open when readyTrackerKeys is not supplied, never crashing", () => {
     const trackers = [tracker({ id: "a", status: "open" }), tracker({ id: "b", status: "open" })];
 
     const board = buildTrackerBoard(trackers, "all");
@@ -103,7 +120,7 @@ describe("buildTrackerBoard", () => {
   it.each(["p0", "p1", "p2", "p3", "p4"] as const)(
     "%s removes cards that don't match that priority from their lane, regardless of status, without hiding any lane",
     (filter: TrackerBoardFilter) => {
-      const priority = filter.toUpperCase() as TrackerSummary["priority"];
+      const priority = filter.toUpperCase() as AggregatedTracker["priority"];
       const otherPriority = priority === "P0" ? "P1" : "P0";
       const trackers = [
         tracker({ id: "match-unblocked", status: "open", priority }),
@@ -113,9 +130,9 @@ describe("buildTrackerBoard", () => {
         tracker({ id: "done-same-priority", status: "closed", priority }),
         tracker({ id: "done-wrong-priority", status: "closed", priority: otherPriority }),
       ];
-      const readyIds = new Set(["match-unblocked"]);
+      const readyTrackerKeys = new Set([trackerKey(tracker({ id: "match-unblocked" }))]);
 
-      const board = buildTrackerBoard(trackers, filter, readyIds);
+      const board = buildTrackerBoard(trackers, filter, readyTrackerKeys);
 
       expect(board.visibleLanes).toEqual(["open", "in_progress", "done", "cancelled"]);
       expect(board.open.map((card) => card.tracker.id)).toEqual(["match-open", "match-unblocked"]);

@@ -85,4 +85,10 @@ describe("FileMailboxStore", () => {
     expect(await store.listAgentIds()).toEqual([]);
     expect(await store.load("agent-1")).toBeNull();
   });
+
+  test("removing an absent mailbox succeeds before the directory has been created", async () => {
+    const store = new FileMailboxStore(directory, createTestLogger());
+    await expect(store.remove("never-created")).resolves.toBeUndefined();
+    expect(await store.listAgentIds()).toEqual([]);
+  });
 });

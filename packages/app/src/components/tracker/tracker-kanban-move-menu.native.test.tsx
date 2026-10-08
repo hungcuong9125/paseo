@@ -2,12 +2,28 @@
  * @vitest-environment jsdom
  */
 import React from "react";
+import type { AggregatedTracker } from "@/tracker/aggregated-trackers";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TrackerKanbanCardMenu } from "./tracker-kanban-move-menu";
 
 beforeEach(() => vi.stubGlobal("React", React));
 afterEach(() => cleanup());
+
+function testTracker(id: string): AggregatedTracker {
+  return {
+    id,
+    title: "Fixture",
+    type: "task",
+    status: "open",
+    priority: "P2",
+    parentId: null,
+    serverId: "host-a",
+    serverName: "Host A",
+    projectId: "prj-a",
+    projectName: "Project A",
+  };
+}
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
@@ -103,7 +119,7 @@ describe("TrackerKanbanCardMenu (native long-press surface)", () => {
   it("wraps the card body in a long-press trigger disabled on web, listing the same transitions", () => {
     render(
       <TrackerKanbanCardMenu
-        trackerId="paseo-abc.1"
+        tracker={testTracker("paseo-abc.1")}
         trackerTitle="Fix the thing"
         lane="open"
         isPending={false}
@@ -130,7 +146,7 @@ describe("TrackerKanbanCardMenu (native long-press surface)", () => {
   it("marks the long-press trigger disabled while pending", () => {
     render(
       <TrackerKanbanCardMenu
-        trackerId="paseo-abc.2"
+        tracker={testTracker("paseo-abc.2")}
         trackerTitle="Pending thing"
         lane="open"
         isPending
@@ -148,7 +164,7 @@ describe("TrackerKanbanCardMenu (native long-press surface)", () => {
     const onCardPress = vi.fn();
     render(
       <TrackerKanbanCardMenu
-        trackerId="paseo-abc.3"
+        tracker={testTracker("paseo-abc.3")}
         trackerTitle="Tappable thing"
         lane="open"
         isPending={false}
@@ -161,14 +177,14 @@ describe("TrackerKanbanCardMenu (native long-press surface)", () => {
     );
 
     fireEvent.click(screen.getByTestId("context-menu-trigger"));
-    expect(onCardPress).toHaveBeenCalledWith("paseo-abc.3");
+    expect(onCardPress).toHaveBeenCalledWith(testTracker("paseo-abc.3"));
   });
 
   it("does not fire onCardPress while pending", () => {
     const onCardPress = vi.fn();
     render(
       <TrackerKanbanCardMenu
-        trackerId="paseo-abc.4"
+        tracker={testTracker("paseo-abc.4")}
         trackerTitle="Pending thing"
         lane="open"
         isPending

@@ -27,17 +27,30 @@ function createHarness(options?: {
   aitInitialized?: boolean;
   aitDatabaseResults?: boolean[];
   observerSubscribeFailures?: number;
+  subscribeBarrier?: Promise<void>;
+  unsubscribeBarrier?: Promise<void>;
+  earlyObserverFailures?: number;
+  directoryBarrier?: Promise<boolean>;
+  projectRegistryBarrier?: Promise<void>;
   onAitInitializedChanged?: (projectId: string) => void | Promise<void>;
 }) {
   let aitInitialized = options?.aitInitialized ?? true;
   const aitDatabaseResults = [...(options?.aitDatabaseResults ?? [])];
   let observerSubscribeFailures = options?.observerSubscribeFailures ?? 0;
+  let earlyObserverFailures = options?.earlyObserverFailures ?? 0;
+  let directoryExists = true;
+  let directoryCalls = 0;
   let callback: FileObserverCallback | null = null;
   let subscribeCount = 0;
   let unsubscribeCount = 0;
   const observer: FileObserver = {
     async subscribe(_directory, next) {
       subscribeCount += 1;
+      if (earlyObserverFailures > 0) {
+        earlyObserverFailures -= 1;
+        next(new Error("observer failed before attachment"), []);
+      }
+      await options?.subscribeBarrier;
       if (observerSubscribeFailures > 0) {
         observerSubscribeFailures -= 1;
         throw new Error("observer unavailable");
@@ -47,7 +60,8 @@ function createHarness(options?: {
         updateIgnore: async () => {},
         unsubscribe: async () => {
           unsubscribeCount += 1;
-          callback = null;
+          await options?.unsubscribeBarrier;
+          if (callback === next) callback = null;
         },
       };
       return subscription;
@@ -94,19 +108,32 @@ function createHarness(options?: {
     initTracker: async () => ({ initialised: true }),
   };
   const projectRegistry = {
-    get: async (projectId: string) =>
-      projectId === PROJECT_ID ? ({ projectId, rootPath: ROOT, archivedAt: null } as const) : null,
+    get: async (projectId: string) => {
+      await options?.projectRegistryBarrier;
+      return projectId === PROJECT_ID
+        ? ({ projectId, rootPath: ROOT, archivedAt: null } as const)
+        : null;
+    },
   };
   const manager = new TrackerSyncManager({
     aitService: ait,
     projectRegistry,
     fileObserver: observer,
-    directoryExists: async () => true,
+    directoryExists: async () => {
+      directoryCalls += 1;
+      return options?.directoryBarrier ?? directoryExists;
+    },
     aitDatabaseExists: async () => aitDatabaseResults.shift() ?? aitInitialized,
     onAitInitializedChanged: options?.onAitInitializedChanged,
   });
   return {
     manager,
+    get directoryCalls() {
+      return directoryCalls;
+    },
+    setDirectoryExists: (value: boolean) => {
+      directoryExists = value;
+    },
     get listCalls() {
       return listCalls;
     },
@@ -125,6 +152,103 @@ function createHarness(options?: {
 
 describe("TrackerSyncManager", () => {
   afterEach(() => vi.useRealTimers());
+
+  it("orders an unwatch after a project watch still awaiting registry I/O", async () => {
+    vi.useFakeTimers();
+    const barrier = Promise.withResolvers<void>();
+    const harness = createHarness({
+      aitInitialized: false,
+      projectRegistryBarrier: barrier.promise,
+    });
+    const watching = harness.manager.watchProject(PROJECT_ID);
+    const unwatching = harness.manager.unwatchProject(PROJECT_ID);
+    barrier.resolve();
+    await Promise.all([watching, unwatching]);
+    await vi.advanceTimersByTimeAsync(TRACKER_ROOT_IDLE_TTL_MS);
+    expect(harness.subscribeCount).toBe(1);
+    expect(harness.unsubscribeCount).toBe(1);
+    await harness.manager.close();
+  });
+
+  it("does not create a watcher when registry I/O completes after shutdown begins", async () => {
+    const barrier = Promise.withResolvers<void>();
+    const harness = createHarness({
+      aitInitialized: false,
+      projectRegistryBarrier: barrier.promise,
+    });
+    const watching = harness.manager.watchProject(PROJECT_ID).catch((error: unknown) => error);
+    const closing = harness.manager.close();
+    barrier.resolve();
+    await closing;
+    expect(await watching).toBeInstanceOf(Error);
+    expect(harness.subscribeCount).toBe(0);
+  });
+
+  it("waits for an in-flight attachment and releases it during close", async () => {
+    const barrier = Promise.withResolvers<void>();
+    const harness = createHarness({ subscribeBarrier: barrier.promise });
+    const read = harness.manager.getSnapshot(PROJECT_ID, true);
+    await vi.waitFor(() => expect(harness.subscribeCount).toBe(1));
+    const closing = harness.manager.close();
+    barrier.resolve();
+    await Promise.all([read, closing]);
+    expect(harness.unsubscribeCount).toBe(1);
+  });
+
+  it("completes shutdown even when an in-flight observation attempt rejects", async () => {
+    const barrier = Promise.withResolvers<boolean>();
+    const harness = createHarness({ directoryBarrier: barrier.promise });
+    const read = harness.manager.getSnapshot(PROJECT_ID, true).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(harness.directoryCalls).toBe(1));
+    const closing = harness.manager.close();
+    barrier.reject(new Error("directory probe failed"));
+    expect(await read).toEqual(new Error("directory probe failed"));
+    await expect(closing).resolves.toBeUndefined();
+    expect(harness.subscribeCount).toBe(0);
+  });
+
+  it("keeps a replacement root registered while the old idle root finishes closing", async () => {
+    vi.useFakeTimers();
+    const barrier = Promise.withResolvers<void>();
+    const harness = createHarness({ unsubscribeBarrier: barrier.promise });
+    await harness.manager.getSnapshot(PROJECT_ID, true);
+    await vi.advanceTimersByTimeAsync(TRACKER_ROOT_IDLE_TTL_MS);
+    expect(harness.unsubscribeCount).toBe(1);
+    await harness.manager.getSnapshot(PROJECT_ID, true);
+    expect(harness.subscribeCount).toBe(2);
+    barrier.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    await harness.manager.close();
+    expect(harness.unsubscribeCount).toBe(2);
+  });
+
+  it("retries an observer that fails before subscribe returns its handle", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness({ earlyObserverFailures: 1 });
+    await harness.manager.subscribe({
+      projectId: PROJECT_ID,
+      subscriptionId: "live",
+      listener: () => {},
+    });
+    expect(harness.unsubscribeCount).toBe(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(harness.subscribeCount).toBe(2);
+    await harness.manager.close();
+    expect(harness.unsubscribeCount).toBe(2);
+  });
+
+  it("releases the old observer when a requested root directory disappears", async () => {
+    const harness = createHarness();
+    await harness.manager.getSnapshot(PROJECT_ID, true);
+    harness.setDirectoryExists(false);
+    await harness.manager.getSnapshot(PROJECT_ID, true);
+    expect(harness.unsubscribeCount).toBe(1);
+    harness.setDirectoryExists(true);
+    await harness.manager.getSnapshot(PROJECT_ID, true);
+    expect(harness.subscribeCount).toBe(2);
+    await harness.manager.close();
+    expect(harness.unsubscribeCount).toBe(2);
+  });
 
   it("counts every status in the type and priority buckets", () => {
     const counts = getTrackerStatsCounts([

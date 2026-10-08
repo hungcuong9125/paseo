@@ -1,12 +1,6 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactElement,
-  type RefObject,
-} from "react";
+import { useCallback, useMemo, useRef, useState, type ReactElement, type RefObject } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useFetchQuery } from "@/data/query";
 import type { EditingTextInputHandle } from "@/components/ui/text-input";
 import { Pressable, Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
@@ -20,6 +14,7 @@ import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
 import { useHostRuntimeClient } from "@/runtime/host-runtime";
 import { formatTimeAgo } from "@/utils/time";
 import { toErrorMessage } from "@/utils/error-messages";
+import { trackerQueryBaseKey } from "@/tracker/aggregated-trackers";
 
 export interface TrackerDetailSheetProps {
   serverId: string;
@@ -39,10 +34,14 @@ export interface TrackerDetailSheetProps {
 }
 
 type DetailState =
-  | { status: "idle" }
   | { status: "loading" }
   | { status: "error"; error: string }
-  | { status: "loaded"; tracker: TrackerDetail };
+  | { status: "loaded"; tracker: TrackerDetail; refreshError?: string };
+
+type ActionState =
+  | { status: "idle" }
+  | { status: "pending" }
+  | { status: "error"; message: string };
 
 // The fields `ait show` adds beyond a summary row are unknown until the real
 // fetch resolves — description/children/blockedBy/notes stay empty in the
@@ -66,6 +65,10 @@ function placeholderDetailFromSummary(summary: TrackerSummary): TrackerDetail {
   };
 }
 
+function trackerDetailQueryKey(serverId: string, projectId: string, trackerId: string) {
+  return [...trackerQueryBaseKey, serverId, projectId, trackerId, "detail"] as const;
+}
+
 export function TrackerDetailSheet({
   serverId,
   projectId,
@@ -80,7 +83,7 @@ export function TrackerDetailSheet({
   }
   return (
     <OpenTrackerDetailSheet
-      key={trackerId}
+      key={`${serverId}:${projectId}:${trackerId}`}
       serverId={serverId}
       projectId={projectId}
       trackerId={trackerId}
@@ -107,40 +110,57 @@ function OpenTrackerDetailSheet({
   onMutated?: (tracker: TrackerSummary) => void;
 }): ReactElement {
   const client = useHostRuntimeClient(serverId);
-  const [state, setState] = useState<DetailState>(() =>
-    initialSummary
-      ? { status: "loaded", tracker: placeholderDetailFromSummary(initialSummary) }
-      : { status: "idle" },
-  );
+  const queryClient = useQueryClient();
   const [noteBody, setNoteBody] = useState("");
+  const noteDraftsRef = useRef<Record<string, string>>({});
   const noteInputRef = useRef<EditingTextInputHandle | null>(null);
   // The root tracker is history[0]; opening a child pushes its id, Back pops.
   // The sheet always shows history[history.length - 1].
   const [history, setHistory] = useState<string[]>([trackerId]);
   const activeTrackerId = history[history.length - 1] ?? trackerId;
   const mutations = useTrackerMutations({ serverId, projectId });
-
-  const load = useCallback(async (): Promise<void> => {
-    if (!client) {
-      setState({ status: "error", error: "Host disconnected" });
-      return;
-    }
-    // Only drop to the spinner state when there's nothing on screen yet —
-    // once something is loaded (the seeded placeholder, a previous fetch, or
-    // a sibling from history), a refresh happens behind it instead of
-    // flashing a blank spinner over content the user can already see.
-    setState((current) => (current.status === "loaded" ? current : { status: "loading" }));
+  const [actionState, setActionState] = useState<ActionState>({ status: "idle" });
+  const actionPending = useRef(false);
+  const runAction = useCallback(async (operation: () => Promise<void>): Promise<void> => {
+    if (actionPending.current) return;
+    actionPending.current = true;
+    setActionState({ status: "pending" });
     try {
-      const tracker = await client.trackerShow({ projectId, trackerId: activeTrackerId });
-      setState({ status: "loaded", tracker });
+      await operation();
+      setActionState({ status: "idle" });
     } catch (error) {
-      setState({ status: "error", error: toErrorMessage(error) });
+      setActionState({ status: "error", message: toErrorMessage(error) });
+    } finally {
+      actionPending.current = false;
     }
-  }, [activeTrackerId, client, projectId]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  }, []);
+  const detail = useFetchQuery({
+    dataShape: "value",
+    staleTimeMs: 0,
+    enabled: client !== null,
+    queryKey: trackerDetailQueryKey(serverId, projectId, activeTrackerId),
+    queryFn: async () => {
+      if (!client) throw new Error("Host disconnected");
+      return client.trackerShow({ projectId, trackerId: activeTrackerId });
+    },
+    retry: false,
+  });
+  let state: DetailState;
+  if (!client) state = { status: "error", error: "Host disconnected" };
+  else if (detail.data) {
+    state = {
+      status: "loaded",
+      tracker: detail.data,
+      ...(detail.isError ? { refreshError: toErrorMessage(detail.error) } : {}),
+    };
+  } else if (detail.isError) state = { status: "error", error: toErrorMessage(detail.error) };
+  else if (initialSummary?.id === activeTrackerId) {
+    state = { status: "loaded", tracker: placeholderDetailFromSummary(initialSummary) };
+  } else state = { status: "loading" };
+  const { refetch } = detail;
+  const load = useCallback(async (): Promise<void> => {
+    await refetch();
+  }, [refetch]);
 
   const handleStart = useCallback(async (): Promise<void> => {
     const summary = await mutations.updateTracker({
@@ -174,21 +194,61 @@ function OpenTrackerDetailSheet({
     if (!body) {
       return;
     }
-    await mutations.addNote({ trackerId: activeTrackerId, body });
+    const committedNote = await mutations.addNote({ trackerId: activeTrackerId, body });
+    queryClient.setQueryData<TrackerDetail | undefined>(
+      trackerDetailQueryKey(serverId, projectId, activeTrackerId),
+      (current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          notes: [...current.notes.filter((note) => note.id !== committedNote.id), committedNote],
+        };
+      },
+    );
+    noteDraftsRef.current[activeTrackerId] = "";
     setNoteBody("");
     noteInputRef.current?.replaceText("");
     await load();
-  }, [activeTrackerId, load, mutations, noteBody]);
+  }, [activeTrackerId, load, mutations, noteBody, projectId, queryClient, serverId]);
 
-  const handleOpenChild = useCallback((childId: string) => {
-    setHistory((current) => [...current, childId]);
-  }, []);
+  const setCurrentNoteDraft = useCallback(
+    (value: string) => {
+      noteDraftsRef.current[activeTrackerId] = value;
+      setNoteBody(value);
+    },
+    [activeTrackerId],
+  );
+
+  const handleOpenChild = useCallback(
+    (childId: string) => {
+      if (actionPending.current) return;
+      noteDraftsRef.current[activeTrackerId] = noteBody;
+      setActionState({ status: "idle" });
+      const nextDraft = noteDraftsRef.current[childId] ?? "";
+      setNoteBody(nextDraft);
+      noteInputRef.current?.replaceText(nextDraft);
+      setHistory((current) => [...current, childId]);
+    },
+    [activeTrackerId, noteBody],
+  );
 
   const handleBack = useCallback(() => {
+    if (actionPending.current) return;
+    noteDraftsRef.current[activeTrackerId] = noteBody;
+    setActionState({ status: "idle" });
+    const previousId = history[history.length - 2] ?? trackerId;
+    const previousDraft = noteDraftsRef.current[previousId] ?? "";
+    setNoteBody(previousDraft);
+    noteInputRef.current?.replaceText(previousDraft);
     setHistory((current) => (current.length > 1 ? current.slice(0, -1) : current));
-  }, []);
+  }, [activeTrackerId, history, noteBody, trackerId]);
 
   const canGoBack = history.length > 1;
+  const start = useCallback(() => void runAction(handleStart), [runAction, handleStart]);
+  const close = useCallback(() => void runAction(handleClose), [runAction, handleClose]);
+  const reopen = useCallback(() => void runAction(handleReopen), [runAction, handleReopen]);
+  const cancel = useCallback(() => void runAction(handleCancel), [runAction, handleCancel]);
+  const addNote = useCallback(() => void runAction(handleAddNote), [runAction, handleAddNote]);
 
   const headerTitle = state.status === "loaded" ? state.tracker.id : "Loading…";
   const headerStatus = state.status === "loaded" ? state.tracker.status : null;
@@ -200,8 +260,11 @@ function OpenTrackerDetailSheet({
     [headerStatus, headerTitle],
   );
   const footer = useMemo(
-    () => (canGoBack ? <TrackerDetailBackButton onBack={handleBack} /> : null),
-    [canGoBack, handleBack],
+    () =>
+      canGoBack ? (
+        <TrackerDetailBackButton onBack={handleBack} disabled={actionState.status === "pending"} />
+      ) : null,
+    [canGoBack, handleBack, actionState.status],
   );
 
   return (
@@ -215,7 +278,12 @@ function OpenTrackerDetailSheet({
       desktopMaxWidth={640}
       testID="tracker-detail-sheet"
     >
-      {state.status === "loading" || state.status === "idle" ? (
+      {actionState.status === "error" ? (
+        <Text accessibilityRole="alert" style={styles.message} testID="tracker-detail-action-error">
+          {actionState.message}
+        </Text>
+      ) : null}
+      {state.status === "loading" ? (
         <View style={styles.centered}>
           <LoadingSpinner size="large" color={styles.spinner.color} />
         </View>
@@ -228,19 +296,31 @@ function OpenTrackerDetailSheet({
           </Button>
         </View>
       ) : null}
+      {state.status === "loaded" && state.refreshError ? (
+        <View>
+          <Text accessibilityRole="alert" style={styles.message}>
+            {state.refreshError}
+          </Text>
+          <Button variant="ghost" onPress={load} testID="tracker-detail-retry">
+            Try again
+          </Button>
+        </View>
+      ) : null}
       {state.status === "loaded" ? (
         <TrackerDetailContent
           tracker={state.tracker}
           noteBody={noteBody}
           noteInputRef={noteInputRef}
-          onChangeNoteBody={setNoteBody}
-          onStart={handleStart}
-          onClose={handleClose}
-          onReopen={handleReopen}
-          onCancel={handleCancel}
+          onChangeNoteBody={setCurrentNoteDraft}
+          onStart={start}
+          onClose={close}
+          onReopen={reopen}
+          onCancel={cancel}
           onOpenChild={handleOpenChild}
-          onAddNote={handleAddNote}
+          onAddNote={addNote}
           isAddingNote={mutations.isAddingNote}
+          isPending={actionState.status === "pending"}
+          isDetailLoaded={detail.data !== undefined}
         />
       ) : null}
     </AdaptiveModalSheet>
@@ -259,6 +339,8 @@ function TrackerDetailContent({
   onOpenChild,
   onAddNote,
   isAddingNote,
+  isPending,
+  isDetailLoaded,
 }: {
   tracker: TrackerDetail;
   noteBody: string;
@@ -271,9 +353,12 @@ function TrackerDetailContent({
   onOpenChild: (childId: string) => void;
   onAddNote: () => void;
   isAddingNote: boolean;
+  isPending: boolean;
+  isDetailLoaded: boolean;
 }): ReactElement {
   const isOpenOrInProgress = tracker.status === "open" || tracker.status === "in_progress";
   const hasNoteBody = noteBody.trim().length > 0;
+  const actionsDisabled = isPending || !isDetailLoaded;
   const notes = useMemo(
     () => [...tracker.notes].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     [tracker.notes],
@@ -297,12 +382,14 @@ function TrackerDetailContent({
         {trackerStatusLabel(tracker.status)} · {tracker.type} · {tracker.priority}
         {tracker.claimedBy ? ` · claimed by ${tracker.claimedBy}` : ""}
       </Text>
-      <Text style={styles.dates}>
-        {`Created ${formatTimeAgo(new Date(tracker.createdAt))}`}
-        {showClosedAt && tracker.closedAt
-          ? ` · Closed ${formatTimeAgo(new Date(tracker.closedAt))}`
-          : ""}
-      </Text>
+      {tracker.createdAt ? (
+        <Text style={styles.dates}>
+          {`Created ${formatTimeAgo(new Date(tracker.createdAt))}`}
+          {showClosedAt && tracker.closedAt
+            ? ` · Closed ${formatTimeAgo(new Date(tracker.closedAt))}`
+            : ""}
+        </Text>
+      ) : null}
 
       {tracker.description ? <Text style={styles.description}>{tracker.description}</Text> : null}
 
@@ -313,13 +400,19 @@ function TrackerDetailContent({
         onClose={onClose}
         onReopen={onReopen}
         onCancel={onCancel}
+        isPending={actionsDisabled}
       />
 
       {tracker.children.length > 0 ? (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Children</Text>
           {tracker.children.map((child) => (
-            <ChildTrackerLink key={child.id} child={child} onPress={onOpenChild} />
+            <ChildTrackerLink
+              key={child.id}
+              child={child}
+              onPress={onOpenChild}
+              disabled={actionsDisabled}
+            />
           ))}
         </View>
       ) : null}
@@ -349,6 +442,7 @@ function TrackerDetailContent({
             ref={noteInputRef}
             initialValue={noteBody}
             onChangeText={onChangeNoteBody}
+            editable={!actionsDisabled}
             placeholder="Add a note"
             multiline
             testID="tracker-detail-note-input"
@@ -358,7 +452,7 @@ function TrackerDetailContent({
             style={[styles.noteButtonSize, hasNoteBody && styles.addNoteButton]}
             size="sm"
             onPress={onAddNote}
-            disabled={!hasNoteBody || isAddingNote}
+            disabled={!hasNoteBody || actionsDisabled}
             loading={isAddingNote}
             testID="tracker-detail-add-note"
           >
@@ -370,7 +464,13 @@ function TrackerDetailContent({
   );
 }
 
-function TrackerDetailBackButton({ onBack }: { onBack: () => void }): ReactElement {
+function TrackerDetailBackButton({
+  onBack,
+  disabled,
+}: {
+  onBack: () => void;
+  disabled: boolean;
+}): ReactElement {
   return (
     <View style={styles.backRow}>
       <Button
@@ -378,6 +478,7 @@ function TrackerDetailBackButton({ onBack }: { onBack: () => void }): ReactEleme
         size="sm"
         style={styles.backButton}
         onPress={onBack}
+        disabled={disabled}
         testID="tracker-detail-back"
       >
         Back
@@ -393,6 +494,7 @@ function TrackerDetailActions({
   onClose,
   onReopen,
   onCancel,
+  isPending,
 }: {
   isOpenOrInProgress: boolean;
   isOpen: boolean;
@@ -400,6 +502,7 @@ function TrackerDetailActions({
   onClose: () => void;
   onReopen: () => void;
   onCancel: () => void;
+  isPending: boolean;
 }): ReactElement {
   return (
     <View style={styles.actionsRow}>
@@ -410,6 +513,8 @@ function TrackerDetailActions({
           textStyle={styles.actionInProgress}
           hoverStyle={styles.actionInProgressHover}
           onPress={onStart}
+          disabled={isPending}
+          loading={isPending}
           testID="tracker-detail-start"
         >
           Start
@@ -422,6 +527,7 @@ function TrackerDetailActions({
           textStyle={styles.actionClosed}
           hoverStyle={styles.actionClosedHover}
           onPress={onClose}
+          disabled={isPending}
           testID="tracker-detail-close"
         >
           Close
@@ -434,6 +540,7 @@ function TrackerDetailActions({
           textStyle={styles.actionOpen}
           hoverStyle={styles.actionOpenHover}
           onPress={onReopen}
+          disabled={isPending}
           testID="tracker-detail-reopen"
         >
           Reopen
@@ -446,6 +553,7 @@ function TrackerDetailActions({
           textStyle={styles.actionCancel}
           hoverStyle={styles.actionCancelHover}
           onPress={onCancel}
+          disabled={isPending}
           testID="tracker-detail-cancel"
         >
           Cancel
@@ -458,14 +566,17 @@ function TrackerDetailActions({
 function ChildTrackerLink({
   child,
   onPress,
+  disabled,
 }: {
   child: TrackerSummary;
   onPress: (childId: string) => void;
+  disabled: boolean;
 }): ReactElement {
   const [hovered, setHovered] = useState(false);
   const handlePress = useCallback(() => onPress(child.id), [child.id, onPress]);
   const handleHoverIn = useCallback(() => setHovered(true), []);
   const handleHoverOut = useCallback(() => setHovered(false), []);
+  const accessibilityState = useMemo(() => ({ disabled }), [disabled]);
 
   return (
     <Pressable
@@ -474,6 +585,8 @@ function ChildTrackerLink({
       onHoverIn={handleHoverIn}
       onHoverOut={handleHoverOut}
       onPress={handlePress}
+      disabled={disabled}
+      accessibilityState={accessibilityState}
     >
       <View style={styles.childLinkRow}>
         <View style={styles.childLinkIcon}>

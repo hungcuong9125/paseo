@@ -86,6 +86,7 @@ const {
       isLoading: false,
       projectErrors: [],
       patchTracker: vi.fn(),
+      insertTracker: vi.fn(),
       removeTrackers: vi.fn(),
       refetch: vi.fn(),
     } as UseTrackerProjectDataResult,
@@ -111,7 +112,7 @@ const {
     current: null as {
       trackers: readonly unknown[];
       laneTotals?: Partial<Record<string, number | null>>;
-      onTransition: (trackerId: string, transition: unknown) => Promise<void>;
+      onTransition: (tracker: AggregatedTracker, transition: unknown) => Promise<void>;
     } | null,
   },
   lastListTableProps: {
@@ -334,7 +335,7 @@ vi.mock("@/components/tracker/tracker-kanban-board", () => ({
   TrackerKanbanBoard: (props: {
     trackers: readonly unknown[];
     laneTotals?: Partial<Record<string, number | null>>;
-    onTransition: (trackerId: string, transition: unknown) => Promise<void>;
+    onTransition: (tracker: AggregatedTracker, transition: unknown) => Promise<void>;
   }) => {
     lastKanbanBoardProps.current = props;
     return React.createElement(
@@ -461,7 +462,30 @@ vi.mock("@/components/ui/segmented-control", () => ({
     ),
 }));
 
-import { TrackerScreen } from "./tracker-screen";
+import { buildAitInitCommand, TrackerScreen } from "./tracker-screen";
+
+describe("buildAitInitCommand", () => {
+  it("encodes Windows paths before passing them to PowerShell", () => {
+    const command = buildAitInitCommand("C:\\work\\O'\u2019Brien");
+    expect(command).toContain("powershell.exe -NoProfile -Command");
+    expect(command).toContain("Set-Location -ErrorAction Stop -LiteralPath");
+    expect(command).toContain("67,58,92,119,111,114,107,92,79,39,8217,66,114,105,101,110");
+    expect(command).not.toContain("O'\u2019Brien");
+  });
+
+  it("uses POSIX quoting for Unix project paths", () => {
+    expect(buildAitInitCommand("/work/O'Brien")).toBe("cd '/work/O'\\''Brien' && ait init");
+  });
+
+  it("recognizes Windows UNC and drive-relative paths", () => {
+    expect(buildAitInitCommand("\\\\server\\share")).toContain("powershell.exe");
+    expect(buildAitInitCommand("C:relative")).toContain("powershell.exe");
+  });
+
+  it("keeps double-slash paths on the POSIX path", () => {
+    expect(buildAitInitCommand("//server/share")).toContain("cd '//server/share'");
+  });
+});
 
 function hostEntry(overrides: Partial<ProjectHostEntry> = {}): ProjectHostEntry {
   return {
@@ -528,6 +552,7 @@ function setProjectDataState(overrides: Partial<UseTrackerProjectDataResult>) {
     isLoading: false,
     projectErrors: [],
     patchTracker: vi.fn(),
+    insertTracker: vi.fn(),
     removeTrackers: vi.fn(),
     refetch: vi.fn(),
     ...overrides,
@@ -1162,7 +1187,7 @@ describe("TrackerScreen mutation patching", () => {
     const onTransition = lastKanbanBoardProps.current?.onTransition;
     if (!onTransition) throw new Error("Expected TrackerKanbanBoard to receive onTransition");
     await act(async () => {
-      await onTransition("task-1", { kind: "close" });
+      await onTransition(taskA, { kind: "close" });
     });
 
     expect(statsState.current.refetch).toHaveBeenCalled();
@@ -1198,7 +1223,7 @@ describe("TrackerScreen mutation patching", () => {
     const onTransition = lastKanbanBoardProps.current?.onTransition;
     if (!onTransition) throw new Error("Expected TrackerKanbanBoard to receive onTransition");
     await act(async () => {
-      await onTransition("task-1", { kind: "close" });
+      await onTransition(taskA, { kind: "close" });
     });
 
     expect(sessionClient.trackerClose).toHaveBeenCalledWith({
@@ -1227,7 +1252,7 @@ describe("TrackerScreen mutation patching", () => {
       onCreated(created, createdProject);
     });
 
-    expect(projectDataState.current.patchTracker).toHaveBeenCalledWith(
+    expect(projectDataState.current.insertTracker).toHaveBeenCalledWith(
       expect.objectContaining({ id: "task-2", projectId: "project-a" }),
     );
   });
@@ -1250,6 +1275,30 @@ describe("TrackerScreen mutation patching", () => {
 
     expect(projectDataState.current.patchTracker).toHaveBeenCalledWith(
       expect.objectContaining({ id: "task-1", status: "in_progress" }),
+    );
+  });
+
+  it("retains project identity when a detail mutation arrives after its row leaves the loaded page", () => {
+    render();
+    switchToList();
+    const onOpenTracker = lastListTableProps.current?.onOpenTracker;
+    if (!onOpenTracker) throw new Error("Expected TrackerTable to receive onOpenTracker");
+    act(() => onOpenTracker(taskA));
+
+    setProjectDataState({ trackers: [] });
+    render();
+    const onMutated = lastDetailSheetProps.current?.onMutated;
+    if (!onMutated) throw new Error("Expected TrackerDetailSheet to receive onMutated");
+    act(() => onMutated({ ...taskA, status: "in_progress" }));
+
+    expect(projectDataState.current.patchTracker).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "task-1",
+        status: "in_progress",
+        serverId: taskA.serverId,
+        projectId: taskA.projectId,
+        projectName: taskA.projectName,
+      }),
     );
   });
 
@@ -1458,7 +1507,7 @@ describe("TrackerScreen mutation patching", () => {
       '[data-testid="trackers-project-errors-copy-host-a:prj-b"]',
     );
     expect(copyButton).not.toBeNull();
-    expect(copyButton?.textContent).toContain('cd "/repo/prj-b" && ait init');
+    expect(copyButton?.textContent).toContain("cd '/repo/prj-b' && ait init");
   });
 
   it("a project with aitInitialized === true is not excluded from the fetch (pas-2KY5X.28)", () => {

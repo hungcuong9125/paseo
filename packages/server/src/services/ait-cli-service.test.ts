@@ -252,6 +252,37 @@ esac
     expect(shown.notes).toEqual([note]);
   });
 
+  it("accepts the committed note without needing another CLI read", async () => {
+    const binDir = mkdtempSync(join(tmpdir(), "ait-note-response-"));
+    const fakeAit = join(binDir, "ait");
+    const committed = {
+      id: "note-1",
+      issue_id: "task-1",
+      body: "Committed",
+      created_at: "2026-10-09T00:00:00Z",
+    };
+    writeFileSync(
+      fakeAit,
+      `#!/bin/sh\ncase "$1 $2" in\n  "note add") printf '%s\\n' '${JSON.stringify(committed)}';;\n  *) echo 'read unavailable' >&2; exit 1;;\nesac\n`,
+    );
+    chmodSync(fakeAit, 0o755);
+    const originalPath = process.env.PATH;
+    process.env.PATH = binDir;
+    try {
+      const isolated = createAitService();
+      await expect(
+        isolated.addNote({ cwd, trackerId: committed.issue_id, body: committed.body }),
+      ).resolves.toEqual({
+        id: committed.id,
+        body: committed.body,
+        createdAt: committed.created_at,
+      });
+    } finally {
+      process.env.PATH = originalPath;
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects with not_found for a missing tracker id", async () => {
     await service.initTracker({ cwd });
     await expect(service.showTracker({ cwd, trackerId: "nope-00000" })).rejects.toMatchObject({

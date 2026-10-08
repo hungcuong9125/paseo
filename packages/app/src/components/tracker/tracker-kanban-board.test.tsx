@@ -4,7 +4,7 @@
 import React from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
+import { trackerKey, type AggregatedTracker } from "@/tracker/aggregated-trackers";
 interface MockSegmentOptionProps<T extends string> {
   option: { value: T; label: string; testID?: string };
   selected: boolean;
@@ -96,14 +96,14 @@ vi.mock("@/components/tracker/tracker-kanban-column", () => {
             React.createElement(
               "span",
               { "data-testid": `tracker-kanban-card-${card.tracker.id}-move-pending` },
-              props.isPending(card.tracker.id) ? "pending" : "idle",
+              props.isPending(card.tracker) ? "pending" : "idle",
             ),
             React.createElement(
               "button",
               {
                 type: "button",
                 "data-testid": `tracker-kanban-card-${card.tracker.id}-move-close`,
-                onClick: () => props.onTransition(card.tracker.id, { kind: "close" }),
+                onClick: () => props.onTransition(card.tracker, { kind: "close" }),
               },
               "close",
             ),
@@ -166,19 +166,19 @@ vi.mock("@/constants/layout", () => ({
 }));
 
 interface MockCardMenuCloseButtonProps {
-  trackerId: string;
+  tracker: AggregatedTracker;
   testID?: string;
-  onTransition: (trackerId: string, transition: { kind: "close" }) => void;
+  onTransition: (tracker: AggregatedTracker, transition: { kind: "close" }) => void;
 }
 
 function MockCardMenuCloseButton({
-  trackerId,
+  tracker: cardTracker,
   testID,
   onTransition,
 }: MockCardMenuCloseButtonProps) {
   const handleClick = React.useCallback(
-    () => onTransition(trackerId, { kind: "close" }),
-    [onTransition, trackerId],
+    () => onTransition(cardTracker, { kind: "close" }),
+    [onTransition, cardTracker],
   );
   return (
     <button type="button" data-testid={testID} onClick={handleClick}>
@@ -190,21 +190,21 @@ function MockCardMenuCloseButton({
 vi.mock("@/components/tracker/tracker-kanban-move-menu", () => ({
   TrackerKanbanCardMenu: ({
     children,
-    trackerId,
+    tracker: cardTracker,
     isPending,
     onTransition,
     testID,
   }: {
     children: React.ReactNode;
-    trackerId: string;
+    tracker: AggregatedTracker;
     isPending: boolean;
-    onTransition: (trackerId: string, transition: { kind: "close" }) => void;
+    onTransition: (tracker: AggregatedTracker, transition: { kind: "close" }) => void;
     testID?: string;
   }) => (
     <div data-testid={testID}>
       <span data-testid={`${testID}-pending`}>{isPending ? "pending" : "idle"}</span>
       <MockCardMenuCloseButton
-        trackerId={trackerId}
+        tracker={cardTracker}
         testID={`${testID}-close`}
         onTransition={onTransition}
       />
@@ -213,23 +213,29 @@ vi.mock("@/components/tracker/tracker-kanban-move-menu", () => ({
   ),
 }));
 
-function getProjectLabelForProjectA(summary: TrackerSummary): string | null {
+function getProjectLabelForProjectA(summary: AggregatedTracker): string | null {
   return summary.id.startsWith("proj-a") ? "Project A" : null;
 }
 
-function tracker(overrides: Partial<TrackerSummary> & Pick<TrackerSummary, "id">): TrackerSummary {
+function tracker(
+  overrides: Partial<AggregatedTracker> & Pick<AggregatedTracker, "id">,
+): AggregatedTracker {
   return {
+    serverId: "host-a",
+    serverName: "Host A",
+    projectId: "prj-a",
+    projectName: "Project A",
     title: overrides.id,
     type: "task",
     status: "open",
     priority: "P2",
     parentId: null,
     ...overrides,
-  } as TrackerSummary;
+  };
 }
 
 function renderBoard(
-  trackers: readonly TrackerSummary[],
+  trackers: readonly AggregatedTracker[],
   overrides: Partial<TrackerKanbanBoardProps> = {},
 ) {
   return render(
@@ -273,7 +279,7 @@ describe("TrackerKanbanBoard — desktop layout", () => {
     ];
 
     renderBoard(trackers, {
-      readyIds: new Set(["unblocked"]),
+      readyTrackerKeys: new Set([trackerKey(tracker({ id: "unblocked" }))]),
     });
 
     const openColumn = screen.getByTestId("tracker-kanban-column-open");
@@ -281,7 +287,7 @@ describe("TrackerKanbanBoard — desktop layout", () => {
     expect(openColumn.textContent).toContain("Blocked one");
   });
 
-  it("degrades to everything-open-stays-Open when readyIds is omitted", () => {
+  it("degrades to everything-open-stays-Open when readyTrackerKeys is omitted", () => {
     const trackers = [tracker({ id: "a", status: "open", title: "Open one" })];
 
     renderBoard(trackers);
@@ -321,7 +327,10 @@ describe("TrackerKanbanBoard — desktop layout", () => {
       fireEvent.click(screen.getByTestId("tracker-kanban-card-a-move-close"));
     });
     expect(pendingLabel.textContent).toBe("pending");
-    expect(onTransition).toHaveBeenCalledWith("a", { kind: "close" });
+    expect(onTransition).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "a", serverId: "host-a", projectId: "prj-a" }),
+      { kind: "close" },
+    );
 
     await act(async () => {
       resolveTransition();

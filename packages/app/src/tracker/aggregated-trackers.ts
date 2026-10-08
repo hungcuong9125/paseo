@@ -113,7 +113,7 @@ export async function fetchTrackerReadyIds(
       try {
         const result = await client.trackerReady({ projectId: project.projectId });
         for (const id of result.readyIds) {
-          readyIds.add(id);
+          readyIds.add(trackerKey({ ...project, id }));
         }
       } catch {
         isComplete = false;
@@ -159,6 +159,23 @@ export interface TrackerPageResult {
 
 function tagTracker(tracker: TrackerSummary, project: TrackerProjectInput): AggregatedTracker {
   return { ...tracker, ...project };
+}
+
+export function trackerKey(
+  tracker: Pick<AggregatedTracker, "serverId" | "projectId" | "id">,
+): string {
+  return `${encodeURIComponent(tracker.serverId)}:${encodeURIComponent(tracker.projectId)}:${encodeURIComponent(tracker.id)}`;
+}
+
+export function trackerParentKey(
+  tracker: Pick<AggregatedTracker, "serverId" | "projectId" | "parentId">,
+): string | null {
+  if (tracker.parentId === null) return null;
+  return trackerKey({
+    serverId: tracker.serverId,
+    projectId: tracker.projectId,
+    id: tracker.parentId,
+  });
 }
 
 /**
@@ -210,7 +227,7 @@ export async function searchTrackerPage(
   const snapshot = input.runtime.getSnapshot(input.project.serverId);
   const client = input.runtime.getClient(input.project.serverId);
   if (!client || snapshot?.connectionStatus !== "online") {
-    return { trackers: [], pageInfo: { hasMore: false, nextCursor: null } };
+    throw new TrackerRpcError("unknown", "Host disconnected. Reconnect and retry the search.");
   }
   const result = await client.trackerSearch({
     projectId: input.project.projectId,

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   searchTrackerPage,
+  toTrackerProjectError,
+  type TrackerProjectError,
   type AggregatedTracker,
   type TrackerPageInfo,
   type TrackerProjectInput,
@@ -19,6 +21,8 @@ export interface UseTrackerSearchOptions {
 }
 
 export interface UseTrackerSearchResult {
+  projectErrors: TrackerProjectError[];
+  retry: () => void;
   results: AggregatedTracker[];
   hasMore: boolean;
   isLoading: boolean;
@@ -79,19 +83,23 @@ export function useTrackerSearch(options: UseTrackerSearchOptions): UseTrackerSe
   const [cursors, setCursors] = useState<Record<string, ProjectCursorState>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [projectErrors, setProjectErrors] = useState<TrackerProjectError[]>([]);
   const loadSeqRef = useRef(0);
 
   const runSearch = useCallback(async () => {
     const seq = ++loadSeqRef.current;
+    setIsLoadingMore(false);
+    setResults([]);
+    setCursors({});
+    setProjectErrors([]);
     if (!options.enabled || options.query.length === 0 || relevantProjects.length === 0) {
-      setResults([]);
-      setCursors({});
       setIsLoading(false);
       return;
     }
     setIsLoading(true);
     const merged: AggregatedTracker[] = [];
     const nextCursors: Record<string, ProjectCursorState> = {};
+    const errors: TrackerProjectError[] = [];
     await Promise.all(
       relevantProjects.map(async (project) => {
         try {
@@ -109,9 +117,8 @@ export function useTrackerSearch(options: UseTrackerSearchOptions): UseTrackerSe
             cursor: page.pageInfo.nextCursor,
             hasMore: page.pageInfo.hasMore,
           };
-        } catch {
-          // Silently skip, same tolerance as fetchTrackerReadyIds — that
-          // project just contributes no results instead of failing the search.
+        } catch (error) {
+          errors.push(toTrackerProjectError(project, error));
         }
       }),
     );
@@ -121,6 +128,7 @@ export function useTrackerSearch(options: UseTrackerSearchOptions): UseTrackerSe
     sortMerged(merged);
     setResults(merged);
     setCursors(nextCursors);
+    setProjectErrors(errors);
     setIsLoading(false);
     // scopeKey covers every option this closure reads.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -136,7 +144,7 @@ export function useTrackerSearch(options: UseTrackerSearchOptions): UseTrackerSe
   );
 
   const loadMore = useCallback(() => {
-    if (isLoadingMore || !hasMore) {
+    if (isLoading || isLoadingMore || !hasMore) {
       return;
     }
     const pending = Object.entries(cursors).filter(
@@ -153,6 +161,7 @@ export function useTrackerSearch(options: UseTrackerSearchOptions): UseTrackerSe
         pageInfo: TrackerPageInfo;
         key: string;
       }> = [];
+      const errors: TrackerProjectError[] = [];
       await Promise.all(
         pending.map(async ([key, cursorState]) => {
           const project = findProjectByKey(relevantProjects, key);
@@ -168,21 +177,24 @@ export function useTrackerSearch(options: UseTrackerSearchOptions): UseTrackerSe
               cursor: cursorState.cursor ?? undefined,
             });
             fetched.push({ trackers: page.trackers, pageInfo: page.pageInfo, key });
-          } catch {
-            // Same silent per-project tolerance as the initial search.
-            // Stop retrying this project's cursor on subsequent "Load more"
-            // presses, while allowing the other projects' pages to merge.
-            fetched.push({
-              trackers: [],
-              pageInfo: { nextCursor: null, hasMore: false },
-              key,
-            });
+          } catch (error) {
+            errors.push(toTrackerProjectError(project, error));
           }
         }),
       );
       if (seq !== loadSeqRef.current) {
         return;
       }
+      const settledKeys = new Set<string>();
+      for (const page of fetched) settledKeys.add(page.key);
+      for (const error of errors) settledKeys.add(`${error.serverId}:${error.projectId}`);
+      setProjectErrors((current) => {
+        const retained: TrackerProjectError[] = [];
+        for (const error of current) {
+          if (!settledKeys.has(`${error.serverId}:${error.projectId}`)) retained.push(error);
+        }
+        return [...retained, ...errors];
+      });
       setResults((current) => {
         const merged = [...current];
         for (const page of fetched) {
@@ -203,7 +215,19 @@ export function useTrackerSearch(options: UseTrackerSearchOptions): UseTrackerSe
       });
       setIsLoadingMore(false);
     })();
-  }, [cursors, isLoadingMore, hasMore, relevantProjects, runtime, options.query, options.pageSize]);
+  }, [
+    cursors,
+    isLoading,
+    isLoadingMore,
+    hasMore,
+    relevantProjects,
+    runtime,
+    options.query,
+    options.pageSize,
+  ]);
 
-  return { results, hasMore, isLoading, isLoadingMore, loadMore };
+  const retry = useCallback(() => {
+    void runSearch();
+  }, [runSearch]);
+  return { results, hasMore, isLoading, isLoadingMore, loadMore, projectErrors, retry };
 }

@@ -92,8 +92,16 @@ export class FileMailboxStore implements MailboxStore {
   }
 
   async remove(agentId: string): Promise<void> {
-    await fs.rm(this.currentPath(agentId), { force: true });
-    await syncDirectory(this.directory);
+    try {
+      await fs.unlink(this.currentPath(agentId));
+    } catch (error) {
+      if (!isMissingFileError(error)) throw error;
+    }
+    try {
+      await syncDirectory(this.directory);
+    } catch (error) {
+      if (!isMissingFileError(error)) throw error;
+    }
   }
 
   async listAgentIds(): Promise<string[]> {

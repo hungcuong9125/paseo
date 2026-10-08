@@ -486,7 +486,10 @@ describe("TrackerTable mutation patching", () => {
 
     expect(confirmDialogMock).toHaveBeenCalled();
     expect(mutationMocks.deleteTracker).toHaveBeenCalledWith({ trackerId: "t-1", cascade: false });
-    expect(onTrackersRemoved).toHaveBeenCalledWith(["t-1"]);
+    expect(onTrackersRemoved).toHaveBeenCalledWith(
+      ["t-1"],
+      expect.objectContaining({ serverId: "host-a", projectId: "project-a", id: "t-1" }),
+    );
   });
 
   it("marks the delete action disabled when tracker.childCount is undefined and enabled when defined", async () => {

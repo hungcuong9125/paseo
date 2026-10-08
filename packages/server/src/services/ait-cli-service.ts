@@ -207,17 +207,6 @@ const AitShowResponseSchema = z.object({
   notes: z.array(AitNoteSchema),
 });
 
-const AitNoteAddResponseSchema = z.object({
-  issue_id: z.string(),
-  note_id: z.string(),
-  ok: z.boolean(),
-});
-
-const AitNoteListResponseSchema = z.object({
-  issue_id: z.string(),
-  notes: z.array(AitNoteSchema),
-});
-
 const AitInitResponseSchema = z.object({
   created: z.boolean(),
 });
@@ -385,11 +374,6 @@ export function createAitService(): AitService {
     }
   }
 
-  async function getTrackerSummary(cwd: string, trackerId: string): Promise<TrackerSummary> {
-    const raw = await run(["show", trackerId], cwd, AitShowResponseSchema);
-    return toTrackerSummary(raw.issue);
-  }
-
   function paginationArgs(limit: number | undefined, offset: number | undefined): string[] {
     if (limit === undefined) {
       return [];
@@ -485,6 +469,7 @@ export function createAitService(): AitService {
   async function createTracker({ cwd, input }: CreateTrackerOptions): Promise<TrackerSummary> {
     const args = [
       "create",
+      "--long",
       "--title",
       input.title,
       ...trackerTypeArg(input.trackerType),
@@ -492,8 +477,7 @@ export function createAitService(): AitService {
       ...(input.parentId ? ["--parent", input.parentId] : []),
       ...(input.description ? ["--description", input.description] : []),
     ];
-    const ref = await run(args, cwd, AitIssueRefSchema);
-    return getTrackerSummary(cwd, ref.id);
+    return toTrackerSummary(await run(args, cwd, AitIssueLongSchema));
   }
 
   async function updateTracker({
@@ -504,13 +488,13 @@ export function createAitService(): AitService {
     const args = [
       "update",
       trackerId,
+      "--long",
       ...(input.title ? ["--title", input.title] : []),
       ...(input.status ? ["--status", input.status] : []),
       ...priorityArg(input.priority),
       ...(input.description !== undefined ? ["--description", input.description] : []),
     ];
-    await run(args, cwd, AitIssueRefSchema);
-    return getTrackerSummary(cwd, trackerId);
+    return toTrackerSummary(await run(args, cwd, AitIssueLongSchema));
   }
 
   async function closeTracker({
@@ -518,14 +502,12 @@ export function createAitService(): AitService {
     trackerId,
     note,
   }: CloseTrackerOptions): Promise<TrackerSummary> {
-    const args = ["close", trackerId, ...(note ? ["--note", note] : [])];
-    await run(args, cwd, AitIssueRefSchema);
-    return getTrackerSummary(cwd, trackerId);
+    const args = ["close", trackerId, "--long", ...(note ? ["--note", note] : [])];
+    return toTrackerSummary(await run(args, cwd, AitIssueLongSchema));
   }
 
   async function reopenTracker({ cwd, trackerId }: ReopenTrackerOptions): Promise<TrackerSummary> {
-    await run(["reopen", trackerId], cwd, AitIssueRefSchema);
-    return getTrackerSummary(cwd, trackerId);
+    return toTrackerSummary(await run(["reopen", trackerId, "--long"], cwd, AitIssueLongSchema));
   }
 
   async function cancelTracker({
@@ -533,9 +515,8 @@ export function createAitService(): AitService {
     trackerId,
     reason,
   }: CancelTrackerOptions): Promise<TrackerSummary> {
-    const args = ["cancel", trackerId, ...(reason ? ["--reason", reason] : [])];
-    await run(args, cwd, AitIssueRefSchema);
-    return getTrackerSummary(cwd, trackerId);
+    const args = ["cancel", trackerId, "--long", ...(reason ? ["--reason", reason] : [])];
+    return toTrackerSummary(await run(args, cwd, AitIssueLongSchema));
   }
 
   async function deleteTracker({
@@ -549,13 +530,8 @@ export function createAitService(): AitService {
   }
 
   async function addNote({ cwd, trackerId, body }: AddTrackerNoteOptions): Promise<TrackerNote> {
-    const added = await run(["note", "add", trackerId, body], cwd, AitNoteAddResponseSchema);
-    const list = await run(["note", "list", trackerId], cwd, AitNoteListResponseSchema);
-    const match = list.notes.find((entry) => entry.id === added.note_id);
-    if (!match) {
-      throw new AitCliError("unknown", "Note was created but could not be read back");
-    }
-    return toTrackerNote(match);
+    const note = await run(["note", "add", trackerId, body], cwd, AitNoteSchema);
+    return toTrackerNote(note);
   }
 
   async function initTracker({

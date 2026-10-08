@@ -6,11 +6,12 @@ import type { TrackerStatus } from "@getpaseo/protocol/tracker/types";
 import { TrackerRow, type TrackerRowPending } from "@/components/tracker/tracker-row";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { useIsMobileBreakpoint } from "@/constants/layout";
-import type { AggregatedTracker } from "@/tracker/aggregated-trackers";
+import { trackerKey, type AggregatedTracker } from "@/tracker/aggregated-trackers";
 import type { TrackerHierarchy } from "@/tracker/tracker-hierarchy";
 import { useTrackerMutations } from "@/tracker/use-tracker-mutations";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { settingsStyles } from "@/styles/settings";
+import { toErrorMessage } from "@/utils/error-messages";
 
 export interface TrackerTableBaseProps {
   trackers: AggregatedTracker[];
@@ -28,7 +29,7 @@ export interface TrackerTableBaseProps {
    * caller's edit sheet. No mutation happens until that sheet submits. */
   onEditTracker?: (tracker: AggregatedTracker) => void;
   /** Called with the ids `ait` actually removed after a row delete succeeds. */
-  onTrackersRemoved?: (ids: string[]) => void;
+  onTrackersRemoved?: (ids: string[], project: AggregatedTracker) => void;
 }
 
 export type TrackerTableProps = TrackerTableBaseProps &
@@ -144,7 +145,7 @@ export function TrackerTable(props: TrackerTableProps): ReactElement {
             const hasChildren =
               tracker.childCount !== undefined
                 ? tracker.childCount > 0
-                : hierarchy.descendantStats(tracker.id).childCount > 0;
+                : hierarchy.descendantStats(trackerKey(tracker)).childCount > 0;
             return (
               <TrackerTableRow
                 key={`${tracker.serverId}:${tracker.projectId}:${tracker.id}`}
@@ -217,7 +218,7 @@ export function TrackerTable(props: TrackerTableProps): ReactElement {
                 const hasChildren =
                   tracker.childCount !== undefined
                     ? tracker.childCount > 0
-                    : hierarchy.descendantStats(tracker.id).childCount > 0;
+                    : hierarchy.descendantStats(trackerKey(tracker)).childCount > 0;
                 return (
                   <TrackerTableRow
                     key={`${tracker.serverId}:${tracker.projectId}:${tracker.id}`}
@@ -295,21 +296,23 @@ function TrackerTableRow({
   hasChildren: boolean;
   onTrackerPatched?: (tracker: AggregatedTracker) => void;
   onEdit?: (tracker: AggregatedTracker) => void;
-  onTrackersRemoved?: (ids: string[]) => void;
+  onTrackersRemoved?: (ids: string[], project: AggregatedTracker) => void;
 }): ReactElement {
   const mutations = useTrackerMutations({
     serverId: tracker.serverId,
     projectId: tracker.projectId,
   });
   const [pending, setPending] = useState<TrackerRowPending>(NO_PENDING);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const runAction = useCallback(
     async (key: keyof TrackerRowPending, action: () => Promise<unknown>): Promise<void> => {
       setPending((current) => ({ ...current, [key]: true }));
+      setActionError(null);
       try {
         await action();
-      } catch {
-        // Mutations invalidate and re-fetch on settle; per-row toasts are out of scope for v1.
+      } catch (error) {
+        setActionError(toErrorMessage(error));
       } finally {
         setPending((current) => {
           const next = { ...current };
@@ -385,35 +388,30 @@ function TrackerTableRow({
           trackerId: tracker.id,
           cascade: hasChildren,
         });
-        onTrackersRemoved?.(removedIds);
+        onTrackersRemoved?.(removedIds, tracker);
       });
     })();
-  }, [
-    runAction,
-    mutations,
-    tracker.id,
-    tracker.title,
-    tracker.childCount,
-    hasChildren,
-    onTrackersRemoved,
-  ]);
+  }, [runAction, mutations, tracker, hasChildren, onTrackersRemoved]);
 
   return (
-    <TrackerRow
-      tracker={tracker}
-      projectLabel={projectLabel}
-      hasChildren={hasChildren}
-      deleteDisabled={tracker.childCount === undefined}
-      isFirst={isFirst}
-      pending={pending}
-      onPress={handlePress}
-      onEdit={handleEdit}
-      onStart={handleStart}
-      onClose={handleClose}
-      onReopen={handleReopen}
-      onCancel={handleCancel}
-      onDelete={handleDelete}
-    />
+    <View>
+      {actionError ? <Text accessibilityRole="alert">{actionError}</Text> : null}
+      <TrackerRow
+        tracker={tracker}
+        projectLabel={projectLabel}
+        hasChildren={hasChildren}
+        deleteDisabled={tracker.childCount === undefined}
+        isFirst={isFirst}
+        pending={pending}
+        onPress={handlePress}
+        onEdit={handleEdit}
+        onStart={handleStart}
+        onClose={handleClose}
+        onReopen={handleReopen}
+        onCancel={handleCancel}
+        onDelete={handleDelete}
+      />
+    </View>
   );
 }
 

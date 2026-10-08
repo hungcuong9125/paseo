@@ -168,6 +168,7 @@ describe("writeGrokThinkingOption", () => {
     const unstableSetSessionModel = vi.fn(async () => undefined);
 
     await writeGrokThinkingOption({
+      configOptions: [],
       connection: {
         unstable_setSessionModel: unstableSetSessionModel,
       } as unknown as ClientSideConnection,
@@ -197,6 +198,7 @@ describe("writeGrokThinkingOption", () => {
 
     await expect(
       writeGrokThinkingOption({
+        configOptions: [],
         connection: {
           unstable_setSessionModel: unstableSetSessionModel,
         } as unknown as ClientSideConnection,
@@ -220,6 +222,7 @@ describe("writeGrokThinkingOption", () => {
   test("rejects models that do not support reasoning effort", async () => {
     await expect(
       writeGrokThinkingOption({
+        configOptions: [],
         connection: { unstable_setSessionModel: vi.fn() } as unknown as ClientSideConnection,
         sessionId: "session-1",
         thinkingOptionId: "high",

@@ -525,7 +525,7 @@ describe("useTrackerProjectData", () => {
     expect(result.current.trackers).toEqual([]);
 
     act(() => {
-      result.current.patchTracker({ ...makeTracker("new-1"), ...PROJECT_A });
+      result.current.insertTracker({ ...makeTracker("new-1"), ...PROJECT_A });
     });
     expect(result.current.trackers.map((t) => t.id)).toEqual(["new-1"]);
 
@@ -534,6 +534,42 @@ describe("useTrackerProjectData", () => {
     });
     expect(result.current.trackers).toHaveLength(1);
     expect(result.current.trackers[0]?.status).toBe("closed");
+  });
+
+  it("patches and removes only the owning project when issue IDs collide", async () => {
+    const page = (trackers: TrackerSummary[]) => ({
+      trackers,
+      hiddenCount: 0,
+      pageInfo: { nextCursor: null, hasMore: false, totalCount: trackers.length },
+    });
+    installClient({
+      "prj-a:open:start": page([makeTracker("same")]),
+      "prj-b:open:start": page([makeTracker("same")]),
+      "prj-a:closed:start": page([]),
+      "prj-b:closed:start": page([]),
+    });
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A, PROJECT_B],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 10,
+      }),
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.trackers).toHaveLength(2);
+    act(() => result.current.patchTracker({ ...makeTracker("same", "closed"), ...PROJECT_A }));
+    expect(result.current.trackers.map((row) => [row.projectId, row.status])).toEqual([
+      [PROJECT_A.projectId, "closed"],
+      [PROJECT_B.projectId, "open"],
+    ]);
+    expect(result.current.sectionTotals.open).toBe(1);
+    expect(result.current.sectionTotals.closed).toBe(1);
+    act(() => result.current.removeTrackers(["same"], PROJECT_B));
+    expect(result.current.trackers.map((row) => row.projectId)).toEqual([PROJECT_A.projectId]);
+    expect(result.current.sectionTotals.open).toBe(0);
+    expect(result.current.sectionTotals.closed).toBe(1);
   });
 
   it("patchTracker moving a tracker across statuses decrements the old section's total and increments the new one", async () => {
@@ -574,6 +610,33 @@ describe("useTrackerProjectData", () => {
     });
     expect(result.current.sectionTotals.open).toBe(4);
     expect(result.current.sectionTotals.closed).toBe(3);
+  });
+
+  it("refreshes an off-page update without inventing a new tracker or ancestor child", async () => {
+    const trackerList = installClient({
+      "prj-a:open:start": {
+        trackers: [trackerRow({ id: "parent", childCount: 5, doneCount: 0 })],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: "next", hasMore: true, totalCount: 6 },
+      },
+    });
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A],
+        selectedProjectId: PROJECT_A.projectId,
+        all: true,
+        enabled: true,
+        pageSize: 1,
+        sections: ["open"],
+      }),
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    act(() => result.current.patchTracker(trackerRow({ id: "off-page", parentId: "parent" })));
+    await waitFor(() => expect(trackerList).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.sectionTotals.open).toBe(6));
+    expect(result.current.trackers.map((tracker) => [tracker.id, tracker.childCount])).toEqual([
+      ["parent", 5],
+    ]);
   });
 
   it("patchTracker bumps every loaded ancestor's doneCount (not childCount) when a descendant's done-state flips (pas-2KY5X.11)", async () => {
@@ -636,7 +699,7 @@ describe("useTrackerProjectData", () => {
     await waitFor(() => expect(result.current.isLoading).toBe(false));
 
     act(() => {
-      result.current.patchTracker(trackerRow({ id: "c-2", parentId: "p-1" }));
+      result.current.insertTracker(trackerRow({ id: "c-2", parentId: "p-1" }));
     });
 
     const parent = result.current.trackers.find((t) => t.id === "p-1");
@@ -747,7 +810,7 @@ describe("useTrackerProjectData", () => {
     expect(result.current.trackers).toHaveLength(2);
 
     act(() => {
-      result.current.removeTrackers(["a-1"]);
+      result.current.removeTrackers(["a-1"], PROJECT_A);
     });
     expect(result.current.trackers.map((t) => t.id)).toEqual(["a-2"]);
   });
@@ -773,7 +836,7 @@ describe("useTrackerProjectData", () => {
     expect(result.current.sectionTotals.open).toBe(2);
 
     act(() => {
-      result.current.removeTrackers(["a-1"]);
+      result.current.removeTrackers(["a-1"], PROJECT_A);
     });
     expect(result.current.sectionTotals.open).toBe(1);
   });
@@ -803,7 +866,7 @@ describe("useTrackerProjectData", () => {
 
     // c-1 is closed (done) — removing it must pull both counts down.
     act(() => {
-      result.current.removeTrackers(["c-1"]);
+      result.current.removeTrackers(["c-1"], PROJECT_A);
     });
     const parentAfterFirstDelete = result.current.trackers.find((t) => t.id === "p-1");
     expect(parentAfterFirstDelete?.childCount).toBe(1);
@@ -811,7 +874,7 @@ describe("useTrackerProjectData", () => {
 
     // c-2 is open (not done) — removing it drops childCount only.
     act(() => {
-      result.current.removeTrackers(["c-2"]);
+      result.current.removeTrackers(["c-2"], PROJECT_A);
     });
     const parentAfterSecondDelete = result.current.trackers.find((t) => t.id === "p-1");
     expect(parentAfterSecondDelete?.childCount).toBe(0);
@@ -845,7 +908,7 @@ describe("useTrackerProjectData", () => {
     // response shape (packages/app/screens/tracker-screen.tsx's trackerDelete
     // call passes the full removedIds list, not one id at a time).
     act(() => {
-      result.current.removeTrackers(["p-1", "c-1"]);
+      result.current.removeTrackers(["p-1", "c-1"], PROJECT_A);
     });
 
     expect(result.current.trackers.map((t) => t.id)).toEqual(["gp-1"]);
@@ -884,7 +947,7 @@ describe("useTrackerProjectData", () => {
     expect(result.current.sectionTotals.closed).toBe(null);
 
     act(() => {
-      result.current.removeTrackers(["a-2"]);
+      result.current.removeTrackers(["a-2"], PROJECT_A);
     });
     // "open" now has zero of prj-a's rows left (a-1 moved to "closed" above,
     // a-2 just removed) — sectionTotals (pas-2KY5X.25) no longer poisons a
@@ -1101,7 +1164,7 @@ describe("useTrackerProjectData", () => {
         selectedProjectId: null,
         all: true,
         enabled: true,
-        pageSize: 50,
+        pageSize: 1,
       }),
     );
 
@@ -1277,6 +1340,39 @@ describe("useTrackerProjectData loadMore step size (pas-2KY5X.24)", () => {
 });
 
 describe("useTrackerProjectData merge mode (pas-2KY5X.15)", () => {
+  it("refills an exhausted newest stream before taking older buffered rows", async () => {
+    const row = (id: string, createdAt: string) => ({ ...makeTracker(id), createdAt });
+    installClient({
+      "prj-a:open:start": {
+        trackers: [row("a1", "100"), row("a2", "99")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: "next", hasMore: true, totalCount: 4 },
+      },
+      "prj-a:open:next": {
+        trackers: [row("a3", "98"), row("a4", "97")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount: 4 },
+      },
+      "prj-b:open:start": {
+        trackers: [row("b1", "10"), row("b2", "9")],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false, totalCount: 2 },
+      },
+    });
+    const { result } = renderHook(() =>
+      useTrackerProjectData({
+        projects: [PROJECT_A, PROJECT_B],
+        selectedProjectId: null,
+        all: true,
+        enabled: true,
+        pageSize: 4,
+        sections: ["open"],
+      }),
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.trackers.map((tracker) => tracker.id)).toEqual(["a1", "a2", "a3", "a4"]);
+    expect(result.current.sectionHasMore.open).toBe(true);
+  });
   beforeEach(() => {
     connectionStatusState.byServer = {};
   });
@@ -1321,11 +1417,14 @@ describe("useTrackerProjectData merge mode (pas-2KY5X.15)", () => {
     );
 
     await waitFor(() => expect(result.current.isLoading).toBe(false));
-    // The budget itself is exact regardless of project count.
-    expect(result.current.trackers).toHaveLength(30);
+    // The merge stops at its round limit rather than crossing an unknown head.
+    expect(result.current.trackers).toHaveLength(16);
+    expect(result.current.sectionHasMore.open).toBe(true);
 
     const fetched = totalRowsFetched(fetchedRowCounts, "open");
     const requestCount = trackerList.mock.calls.filter(([args]) => args.status === "open").length;
+    expect(requestCount).toBe(12);
+    expect(fetched).toBe(48);
     // eslint-disable-next-line no-console
     console.log(
       `pas-2KY5X.15 measured: 9 projects, budget 30 -> ${fetched} rows fetched over ${requestCount} requests` +
@@ -1556,7 +1655,8 @@ describe("useTrackerProjectData sort-capability race (pas-2KY5X.25)", () => {
     // correct mode — never a selected-project page fetched and thrown
     // away the instant capability resolved.
     expect(result.current.trackers).toHaveLength(30);
-    expect(totalRowsFetched(fetchedRowCounts, "open")).toBe(30);
+    // Each stream needs a known head before the merge can advance safely.
+    expect(totalRowsFetched(fetchedRowCounts, "open")).toBe(50);
     expect(trackerList.mock.calls.some(([args]) => args.sort !== undefined)).toBe(true);
   });
 

@@ -936,6 +936,21 @@ test("a finish watch is on disk while armed and gone once its notice is queued",
   await vi.waitFor(async () => expect(await mailbox.listWatches(CALLER)).toEqual([]));
 });
 
+test("cancellation cannot discard a terminal notice that is already queued", async () => {
+  const harness = createHarness({ agents: { child: {} } });
+  const mailbox = getAgentMailbox(harness.agentManager);
+  const registration = watchNextTurn(harness, "child");
+  await vi.waitFor(async () => expect(await mailbox.listWatches(CALLER)).toHaveLength(1));
+
+  startTurn(harness, "child", "turn-1");
+  registration.bindTurn("turn-1");
+  endTurn(harness, "child", "turn-1");
+  registration.cancel();
+
+  await vi.waitFor(() => expect(harness.deliveredTo(CALLER)).toHaveLength(1));
+  await vi.waitFor(async () => expect(await mailbox.listWatches(CALLER)).toEqual([]));
+});
+
 test("a watch armed before a restart tells the caller its child was interrupted", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "mailbox-restart-"));
   try {

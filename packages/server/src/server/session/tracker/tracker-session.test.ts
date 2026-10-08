@@ -58,6 +58,69 @@ const SAMPLE_TRACKER = {
 };
 
 describe("TrackerSession", () => {
+  it("rejects malformed offsets before querying the CLI", async () => {
+    let calls = 0;
+    const { session, emitted } = makeSession({
+      searchTrackers: async () => {
+        calls += 1;
+      },
+    });
+    await session.handleProjectTrackerSearchRequest({
+      type: "project.tracker.search.request",
+      requestId: "bad-cursor",
+      projectId: PROJECT_ID,
+      query: "query",
+      page: { limit: 1, cursor: "-1" },
+    });
+    expect(calls).toBe(0);
+    expect(findByType(emitted, "project.tracker.search.response")?.payload.errorCode).toBe(
+      "validation",
+    );
+  });
+
+  it("releases a subscription that finishes after session cleanup", async () => {
+    const pending = Promise.withResolvers<{
+      trackers: (typeof SAMPLE_TRACKER)[];
+      hiddenCount: number;
+      epoch: number;
+      generation: number;
+      error: null;
+      errorCode: null;
+    }>();
+    const removed: string[] = [];
+    let internalId = "";
+    const { session, emitted } = makeSession(
+      {},
+      {
+        subscribe: async (input: Parameters<TrackerSyncManager["subscribe"]>[0]) => {
+          internalId = input.subscriptionId;
+          return pending.promise;
+        },
+        unsubscribe: async (id: string) => {
+          removed.push(id);
+        },
+      },
+    );
+    const subscribing = session.handleProjectTrackerSubscribeRequest({
+      type: "project.tracker.subscribe.request",
+      requestId: "subscribe",
+      projectId: PROJECT_ID,
+      subscriptionId: "client-id",
+    });
+    await session.cleanup();
+    pending.resolve({
+      trackers: [],
+      hiddenCount: 0,
+      epoch: 1,
+      generation: 1,
+      error: null,
+      errorCode: null,
+    });
+    await subscribing;
+    expect(internalId).not.toBe("client-id");
+    expect(removed).toEqual([internalId, internalId]);
+    expect(emitted).toEqual([]);
+  });
   it("resolves projectId to cwd before calling the ait service", async () => {
     let receivedCwd: string | undefined;
     const { session, emitted } = makeSession({

@@ -1357,6 +1357,90 @@ describe("ACPAgentSession Zed parity", () => {
     });
   });
 
+  test("uses the target model thinking default when set_model has no config response", async () => {
+    const session = createSession();
+    const internals = asInternals<{
+      sessionId: string | null;
+      currentModel: string | null;
+      thinkingOptionId: string | null;
+      availableModels: Array<{
+        modelId: string;
+        name: string;
+        _meta?: { [key: string]: unknown } | null;
+      }>;
+      configOptions: SessionConfigOption[];
+      connection: {
+        unstable_setSessionModel: (input: { sessionId: string; modelId: string }) => Promise<void>;
+      };
+    }>(session);
+    internals.sessionId = "session-1";
+    internals.currentModel = "old-model";
+    internals.thinkingOptionId = "low";
+    internals.configOptions = [];
+    internals.availableModels = [
+      grokModelInfo("old-model", {
+        supportsReasoningEffort: true,
+        reasoningEfforts: ["low", "high"],
+        reasoningEffort: "low",
+      }),
+      grokModelInfo("new-model", {
+        supportsReasoningEffort: true,
+        reasoningEfforts: ["high"],
+        reasoningEffort: "high",
+      }),
+    ];
+    internals.connection = { unstable_setSessionModel: vi.fn(async () => undefined) };
+
+    await session.setModel("new-model");
+
+    await expect(session.getRuntimeInfo()).resolves.toMatchObject({
+      model: "new-model",
+      thinkingOptionId: "high",
+    });
+  });
+
+  test("uses model-specific thinking after set_model without a config response", async () => {
+    const session = createSession();
+    const internals = asInternals<{
+      sessionId: string | null;
+      currentModel: string | null;
+      thinkingOptionId: string | null;
+      availableModels: Array<{
+        modelId: string;
+        name: string;
+        _meta?: { [key: string]: unknown } | null;
+      }>;
+      configOptions: SessionConfigOption[];
+      connection: {
+        unstable_setSessionModel: (input: { sessionId: string; modelId: string }) => Promise<void>;
+      };
+    }>(session);
+    internals.sessionId = "session-1";
+    internals.currentModel = "old-model";
+    internals.thinkingOptionId = "low";
+    internals.configOptions = [];
+    internals.availableModels = [
+      grokModelInfo("old-model", {
+        supportsReasoningEffort: true,
+        reasoningEfforts: ["low", "high"],
+        reasoningEffort: "low",
+      }),
+      grokModelInfo("new-model", {
+        supportsReasoningEffort: true,
+        reasoningEfforts: ["high"],
+        reasoningEffort: "high",
+      }),
+    ];
+    internals.connection = { unstable_setSessionModel: vi.fn(async () => undefined) };
+
+    await session.setModel("new-model");
+
+    await expect(session.getRuntimeInfo()).resolves.toMatchObject({
+      model: "new-model",
+      thinkingOptionId: "high",
+    });
+  });
+
   test("uses canonical thinking option returned by setSessionConfigOption response", async () => {
     const session = createSession();
     const internals = asInternals<ACPModelSelectionInternals>(session);
@@ -1413,6 +1497,46 @@ describe("ACPAgentSession Zed parity", () => {
       type: "thinking_option_changed",
       provider: "acp",
       thinkingOptionId: "high",
+    });
+  });
+
+  test("does not forward a reasoning effort to a model that does not support it", async () => {
+    const session = createGrokLikeSession({ model: "grok-4.6", thinkingOptionId: "high" });
+    const internals = asInternals<GrokThinkingSessionInternals>(session);
+    const setModel = vi.fn(async () => undefined);
+    internals.sessionId = "session-1";
+    internals.availableModels = [
+      grokModelInfo("grok-4.6"),
+      grokModelInfo("grok-3", { supportsReasoningEffort: false }),
+    ];
+    internals.connection = { unstable_setSessionModel: setModel, setSessionConfigOption: vi.fn() };
+    await session.setModel("grok-3");
+    expect(setModel).toHaveBeenCalledWith({ sessionId: "session-1", modelId: "grok-3" });
+    await expect(session.getRuntimeInfo()).resolves.toMatchObject({
+      model: "grok-3",
+      thinkingOptionId: null,
+    });
+  });
+
+  test("clears unsupported thinking when model selection uses ACP config options", async () => {
+    const session = createGrokLikeSession({ model: "grok-4.6", thinkingOptionId: "high" });
+    const internals = asInternals<GrokThinkingSessionInternals>(session);
+    internals.sessionId = "session-1";
+    const modelOption = selectConfigOption("model", ["grok-4.6", "grok-3"], "grok-4.6");
+    internals.availableModels = [
+      grokModelInfo("grok-4.6"),
+      grokModelInfo("grok-3", { supportsReasoningEffort: false }),
+    ];
+    internals.configOptions = [modelOption];
+    internals.connection = {
+      setSessionConfigOption: vi.fn(async () => ({
+        configOptions: [selectConfigOption("model", ["grok-4.6", "grok-3"], "grok-3")],
+      })),
+    };
+    await session.setModel("grok-3");
+    await expect(session.getRuntimeInfo()).resolves.toMatchObject({
+      model: "grok-3",
+      thinkingOptionId: null,
     });
   });
 
@@ -1524,6 +1648,58 @@ describe("ACPAgentSession Zed parity", () => {
     await expect(session.getRuntimeInfo()).resolves.toMatchObject({
       model: baseModelId,
       thinkingOptionId: "medium",
+    });
+  });
+
+  test("honors an explicitly requested Antigravity variant instead of the current thinking level", async () => {
+    const modelId = "gemini-3.8-flash";
+    const configOption: SessionConfigOption = {
+      id: "model",
+      name: "Model",
+      category: "model",
+      type: "select",
+      currentValue: `${modelId}-high`,
+      options: [
+        { value: `${modelId}-high`, name: "High" },
+        { value: `${modelId}-low`, name: "Low" },
+      ],
+    };
+    const setSessionConfigOption = vi.fn(async () => ({ configOptions: [configOption] }));
+    const bridge = createAntigravityACPThinkingBridge([
+      {
+        id: modelId,
+        label: "Flash",
+        thinkingOptions: [
+          { id: "high", label: "High", isDefault: true },
+          { id: "low", label: "Low" },
+        ],
+      },
+    ]);
+    if (!bridge) throw new Error("Expected thinking bridge");
+    const session = new ACPAgentSession(
+      { provider: "acp", cwd: "/tmp/paseo-acp-test", model: modelId, thinkingOptionId: "high" },
+      {
+        provider: "acp",
+        logger: createTestLogger(),
+        defaultCommand: ["agy-acp"],
+        defaultModes: [],
+        capabilities: DEFAULT_ACP_TEST_CAPABILITIES,
+        ...bridge,
+      },
+    );
+    const internals = asInternals<ACPConfiguredModelWriterInternals>(session);
+    internals.sessionId = "session-1";
+    internals.configOptions = [configOption];
+    internals.connection = { setSessionConfigOption };
+    await session.setModel(`${modelId}-low\tFlash Low`);
+    expect(setSessionConfigOption).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      configId: "model",
+      value: `${modelId}-low`,
+    });
+    await expect(session.getRuntimeInfo()).resolves.toMatchObject({
+      model: modelId,
+      thinkingOptionId: "low",
     });
   });
 

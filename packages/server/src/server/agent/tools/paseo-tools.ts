@@ -616,7 +616,7 @@ function armLateFinishNotification(input: {
     childAgentId: input.agentId,
     callerAgentId: input.callerAgentId,
     watch: "next-turn",
-    expectedTurnId: input.agentManager.getAgent(input.agentId)?.activeForegroundTurnId ?? undefined,
+    expectedTurnId: input.agentManager.getAgent(input.agentId)?.activeForegroundTurnId ?? null,
     logger: input.logger,
   });
 }

@@ -14,6 +14,7 @@ import { laneTranslationKey } from "@/components/tracker/tracker-kanban-column";
 import { isNative } from "@/constants/platform";
 import type { Theme } from "@/styles/theme";
 import { confirmDialog } from "@/utils/confirm-dialog";
+import type { AggregatedTracker } from "@/tracker/aggregated-trackers";
 import {
   getTrackerTransition,
   type TrackerLane,
@@ -53,20 +54,20 @@ function renderKebabIcon({ hovered }: { hovered?: boolean }): ReactElement {
 }
 
 interface TrackerKanbanMoveItemProps {
-  trackerId: string;
+  tracker: AggregatedTracker;
   transition: TrackerTransition;
   label: string;
   isPending: boolean;
-  onTransition: (trackerId: string, transition: TrackerTransition) => void;
+  onTransition: (tracker: AggregatedTracker, transition: TrackerTransition) => void;
   testID?: string;
 }
 
 // `ContextMenuItem`/`DropdownMenuItem` are the same `MenuItem` re-exported under two
 // names (see context-menu.tsx / dropdown-menu.tsx), so one item component renders
 // correctly inside either surface's content. Its own `onSelect` is memoized per
-// (trackerId, transition) instead of allocating a closure inline in the list below.
+// (tracker, transition) instead of allocating a closure inline in the list below.
 const TrackerKanbanMoveItem = memo(function TrackerKanbanMoveItem({
-  trackerId,
+  tracker,
   transition,
   label,
   isPending,
@@ -74,8 +75,8 @@ const TrackerKanbanMoveItem = memo(function TrackerKanbanMoveItem({
   testID,
 }: TrackerKanbanMoveItemProps): ReactElement {
   const handleSelect = useCallback(
-    () => onTransition(trackerId, transition),
-    [onTransition, trackerId, transition],
+    () => onTransition(tracker, transition),
+    [onTransition, tracker, transition],
   );
   return (
     <MenuItem disabled={isPending} onSelect={handleSelect} testID={testID}>
@@ -85,20 +86,20 @@ const TrackerKanbanMoveItem = memo(function TrackerKanbanMoveItem({
 });
 
 interface TrackerKanbanEditItemProps {
-  trackerId: string;
+  tracker: AggregatedTracker;
   /** Omit to hide the Edit entry entirely (callers/tests that don't wire editing). */
-  onEdit?: (trackerId: string) => void;
+  onEdit?: (tracker: AggregatedTracker) => void;
   testID?: string;
 }
 
 // The static Edit entry rendered above the "Move to..." list on both surfaces.
-// Same per-(trackerId, handler) memoization rationale as TrackerKanbanMoveItem.
+// Same per-(tracker, handler) memoization rationale as TrackerKanbanMoveItem.
 const TrackerKanbanEditItems = memo(function TrackerKanbanEditItems({
-  trackerId,
+  tracker,
   onEdit,
   testID,
 }: TrackerKanbanEditItemProps): ReactElement | null {
-  const handleSelect = useCallback(() => onEdit?.(trackerId), [onEdit, trackerId]);
+  const handleSelect = useCallback(() => onEdit?.(tracker), [onEdit, tracker]);
   if (!onEdit) {
     return null;
   }
@@ -113,11 +114,11 @@ const TrackerKanbanEditItems = memo(function TrackerKanbanEditItems({
 });
 
 interface TrackerKanbanDeleteItemProps {
-  trackerId: string;
+  tracker: AggregatedTracker;
   trackerTitle: string;
   hasChildren: boolean;
   disabled: boolean;
-  onDelete?: (trackerId: string) => void;
+  onDelete?: (tracker: AggregatedTracker) => void;
   testID?: string;
 }
 
@@ -126,7 +127,7 @@ interface TrackerKanbanDeleteItemProps {
 // before the irreversible call fires. Omit onDelete to hide the item entirely, same
 // convention as TrackerKanbanEditItems.
 const TrackerKanbanDeleteItem = memo(function TrackerKanbanDeleteItem({
-  trackerId,
+  tracker,
   trackerTitle,
   hasChildren,
   disabled,
@@ -146,9 +147,9 @@ const TrackerKanbanDeleteItem = memo(function TrackerKanbanDeleteItem({
       if (!confirmed) {
         return;
       }
-      onDelete?.(trackerId);
+      onDelete?.(tracker);
     })();
-  }, [hasChildren, trackerId, trackerTitle, onDelete]);
+  }, [hasChildren, tracker, trackerTitle, onDelete]);
 
   if (!onDelete) {
     return null;
@@ -164,13 +165,13 @@ const TrackerKanbanDeleteItem = memo(function TrackerKanbanDeleteItem({
 });
 
 export interface TrackerKanbanCardMenuProps {
-  trackerId: string;
+  tracker: AggregatedTracker;
   trackerTitle: string;
   lane: TrackerLane;
   isPending: boolean;
-  onTransition: (trackerId: string, transition: TrackerTransition) => void;
+  onTransition: (tracker: AggregatedTracker, transition: TrackerTransition) => void;
   /** Opens the caller's edit sheet for this card — no mutation happens until that sheet submits. */
-  onEdit?: (trackerId: string) => void;
+  onEdit?: (tracker: AggregatedTracker) => void;
   /** True when this tracker has any descendants — decides the delete item's label
    * ("Remove" vs "Delete tree") and whether the mutation needs `cascade`, mirroring
    * TrackerRow's identical Remove/Delete-tree treatment in List. */
@@ -181,14 +182,14 @@ export interface TrackerKanbanCardMenuProps {
   deleteDisabled?: boolean;
   /** Performs the delete after the user confirms — omit to hide the Remove/Delete tree
    * entry entirely (mirrors onEdit). */
-  onDelete?: (trackerId: string) => void;
+  onDelete?: (tracker: AggregatedTracker) => void;
   /**
    * Tapping the card body (not long-press, not the kebab). Native passes this straight
    * to `ContextMenuTrigger`'s own `onPress` — RN's core `Pressable` natively combines
    * `onPress` and `onLongPress` on one component — instead of nesting a second Pressable
    * inside it, which would leave two Pressables racing over the same touch responder.
    */
-  onCardPress?: (trackerId: string) => void;
+  onCardPress?: (tracker: AggregatedTracker) => void;
   /** testID prefix — item ids append `-item-${to}`, the kebab trigger appends `-trigger`. */
   testID?: string;
 }
@@ -207,7 +208,7 @@ export interface TrackerKanbanCardMenuProps {
  */
 export function TrackerKanbanCardMenu({
   children,
-  trackerId,
+  tracker,
   trackerTitle,
   lane,
   isPending,
@@ -224,8 +225,8 @@ export function TrackerKanbanCardMenu({
   const triggerLabel = t("tracker.kanban.moveMenu.trigger", { title: trackerTitle });
   const sheetTitle = t("tracker.kanban.moveMenu.title");
   const handleCardPress = useCallback(() => {
-    onCardPress?.(trackerId);
-  }, [onCardPress, trackerId]);
+    onCardPress?.(tracker);
+  }, [onCardPress, tracker]);
 
   return (
     <View style={styles.wrapper}>
@@ -241,14 +242,14 @@ export function TrackerKanbanCardMenu({
           </ContextMenuTrigger>
           <ContextMenuContent sheetTitle={sheetTitle} width={220}>
             <TrackerKanbanEditItems
-              trackerId={trackerId}
+              tracker={tracker}
               onEdit={onEdit}
               testID={testID ? `${testID}-context-item-edit` : undefined}
             />
             {options.map(({ to, transition }) => (
               <TrackerKanbanMoveItem
                 key={to}
-                trackerId={trackerId}
+                tracker={tracker}
                 transition={transition}
                 label={t(`tracker.kanban.moveTo.${laneTranslationKey(to)}`)}
                 isPending={isPending}
@@ -257,7 +258,7 @@ export function TrackerKanbanCardMenu({
               />
             ))}
             <TrackerKanbanDeleteItem
-              trackerId={trackerId}
+              tracker={tracker}
               trackerTitle={trackerTitle}
               hasChildren={hasChildren}
               disabled={isPending || deleteDisabled}
@@ -283,14 +284,14 @@ export function TrackerKanbanCardMenu({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" sheetTitle={sheetTitle} width={220}>
             <TrackerKanbanEditItems
-              trackerId={trackerId}
+              tracker={tracker}
               onEdit={onEdit}
               testID={testID ? `${testID}-item-edit` : undefined}
             />
             {options.map(({ to, transition }) => (
               <TrackerKanbanMoveItem
                 key={to}
-                trackerId={trackerId}
+                tracker={tracker}
                 transition={transition}
                 label={t(`tracker.kanban.moveTo.${laneTranslationKey(to)}`)}
                 isPending={isPending}
@@ -299,7 +300,7 @@ export function TrackerKanbanCardMenu({
               />
             ))}
             <TrackerKanbanDeleteItem
-              trackerId={trackerId}
+              tracker={tracker}
               trackerTitle={trackerTitle}
               hasChildren={hasChildren}
               disabled={isPending || deleteDisabled}

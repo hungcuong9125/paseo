@@ -135,6 +135,7 @@ export function useTrackerStats(options: UseTrackerStatsOptions): UseTrackerStat
   const [isLoading, setIsLoading] = useState(true);
   const [projectErrors, setProjectErrors] = useState<TrackerProjectError[]>([]);
   const loadSeqRef = useRef(0);
+  const loadedScopeRef = useRef<string | null>(null);
 
   const runFetch = useCallback(async (): Promise<void> => {
     const seq = ++loadSeqRef.current;
@@ -147,12 +148,14 @@ export function useTrackerStats(options: UseTrackerStatsOptions): UseTrackerStat
     if (relevantProjects.length === 0) {
       // Vacuously "every in-scope project reported" — an empty scope is a
       // real zero, not a gap, mirroring useTrackerProjectData's sectionTotals.
-      setCounts(sumTrackerStatsCounts([]));
+      setCounts(options.selectedProjectId === null ? sumTrackerStatsCounts([]) : null);
       setProjectErrors([]);
       setIsLoading(false);
       return;
     }
     setIsLoading(true);
+    if (loadedScopeRef.current !== scopeKey) setCounts(null);
+    loadedScopeRef.current = scopeKey;
     const perProject = await Promise.all(
       relevantProjects.map(async (project) => {
         const client = runtime.getClient(project.serverId);

@@ -2,12 +2,28 @@
  * @vitest-environment jsdom
  */
 import React from "react";
+import type { AggregatedTracker } from "@/tracker/aggregated-trackers";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { availableTrackerTransitions, TrackerKanbanCardMenu } from "./tracker-kanban-move-menu";
 
 beforeEach(() => vi.stubGlobal("React", React));
 afterEach(() => cleanup());
+
+function testTracker(id: string): AggregatedTracker {
+  return {
+    id,
+    title: "Fixture",
+    type: "task",
+    status: "open",
+    priority: "P2",
+    parentId: null,
+    serverId: "host-a",
+    serverName: "Host A",
+    projectId: "prj-a",
+    projectName: "Project A",
+  };
+}
 
 // jest-dom matchers aren't installed in this workspace — assert on the DOM directly.
 function isDisabled(element: Element): boolean {
@@ -134,7 +150,7 @@ describe("TrackerKanbanCardMenu (web/kebab surface)", () => {
   it("lists the transitions available from the card's current lane", () => {
     render(
       <TrackerKanbanCardMenu
-        trackerId="paseo-abc.1"
+        tracker={testTracker("paseo-abc.1")}
         trackerTitle="Fix the thing"
         lane="open"
         isPending={false}
@@ -161,7 +177,7 @@ describe("TrackerKanbanCardMenu (web/kebab surface)", () => {
     const onTransition = vi.fn();
     render(
       <TrackerKanbanCardMenu
-        trackerId="paseo-abc.2"
+        tracker={testTracker("paseo-abc.2")}
         trackerTitle="Ship it"
         lane="done"
         isPending={false}
@@ -173,14 +189,14 @@ describe("TrackerKanbanCardMenu (web/kebab surface)", () => {
     );
 
     fireEvent.click(screen.getByTestId("move-item-open"));
-    expect(onTransition).toHaveBeenCalledWith("paseo-abc.2", { kind: "reopen" });
+    expect(onTransition).toHaveBeenCalledWith(testTracker("paseo-abc.2"), { kind: "reopen" });
   });
 
   it("calls onTransition with the cancel transition when the cancelled option is selected", () => {
     const onTransition = vi.fn();
     render(
       <TrackerKanbanCardMenu
-        trackerId="paseo-abc.5"
+        tracker={testTracker("paseo-abc.5")}
         trackerTitle="Drop it"
         lane="open"
         isPending={false}
@@ -192,13 +208,13 @@ describe("TrackerKanbanCardMenu (web/kebab surface)", () => {
     );
 
     fireEvent.click(screen.getByTestId("move-item-cancelled"));
-    expect(onTransition).toHaveBeenCalledWith("paseo-abc.5", { kind: "cancel" });
+    expect(onTransition).toHaveBeenCalledWith(testTracker("paseo-abc.5"), { kind: "cancel" });
   });
 
   it("disables the trigger and every item while pending", () => {
     render(
       <TrackerKanbanCardMenu
-        trackerId="paseo-abc.3"
+        tracker={testTracker("paseo-abc.3")}
         trackerTitle="Pending thing"
         lane="in_progress"
         isPending
@@ -217,7 +233,7 @@ describe("TrackerKanbanCardMenu (web/kebab surface)", () => {
   it("does not wrap the card in a native long-press trigger on web", () => {
     render(
       <TrackerKanbanCardMenu
-        trackerId="paseo-abc.4"
+        tracker={testTracker("paseo-abc.4")}
         trackerTitle="Web card"
         lane="open"
         isPending={false}

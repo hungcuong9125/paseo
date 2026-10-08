@@ -154,6 +154,7 @@ export class AgentMailbox {
       if (
         !file.paused &&
         queued.length === 0 &&
+        !file.entries.some((entry) => entry.state === "delivering") &&
         !this.dependencies.agentManager.hasInFlightRun(agentId)
       ) {
         return { status: "dispatched", result: await dispatch() };
@@ -357,7 +358,8 @@ export class AgentMailbox {
     }
     for (const entry of file.entries) {
       if (entry.state === "delivering") {
-        entry.state = "queued";
+        entry.attempts += 1;
+        entry.state = entry.attempts >= MAX_TURN_ATTEMPTS ? "held" : "queued";
         entry.redelivered = true;
       }
       if (entry.source.kind === "notification" && entry.source.requestId) {

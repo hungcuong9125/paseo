@@ -333,6 +333,7 @@ const StoredProjectSchema = z.strictObject({
   projectIconRevision: z.string().optional(),
   projectRootPath: z.string(),
   projectKind: z.enum(["git", "non_git", "directory"]),
+  aitInitialized: z.boolean().optional(),
 });
 
 const StoredTimelineSchema = z.strictObject({
@@ -736,6 +737,7 @@ function serializeProject(project: ProjectDescriptor): StoredProject {
     projectIconRevision: project.projectIconRevision,
     projectRootPath: project.projectRootPath,
     projectKind: project.projectKind,
+    aitInitialized: project.aitInitialized,
   };
 }
 

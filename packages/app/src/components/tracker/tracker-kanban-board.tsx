@@ -2,7 +2,7 @@ import { useCallback, useMemo, useReducer, useRef, useState, type ReactElement }
 import { ScrollView, View, type StyleProp, type ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
-import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
+import { trackerKey, type AggregatedTracker } from "@/tracker/aggregated-trackers";
 import {
   laneTranslationKey,
   TrackerKanbanColumn,
@@ -37,7 +37,7 @@ export interface TrackerKanbanBoardProps {
    */
   availableWidth?: number | null;
   /** Project-filtered but NOT status-filtered — the board partitions by status itself. */
-  trackers: readonly TrackerSummary[];
+  trackers: readonly AggregatedTracker[];
   /**
    * True until the first page of tracker data lands. The board is chrome, not
    * data: its lanes, their names and their widths are fixed by `filter` alone,
@@ -49,11 +49,11 @@ export interface TrackerKanbanBoardProps {
   /** Projects the board onto a subset of lanes; see buildTrackerBoard's filter contract. */
   filter: TrackerBoardFilter;
   /**
-   * Ids of unblocked trackers, from `project.tracker.ready`. An open tracker
+   * Scoped keys of unblocked tracker rows, from `project.tracker.ready`. An open tracker
    * whose id is absent renders a Blocked badge when this set is available.
    * Omit while loading or when the server doesn't advertise the capability.
    */
-  readyIds?: ReadonlySet<string> | null;
+  readyTrackerKeys?: ReadonlySet<string> | null;
   laneTotals: Partial<Record<TrackerBoardLaneKey, number | null>>;
   laneHasMore: Partial<Record<TrackerBoardLaneKey, boolean>>;
   laneLoadingMore: Partial<Record<TrackerBoardLaneKey, boolean>>;
@@ -64,29 +64,29 @@ export interface TrackerKanbanBoardProps {
    * outcome. The caller is responsible for the real RPC and for refreshing `trackers`
    * from the authoritative snapshot on success.
    */
-  onTransition: (trackerId: string, transition: TrackerTransition) => Promise<void>;
+  onTransition: (tracker: AggregatedTracker, transition: TrackerTransition) => Promise<void>;
   /** Called with a translated message when `onTransition` rejects, for the caller's toast. */
-  onTransitionError?: (trackerId: string, message: string) => void;
+  onTransitionError?: (tracker: AggregatedTracker, message: string) => void;
   /** Opens the caller's edit sheet for a card — omit to hide the kebab menu's Edit entry. */
-  onEdit?: (trackerId: string) => void;
+  onEdit?: (tracker: AggregatedTracker) => void;
   /**
    * Performs the actual delete — same pending/error contract as `onTransition`. Omit to
    * hide the kebab menu's Remove/Delete tree entry entirely.
    */
-  onDelete?: (trackerId: string) => Promise<void>;
+  onDelete?: (tracker: AggregatedTracker) => Promise<void>;
   /** Called with a translated message when `onDelete` rejects, for the caller's toast. */
-  onDeleteError?: (trackerId: string, message: string) => void;
+  onDeleteError?: (tracker: AggregatedTracker, message: string) => void;
   /**
    * Resolves whether a tracker has descendants from the caller's own (unfiltered)
    * hierarchy, for the delete item's confirm copy and cascade flag. Falls back to
    * this board's own hierarchy (built from the type-filtered `trackers` prop) when
    * omitted, which can undercount while a type filter hides a tracker's children.
    */
-  getHasChildren?: (trackerId: string) => boolean;
+  getHasChildren?: (tracker: AggregatedTracker) => boolean;
   /** Resolved per-card only in multi-project (aggregated) contexts; omit for single-project boards. */
-  getProjectLabel?: (tracker: TrackerSummary) => string | null;
+  getProjectLabel?: (tracker: AggregatedTracker) => string | null;
   /** Tapping a card body (not the move menu) — omit to render cards non-pressable. */
-  onCardPress?: (trackerId: string) => void;
+  onCardPress?: (tracker: AggregatedTracker) => void;
   testID?: string;
 }
 
@@ -104,7 +104,7 @@ export function TrackerKanbanBoard({
   trackers,
   isLoading = false,
   filter,
-  readyIds = null,
+  readyTrackerKeys = null,
   laneTotals,
   laneHasMore,
   laneLoadingMore,
@@ -123,8 +123,8 @@ export function TrackerKanbanBoard({
   const isCompact = useIsCompactFormFactor();
 
   const board = useMemo(
-    () => buildTrackerBoard(trackers, filter, readyIds),
-    [trackers, filter, readyIds],
+    () => buildTrackerBoard(trackers, filter, readyTrackerKeys),
+    [trackers, filter, readyTrackerKeys],
   );
   const hierarchy = useMemo(() => buildTrackerHierarchy([...trackers]), [trackers]);
 
@@ -132,55 +132,53 @@ export function TrackerKanbanBoard({
   const [, forceRender] = useReducer((count: number) => count + 1, 0);
 
   const handleTransition = useCallback(
-    (trackerId: string, transition: TrackerTransition) => {
+    (tracker: AggregatedTracker, transition: TrackerTransition) => {
       const pendingSet = pendingSetRef.current;
-      pendingSet.markPending(trackerId);
+      pendingSet.markPending(trackerKey(tracker));
       forceRender();
-      onTransition(trackerId, transition)
+      onTransition(tracker, transition)
         .catch(() => {
-          const tracker = hierarchy.trackerMap.get(trackerId);
           onTransitionError?.(
-            trackerId,
-            t("tracker.kanban.error.transitionFailed", { title: tracker?.title ?? trackerId }),
+            tracker,
+            t("tracker.kanban.error.transitionFailed", { title: tracker.title }),
           );
         })
         .finally(() => {
-          pendingSet.clearPending(trackerId);
+          pendingSet.clearPending(trackerKey(tracker));
           forceRender();
         });
     },
-    [onTransition, onTransitionError, t, hierarchy],
+    [onTransition, onTransitionError, t],
   );
 
   // Same pending/error dance as handleTransition — the "Remove"/"Delete tree" item
   // has already confirmed by the time this runs, so a rejection here is a real
   // failure (e.g. `ait` refusing a non-cascaded delete), not a cancellation.
   const handleDelete = useCallback(
-    (trackerId: string) => {
+    (tracker: AggregatedTracker) => {
       if (!onDelete) {
         return;
       }
       const pendingSet = pendingSetRef.current;
-      pendingSet.markPending(trackerId);
+      pendingSet.markPending(trackerKey(tracker));
       forceRender();
-      onDelete(trackerId)
+      onDelete(tracker)
         .catch(() => {
-          const tracker = hierarchy.trackerMap.get(trackerId);
           onDeleteError?.(
-            trackerId,
-            t("tracker.kanban.error.deleteFailed", { title: tracker?.title ?? trackerId }),
+            tracker,
+            t("tracker.kanban.error.deleteFailed", { title: tracker.title }),
           );
         })
         .finally(() => {
-          pendingSet.clearPending(trackerId);
+          pendingSet.clearPending(trackerKey(tracker));
           forceRender();
         });
     },
-    [onDelete, onDeleteError, t, hierarchy],
+    [onDelete, onDeleteError, t],
   );
 
   const isPending = useCallback(
-    (trackerId: string) => pendingSetRef.current.isPending(trackerId),
+    (tracker: AggregatedTracker) => pendingSetRef.current.isPending(trackerKey(tracker)),
     [],
   );
 

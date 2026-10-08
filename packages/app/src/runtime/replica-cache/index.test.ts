@@ -256,6 +256,18 @@ function deleteDirectory(cache: ReplicaCache, serverId: string): void {
 }
 
 describe("ReplicaCache", () => {
+  it("preserves AIT initialization through persisted directory hydration", async () => {
+    const storage = new MemoryStorage();
+    const writer = createCache(storage);
+    const baseline = directory();
+    const project = baseline.projects.get("project-1");
+    if (!project) throw new Error("Expected project fixture");
+    baseline.projects.set(project.projectId, { ...project, aitInitialized: true });
+    writer.replaceDirectoryBaseline(SERVER_ID, baseline);
+    await writer.flush();
+    const restored = await createCache(storage).readDirectory(SERVER_ID);
+    expect(restored.projects.get(project.projectId)?.aitInitialized).toBe(true);
+  });
   it("rejects pre-baseline-fix checkpoints without discarding cached rows or timelines", async () => {
     const storage = new MemoryStorage();
     const writer = createCache(storage);

@@ -1,4 +1,5 @@
 import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
+import { trackerKey, type AggregatedTracker } from "@/tracker/aggregated-trackers";
 import { compareByCreatedNewest, compareTrackers } from "@/tracker/tracker-hierarchy";
 import { matchesTrackerStatFilter, type TrackerStatFilter } from "@/tracker/tracker-stats";
 
@@ -12,7 +13,7 @@ export type TrackerBoardFilter = TrackerStatFilter;
 export type TrackerBoardLaneKey = "open" | "in_progress" | "done" | "cancelled";
 
 export interface TrackerBoardCard {
-  tracker: TrackerSummary;
+  tracker: AggregatedTracker;
   /** True only for `status === "cancelled"`. Cancelled items share the Done
    * lane with `closed` items but must never render with the plain "success"
    * done treatment — this flag is what lets the card tell the two apart. */
@@ -61,16 +62,16 @@ function isPriorityFilter(filter: TrackerBoardFilter): filter is "p0" | "p1" | "
  * filter left; Open/In Progress/Done only filter the List view) removes
  * non-matching cards from their lane rather than hiding the lane itself.
  * Partitioning is by `status` alone — `parentId` is never read, so malformed
- * or cyclic hierarchy data cannot affect lane placement. A loaded `readyIds`
- * set only adds the blocked indicator to open cards; it does not change lanes.
+ * or cyclic hierarchy data cannot affect lane placement. Scoped ready tracker
+ * keys only add the blocked indicator to open cards; they do not change lanes.
  *
- * A null `readyIds` means readiness is not known yet, so cards do not render a
+ * A null `readyTrackerKeys` means readiness is not known yet, so cards do not render a
  * blocked indicator until the readiness query has produced a result.
  */
 export function buildTrackerBoard(
-  trackers: readonly TrackerSummary[],
+  trackers: readonly AggregatedTracker[],
   filter: TrackerBoardFilter,
-  readyIds: ReadonlySet<string> | null = null,
+  readyTrackerKeys: ReadonlySet<string> | null = null,
 ): TrackerBoard {
   const isPriority = isPriorityFilter(filter);
 
@@ -87,7 +88,10 @@ export function buildTrackerBoard(
     const card: TrackerBoardCard = {
       tracker,
       isCancelled: tracker.status === "cancelled",
-      isBlocked: tracker.status === "open" && readyIds !== null && !readyIds.has(tracker.id),
+      isBlocked:
+        tracker.status === "open" &&
+        readyTrackerKeys !== null &&
+        !readyTrackerKeys.has(trackerKey(tracker)),
     };
     switch (lane) {
       case "open":

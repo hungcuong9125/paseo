@@ -1,4 +1,6 @@
 import type pino from "pino";
+import { randomUUID } from "node:crypto";
+import { resolveAitRootPath } from "../../ait-init-status.js";
 import type { TrackerErrorCode } from "@getpaseo/protocol/tracker/rpc-schemas";
 import type { SessionInboundMessage, SessionOutboundMessage } from "../../messages.js";
 import { AitCliError, type AitService } from "../../../services/ait-cli-service.js";
@@ -31,7 +33,8 @@ export class TrackerSession {
   private readonly projectRegistry: Pick<ProjectRegistry, "get">;
   private readonly logger: pino.Logger;
   private readonly trackerSyncManager: TrackerSyncManager | null;
-  private readonly subscriptions = new Set<string>();
+  private readonly subscriptions = new Map<string, string>();
+  private closed = false;
 
   constructor(options: TrackerSessionOptions) {
     this.host = options.host;
@@ -43,10 +46,10 @@ export class TrackerSession {
 
   private async resolveCwd(projectId: string): Promise<string> {
     const project = await this.projectRegistry.get(projectId);
-    if (!project) {
+    if (!project || project.archivedAt) {
       throw new ProjectNotFoundError(`Project not found: ${projectId}`);
     }
-    return project.rootPath;
+    return resolveAitRootPath(project.rootPath);
   }
 
   private toErrorTuple(error: unknown): { error: string; errorCode: TrackerErrorCode } {
@@ -134,7 +137,7 @@ export class TrackerSession {
       const cwd = await this.resolveCwd(request.projectId);
       let offset: number | undefined;
       if (request.page) {
-        offset = request.page.cursor ? Number(request.page.cursor) : 0;
+        offset = this.parseCursor(request.page.cursor);
       }
       const result = await this.aitService.listTrackers({
         cwd,
@@ -212,7 +215,7 @@ export class TrackerSession {
         cwd,
         query: request.query,
         limit: request.page.limit,
-        offset: request.page.cursor ? Number(request.page.cursor) : 0,
+        offset: this.parseCursor(request.page.cursor),
       });
       this.host.emit({
         type: "project.tracker.search.response",
@@ -260,19 +263,32 @@ export class TrackerSession {
       });
       return;
     }
+    const internalId = randomUUID();
+    if (this.closed) return;
     try {
+      if (this.subscriptions.has(request.subscriptionId)) {
+        throw new AitCliError(
+          "validation",
+          "Tracker subscription ID is already active in this session",
+        );
+      }
+      this.subscriptions.set(request.subscriptionId, internalId);
       const snapshot = await this.trackerSyncManager.subscribe({
         projectId: request.projectId,
         all: request.all,
-        subscriptionId: request.subscriptionId,
+        subscriptionId: internalId,
         listener: (update, projectId) => {
+          if (this.closed || this.subscriptions.get(request.subscriptionId) !== internalId) return;
           this.host.emit({
             type: "project.tracker.updated",
             payload: { ...update, projectId, subscriptionId: request.subscriptionId },
           });
         },
       });
-      this.subscriptions.add(request.subscriptionId);
+      if (this.closed || this.subscriptions.get(request.subscriptionId) !== internalId) {
+        await this.trackerSyncManager.unsubscribe(internalId);
+        return;
+      }
       this.host.emit({
         type: "project.tracker.subscribe.response",
         payload: {
@@ -283,6 +299,12 @@ export class TrackerSession {
         },
       });
     } catch (error) {
+      if (this.subscriptions.get(request.subscriptionId) === internalId)
+        this.subscriptions.delete(request.subscriptionId);
+      await this.trackerSyncManager.unsubscribe(internalId).catch((cleanupError: unknown) => {
+        this.logger.warn({ err: cleanupError }, "Failed to clean up tracker subscription");
+      });
+      if (this.closed) return;
       this.logFailure(request.type, error);
       const { error: message, errorCode } = this.toErrorTuple(error);
       this.host.emit({
@@ -305,12 +327,14 @@ export class TrackerSession {
   async handleProjectTrackerUnsubscribeRequest(
     request: Extract<SessionInboundMessage, { type: "project.tracker.unsubscribe.request" }>,
   ): Promise<void> {
-    await this.trackerSyncManager?.unsubscribe(request.subscriptionId);
+    const internalId = this.subscriptions.get(request.subscriptionId);
     this.subscriptions.delete(request.subscriptionId);
+    if (internalId) await this.trackerSyncManager?.unsubscribe(internalId);
   }
 
   async cleanup(): Promise<void> {
-    const subscriptions = [...this.subscriptions];
+    this.closed = true;
+    const subscriptions = [...this.subscriptions.values()];
     this.subscriptions.clear();
     await Promise.all(
       subscriptions.map((subscriptionId) => this.trackerSyncManager?.unsubscribe(subscriptionId)),
@@ -319,6 +343,15 @@ export class TrackerSession {
 
   private async refreshAfterMutation(cwd: string): Promise<void> {
     await this.trackerSyncManager?.requestRefresh(cwd);
+  }
+
+  private parseCursor(cursor: string | undefined): number {
+    if (cursor === undefined) return 0;
+    const offset = Number(cursor);
+    if (!/^\d+$/.test(cursor) || !Number.isSafeInteger(offset)) {
+      throw new AitCliError("validation", "Tracker cursor must be a non-negative integer");
+    }
+    return offset;
   }
 
   async handleProjectTrackerShowRequest(

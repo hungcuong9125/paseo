@@ -74,7 +74,7 @@ export function TrackerEditSheet(props: TrackerEditSheetProps): ReactElement | n
 
   return (
     <OpenTrackerEditSheet
-      key={renderedProps.tracker.id}
+      key={`${renderedProps.tracker.serverId}:${renderedProps.tracker.projectId}:${renderedProps.tracker.id}`}
       tracker={renderedProps.tracker}
       visible={sheetVisible}
       onClose={requestClose}
@@ -98,18 +98,33 @@ function OpenTrackerEditSheet({
   const isCompact = useIsCompactFormFactor();
   const [title, setTitle] = useState(tracker.title);
   const [description, setDescription] = useState("");
+  const [descriptionEdited, setDescriptionEdited] = useState(false);
   // AdaptiveTextInput is uncontrolled — flips resetKey to pick up the description once it loads.
   const [descriptionLoadState, setDescriptionLoadState] = useState<"loading" | "loaded">("loading");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [descriptionLoadAttempt, setDescriptionLoadAttempt] = useState(0);
+  const descriptionLoadedRef = useRef(false);
   const { updateTracker, isUpdating } = useTrackerMutations({
     serverId: tracker.serverId,
     projectId: tracker.projectId,
   });
+  const retryLoadDescription = useCallback(() => {
+    setLoadError(null);
+    setDescriptionLoadState("loading");
+    setDescriptionLoadAttempt((attempt) => attempt + 1);
+  }, []);
+  const handleDescriptionChange = useCallback((value: string) => {
+    setDescription(value);
+    setDescriptionEdited(true);
+  }, []);
 
   // Summaries don't carry `description` — fetch the full record to prefill it.
   useEffect(() => {
+    if (descriptionLoadedRef.current) return;
     let cancelled = false;
+    setLoadError(null);
+    setDescriptionLoadState("loading");
     async function loadDescription(): Promise<void> {
       if (!client) {
         setLoadError("Host disconnected");
@@ -122,6 +137,7 @@ function OpenTrackerEditSheet({
           trackerId: tracker.id,
         });
         if (!cancelled) {
+          descriptionLoadedRef.current = true;
           setDescription(detail.description ?? "");
           setDescriptionLoadState("loaded");
         }
@@ -136,9 +152,13 @@ function OpenTrackerEditSheet({
     return () => {
       cancelled = true;
     };
-  }, [client, tracker.id, tracker.projectId]);
+  }, [client, tracker.id, tracker.projectId, descriptionLoadAttempt]);
 
-  const canSubmit = title.trim().length > 0 && !isUpdating;
+  const canSubmit =
+    title.trim().length > 0 &&
+    !isUpdating &&
+    descriptionLoadState === "loaded" &&
+    loadError === null;
 
   const handleSubmit = useCallback(async () => {
     if (!canSubmit) {
@@ -149,14 +169,23 @@ function OpenTrackerEditSheet({
       const summary = await updateTracker({
         trackerId: tracker.id,
         title: title.trim(),
-        description: description.trim() || undefined,
+        description: descriptionEdited ? description.trim() : undefined,
       });
       onUpdated(summary);
       onClose();
     } catch (error) {
       setSubmitError(toErrorMessage(error));
     }
-  }, [canSubmit, updateTracker, tracker.id, title, description, onUpdated, onClose]);
+  }, [
+    canSubmit,
+    updateTracker,
+    tracker.id,
+    title,
+    description,
+    descriptionEdited,
+    onUpdated,
+    onClose,
+  ]);
 
   const handleSubmitPress = useCallback(() => {
     void handleSubmit();
@@ -208,7 +237,8 @@ function OpenTrackerEditSheet({
         <FormTextInput
           initialValue={description}
           resetKey={descriptionLoadState}
-          onChangeText={setDescription}
+          editable={descriptionLoadState === "loaded" && loadError === null}
+          onChangeText={handleDescriptionChange}
           placeholder="Optional details"
           multiline
           textAlignVertical="top"
@@ -217,9 +247,14 @@ function OpenTrackerEditSheet({
         />
       </Field>
       {loadError ? (
-        <Text style={styles.errorText} testID="tracker-edit-load-error">
-          Couldn&apos;t load the current description: {loadError}
-        </Text>
+        <View>
+          <Text style={styles.errorText} testID="tracker-edit-load-error">
+            Couldn&apos;t load the current description: {loadError}
+          </Text>
+          <Button variant="ghost" onPress={retryLoadDescription} testID="tracker-edit-load-retry">
+            Try again
+          </Button>
+        </View>
       ) : null}
       {submitError ? (
         <Text style={styles.errorText} testID="tracker-edit-error">

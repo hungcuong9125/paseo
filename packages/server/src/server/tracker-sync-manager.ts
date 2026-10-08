@@ -122,6 +122,8 @@ export class TrackerSyncManager {
   private readonly idleDisposalTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly idleDisposals = new Set<Promise<void>>();
   private nextEpoch = 1;
+  private closed = false;
+  private readonly projectWatchTasks = new Map<string, Promise<void>>();
 
   constructor(options: TrackerSyncManagerOptions) {
     this.aitService = options.aitService;
@@ -151,6 +153,10 @@ export class TrackerSyncManager {
   }
 
   async watchProject(projectId: string): Promise<void> {
+    return this.serializeProjectWatch(projectId, () => this.watchProjectNow(projectId));
+  }
+
+  private async watchProjectNow(projectId: string): Promise<void> {
     const rootPath = await this.resolveRoot(projectId);
     const initialized = await this.aitDatabaseExists(rootPath);
     const existingRoot = this.roots.get(rootPath);
@@ -172,6 +178,10 @@ export class TrackerSyncManager {
   }
 
   async unwatchProject(projectId: string): Promise<void> {
+    return this.serializeProjectWatch(projectId, () => this.unwatchProjectNow(projectId));
+  }
+
+  private async unwatchProjectNow(projectId: string): Promise<void> {
     for (const [rootPath, projectIds] of this.projectIdsByRoot) {
       if (!projectIds.delete(projectId)) continue;
       const globalProjectIds = this.globalProjectIdsByRoot.get(rootPath);
@@ -269,6 +279,8 @@ export class TrackerSyncManager {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
+    await Promise.all(this.projectWatchTasks.values());
     const roots = [...this.roots.values()];
     const idleDisposals = [...this.idleDisposals];
     this.roots.clear();
@@ -286,6 +298,19 @@ export class TrackerSyncManager {
     return this.nextEpoch++;
   }
 
+  private serializeProjectWatch(projectId: string, operation: () => Promise<void>): Promise<void> {
+    if (this.closed)
+      return Promise.reject(new AitCliError("unknown", "Tracker observation service is closed"));
+    const previous = this.projectWatchTasks.get(projectId) ?? Promise.resolve();
+    const result = previous.then(operation, operation);
+    const tail = result.catch(() => undefined);
+    this.projectWatchTasks.set(projectId, tail);
+    void tail.finally(() => {
+      if (this.projectWatchTasks.get(projectId) === tail) this.projectWatchTasks.delete(projectId);
+    });
+    return result;
+  }
+
   private async resolveRoot(projectId: string): Promise<string> {
     const project = await this.projectRegistry.get(projectId);
     if (!project || project.archivedAt) {
@@ -297,6 +322,7 @@ export class TrackerSyncManager {
   }
 
   private getOrCreateRoot(rootPath: string): AitRootWatch {
+    if (this.closed) throw new AitCliError("unknown", "Tracker observation service is closed");
     let root = this.roots.get(rootPath);
     if (!root) {
       root = new AitRootWatch(
@@ -308,6 +334,8 @@ export class TrackerSyncManager {
         (initialized) => this.notifyAitInitializationChanged(rootPath, initialized),
         () => this.removeGlobalWatchWhenInitialized(rootPath),
         () => {
+          const currentRoot = this.roots.get(rootPath);
+          if (currentRoot && currentRoot !== root) return;
           this.roots.delete(rootPath);
           this.projectIdsByRoot.delete(rootPath);
           this.globalProjectIdsByRoot.delete(rootPath);
@@ -355,6 +383,7 @@ export class TrackerSyncManager {
   }
 
   private async maybeDisposeRoot(root: AitRootWatch): Promise<void> {
+    if (this.closed) return;
     if (root.hasListeners || (this.globalProjectIdsByRoot.get(root.rootPath)?.size ?? 0) > 0) {
       this.cancelIdleDisposal(root.rootPath);
       return;
@@ -476,6 +505,7 @@ class AitRootWatch {
     this.debounceTimer = null;
     this.existenceTimer = null;
     this.retryTimer = null;
+    await this.observationPromise?.catch(() => undefined);
     const subscription = this.observerSubscription;
     this.observerSubscription = null;
     await subscription?.unsubscribe().catch(() => undefined);
@@ -485,30 +515,44 @@ class AitRootWatch {
   }
 
   private async attachOrProbe(): Promise<void> {
+    if (this.closed) return;
     const directory = join(this.rootPath, ".ait");
-    if (!(await this.directoryExists(directory))) {
-      if (this.observerSubscription) {
-        const subscription = this.observerSubscription;
-        this.observerSubscription = null;
-        await subscription.unsubscribe().catch(() => undefined);
-      }
+    const exists = await this.directoryExists(directory);
+    if (this.closed) return;
+    if (!exists) {
+      const subscription = this.observerSubscription;
+      this.observerSubscription = null;
+      await subscription?.unsubscribe().catch(() => undefined);
       await this.refreshInitializationState();
       this.enterExistenceProbe();
       return;
     }
+    if (this.observerSubscription) return;
     try {
       const recovering = this.existenceTimer !== null || this.retryTimer !== null;
-      this.observerSubscription = await this.fileObserver.subscribe(directory, (error) => {
+      let attachmentFailed = false;
+      let attemptSubscription: FileObserverSubscription | null = null;
+      const subscription = await this.fileObserver.subscribe(directory, (error) => {
+        if (this.closed) return;
         if (error) {
-          const subscription = this.observerSubscription;
+          if (attemptSubscription && this.observerSubscription !== attemptSubscription) return;
+          attachmentFailed = true;
+          const failedSubscription = this.observerSubscription;
           this.observerSubscription = null;
-          void subscription?.unsubscribe();
+          void failedSubscription?.unsubscribe();
           this.probeInitializationState();
           this.enterDegradedPolling();
           return;
         }
         this.scheduleRefresh();
       });
+      attemptSubscription = subscription;
+      if (this.closed || attachmentFailed) {
+        await subscription.unsubscribe();
+        if (!this.closed) this.enterDegradedPolling();
+        return;
+      }
+      this.observerSubscription = subscription;
       if (this.existenceTimer) clearInterval(this.existenceTimer);
       this.existenceTimer = null;
       if (this.retryTimer) clearInterval(this.retryTimer);
@@ -519,23 +563,24 @@ class AitRootWatch {
         await this.refreshActiveVariants();
       }
     } catch {
+      if (this.closed) return;
       await this.refreshInitializationState().catch(() => undefined);
       this.enterDegradedPolling();
     }
   }
 
   private enterExistenceProbe(): void {
-    if (this.existenceTimer) return;
+    if (this.closed || this.existenceTimer) return;
     this.existenceTimer = setInterval(() => {
-      void this.attachOrProbe();
+      void this.start();
     }, UNINITIALISED_PROBE_MS);
     (this.existenceTimer as unknown as { unref?: () => void }).unref?.();
   }
 
   private enterDegradedPolling(): void {
-    if (this.retryTimer) return;
+    if (this.closed || this.retryTimer) return;
     this.retryTimer = setInterval(() => {
-      void this.attachOrProbe();
+      void this.start();
       void this.refreshActiveVariants();
     }, WATCH_RETRY_MS);
     (this.retryTimer as unknown as { unref?: () => void }).unref?.();
@@ -563,6 +608,7 @@ class AitRootWatch {
 
   private async refreshInitializationState(): Promise<void> {
     const next = await this.aitDatabaseExists(this.rootPath);
+    if (this.closed) return;
     if (this.aitInitialized === null) {
       this.aitInitialized = next;
       if (next) await this.onInitializationChange(next);

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TrackerPriority, TrackerStatus, TrackerType } from "@getpaseo/protocol/tracker/types";
 import {
   fetchTrackerPage,
+  trackerKey,
+  trackerParentKey,
   toTrackerProjectError,
   type AggregatedTracker,
   type TrackerProjectError,
@@ -77,18 +79,12 @@ function hasErrorForProject(
   return errors.some((e) => e.serverId === project.serverId && e.projectId === project.projectId);
 }
 
-// The k-way merge step: each buffer is one project's rows, already
-// newest-first (guaranteed by the server when sort is active). Repeatedly
-// takes whichever buffer's head is newest until `count` rows are taken or
-// every buffer runs dry. Never looks past a buffer's head — a stream being
-// individually sorted is exactly what makes that safe: everything that
-// stream hasn't revealed yet is guaranteed older than what's at its head, so
-// there's never a reason to peek further before taking from a different
-// stream. Mutates `buffers` in place (each taken row is shifted off),
-// leaving whatever's left as this round's carry-over.
+// An exhausted stream with unseen rows blocks the merge until its head is
+// refilled. Otherwise an older buffered row could overtake its next page.
 function takeNewest(
   buffers: ReadonlyMap<string, AggregatedTracker[]>,
   count: number,
+  cursors: Readonly<Record<string, CursorState>>,
 ): AggregatedTracker[] {
   const taken: AggregatedTracker[] = [];
   while (taken.length < count) {
@@ -97,6 +93,7 @@ function takeNewest(
     for (const [key, rows] of buffers) {
       const head = rows[0];
       if (head === undefined) {
+        if (cursors[key].hasMore) return taken;
         continue;
       }
       if (bestRow === null || compareByCreatedNewest(head, bestRow) < 0) {
@@ -138,14 +135,6 @@ interface MergedWindowResult {
   offlineStatusByProject: ReadonlyMap<string, boolean>;
 }
 
-// A real workspace converges in 1-2 rounds in practice (see this hook's own
-// tests for measured fetch counts): round 1 splits `budget` evenly across
-// every relevant project, and any project that comes up short hands its
-// remaining share to whichever projects are still hungry in round 2. The cap
-// exists only as a safety valve for a pathological spread across many small
-// projects — past it, this returns fewer than `budget` rows rather than
-// chaining more round-trips, and the section's own hasMore/loadMore already
-// know how to offer the rest as a partial page.
 const MERGE_MAX_ROUNDS = 4;
 
 /**
@@ -160,6 +149,8 @@ const MERGE_MAX_ROUNDS = 4;
  * over-fetched relative to its own budget: those are consumed first, so a
  * project that already gave more than it needed to doesn't pay for the same
  * rows twice on the next "Show more".
+ * The round cap bounds one UI request; a short page keeps `hasMore` so the next
+ * request can continue without crossing a project whose merge frontier is unknown.
  *
  * Relies on each project's own stream being sorted newest-first server-side
  * (`fetchRound` is expected to request that) — `takeNewest` only ever reads
@@ -195,10 +186,13 @@ async function fetchMergedStatusWindow(
   const errors: TrackerProjectError[] = [];
   const seenErrorProjects = new Set<string>();
   const offlineStatusByProject = new Map<string, boolean>();
+  const taken: AggregatedTracker[] = [];
 
+  // A bounded request may return a short page. Never cross an unknown merge
+  // frontier to fill it; buffered rows remain available to the next request.
   for (let round = 0; round < MERGE_MAX_ROUNDS; round++) {
-    const bufferedTotal = [...buffers.values()].reduce((sum, rows) => sum + rows.length, 0);
-    if (bufferedTotal >= budget) {
+    taken.push(...takeNewest(buffers, budget - taken.length, cursors));
+    if (taken.length >= budget) {
       break;
     }
     const needsFetch = relevantProjects.filter((project) => {
@@ -208,7 +202,9 @@ async function fetchMergedStatusWindow(
     if (needsFetch.length === 0) {
       break;
     }
-    const chunk = Math.max(1, Math.ceil((budget - bufferedTotal) / needsFetch.length));
+    const share = Math.ceil(budget / relevantProjects.length);
+    const remainingShare = Math.ceil((budget - taken.length) / needsFetch.length);
+    const chunk = Math.max(1, Math.min(share, remainingShare));
     const targets = needsFetch.map((project) => ({
       project,
       cursor: cursors[projectKeyOf(project)].cursor,
@@ -237,7 +233,7 @@ async function fetchMergedStatusWindow(
     }
   }
 
-  const taken = takeNewest(buffers, budget);
+  taken.push(...takeNewest(buffers, budget - taken.length, cursors));
   for (const project of relevantProjects) {
     const key = projectKeyOf(project);
     cursors[key] = { ...cursors[key], buffer: buffers.get(key) ?? [] };
@@ -245,9 +241,9 @@ async function fetchMergedStatusWindow(
   return { taken, cursors, errors, offlineStatusByProject };
 }
 
-function findTrackerStatus(sections: SectionsState, id: string): TrackerStatus | null {
+function findTrackerStatus(sections: SectionsState, key: string): TrackerStatus | null {
   for (const status of LIST_SECTION_STATUSES) {
-    if (sections[status].trackers.some((tracker) => tracker.id === id)) {
+    if (sections[status].trackers.some((tracker) => trackerKey(tracker) === key)) {
       return status;
     }
   }
@@ -290,7 +286,7 @@ function locateTrackers(sections: SectionsState): Map<string, TrackerStatus> {
   const location = new Map<string, TrackerStatus>();
   for (const status of LIST_SECTION_STATUSES) {
     for (const tracker of sections[status].trackers) {
-      location.set(tracker.id, status);
+      location.set(trackerKey(tracker), status);
     }
   }
   return location;
@@ -311,20 +307,19 @@ function locateTrackers(sections: SectionsState): Map<string, TrackerStatus> {
 // stats) is left `undefined`, never given a fabricated value.
 function adjustAncestorCounts(
   sections: SectionsState,
-  parentId: string | null,
+  updated: AggregatedTracker,
   doneDelta: number,
   childDelta: number,
-  startId: string,
 ): SectionsState {
-  if ((doneDelta === 0 && childDelta === 0) || parentId === null) {
+  if ((doneDelta === 0 && childDelta === 0) || updated.parentId === null) {
     return sections;
   }
   const location = locateTrackers(sections);
   const next: SectionsState = { ...sections };
   // Seeded with the mutated tracker's own id: malformed/cyclic `parentId`
   // data must never loop back onto the row this same patch just re-filed.
-  const visited = new Set<string>([startId]);
-  let currentId: string | null = parentId;
+  const visited = new Set<string>([trackerKey(updated)]);
+  let currentId = trackerParentKey(updated);
   let depth = 0;
   while (currentId !== null && !visited.has(currentId) && depth < MAX_TREE_DEPTH) {
     visited.add(currentId);
@@ -333,7 +328,7 @@ function adjustAncestorCounts(
       break;
     }
     const section = next[status];
-    const index = section.trackers.findIndex((tracker) => tracker.id === currentId);
+    const index = section.trackers.findIndex((tracker) => trackerKey(tracker) === currentId);
     if (index === -1) {
       break;
     }
@@ -346,7 +341,7 @@ function adjustAncestorCounts(
       childCount: ancestor.childCount === undefined ? undefined : ancestor.childCount + childDelta,
       doneCount: ancestor.doneCount === undefined ? undefined : ancestor.doneCount + doneDelta,
     };
-    currentId = ancestor.parentId;
+    currentId = trackerParentKey(ancestor);
     depth += 1;
   }
   return next;
@@ -378,20 +373,22 @@ function computeAncestorRemovalDeltas(
   for (const removedId of removedIds) {
     const status = location.get(removedId);
     const removedTracker =
-      status !== undefined ? current[status].trackers.find((t) => t.id === removedId) : undefined;
+      status !== undefined
+        ? current[status].trackers.find((t) => trackerKey(t) === removedId)
+        : undefined;
     if (!removedTracker) {
       continue;
     }
     const wasDone = isDone(removedTracker);
     const visited = new Set<string>([removedId]);
-    let currentId: string | null = removedTracker.parentId;
+    let currentId = trackerParentKey(removedTracker);
     let depth = 0;
     while (currentId !== null && !visited.has(currentId) && depth < MAX_TREE_DEPTH) {
       visited.add(currentId);
       const ancestorStatus = location.get(currentId);
       const ancestor =
         ancestorStatus !== undefined
-          ? current[ancestorStatus].trackers.find((t) => t.id === currentId)
+          ? current[ancestorStatus].trackers.find((t) => trackerKey(t) === currentId)
           : undefined;
       if (!ancestor) {
         break;
@@ -404,7 +401,7 @@ function computeAncestorRemovalDeltas(
         }
         deltas.set(currentId, delta);
       }
-      currentId = ancestor.parentId;
+      currentId = trackerParentKey(ancestor);
       depth += 1;
     }
   }
@@ -430,7 +427,7 @@ function applyAncestorRemovalDeltas(
       continue;
     }
     const section = next[status];
-    const index = section.trackers.findIndex((tracker) => tracker.id === id);
+    const index = section.trackers.findIndex((tracker) => trackerKey(tracker) === id);
     if (index === -1) {
       continue;
     }
@@ -505,13 +502,15 @@ export interface UseTrackerProjectDataResult {
    * if omitted) is still waiting on its first page for the current scope. */
   isLoading: boolean;
   projectErrors: TrackerProjectError[];
-  /** Replaces the tracker by id wherever it currently lives (any section, any
-   * project), re-filing it into the section matching `updated.status` — or
-   * inserts it if not found (covers a newly created tracker). Used to apply
-   * the result of the user's own mutations without a re-fetch. */
+  /** Updates a loaded tracker. Off-page mutations refresh authoritative counts. */
   patchTracker: (updated: AggregatedTracker) => void;
+  /** Only creation may increase totals without knowing the prior row. */
+  insertTracker: (created: AggregatedTracker) => void;
   /** Removes trackers by id from wherever they live, across every section. */
-  removeTrackers: (ids: string[]) => void;
+  removeTrackers: (
+    ids: string[],
+    project: Pick<AggregatedTracker, "serverId" | "projectId">,
+  ) => void;
   /** Restarts pagination from scratch for the current scope, re-fetching
    * whatever `options.sections` currently asks for. */
   refetch: () => void;
@@ -1294,6 +1293,8 @@ export function useTrackerProjectData(
           targets.map(async (project) => {
             const projectKey = projectKeyOf(project);
             const cursor = currentCursors[projectKey]?.cursor ?? undefined;
+            const wasOfflineAtFetch =
+              runtime.getSnapshot(project.serverId)?.connectionStatus !== "online";
             try {
               const result = await fetchTrackerPage({
                 project,
@@ -1306,9 +1307,9 @@ export function useTrackerProjectData(
                 cursor,
                 sort: "newest",
               });
-              return { project, projectKey, result, error: null as unknown };
+              return { project, projectKey, result, error: null as unknown, wasOfflineAtFetch };
             } catch (error) {
-              return { project, projectKey, result: null, error };
+              return { project, projectKey, result: null, error, wasOfflineAtFetch };
             }
           }),
         );
@@ -1322,6 +1323,10 @@ export function useTrackerProjectData(
           return;
         }
         for (const page of results) {
+          if (page.wasOfflineAtFetch) {
+            offlineProjectKeysRef.current.add(page.projectKey);
+            continue;
+          }
           if (page.error) {
             setProjectErrors((current) =>
               hasErrorForProject(current, page.project)
@@ -1424,100 +1429,134 @@ export function useTrackerProjectData(
     return merged;
   }, [sections]);
 
-  const patchTracker = useCallback((updated: AggregatedTracker) => {
-    const projectKey = projectKeyOf(updated);
-    setSections((current) => {
-      const previousStatus = findTrackerStatus(current, updated.id);
-      const previousTracker =
-        previousStatus !== null
-          ? (current[previousStatus].trackers.find((tracker) => tracker.id === updated.id) ?? null)
-          : null;
-      let next = createEmptySections();
-      for (const status of LIST_SECTION_STATUSES) {
-        next[status].cursors = current[status].cursors;
-        next[status].trackers = current[status].trackers.filter(
-          (tracker) => tracker.id !== updated.id,
-        );
-      }
-      next[updated.status].trackers.push(updated);
-      sortMerged(next[updated.status].trackers);
-      // A move between sections shifts the count by one on each side; an
-      // in-place edit (previousStatus === updated.status) doesn't change
-      // either total, and a brand-new tracker (previousStatus === null) only
-      // adds to its landing section.
-      if (previousStatus !== null && previousStatus !== updated.status) {
-        next[previousStatus].cursors = adjustProjectTotal(
-          next[previousStatus].cursors,
-          projectKey,
-          -1,
-        );
-      }
-      if (previousStatus !== updated.status) {
-        next[updated.status].cursors = adjustProjectTotal(
-          next[updated.status].cursors,
-          projectKey,
-          1,
-        );
-      }
-      // A parent's subtree badge ("1 of 2 done") is server-computed per row
-      // (docs/tracker-data.md) and this patch only ever touches `updated`'s
-      // own row — left alone, every ancestor's childCount/doneCount would go
-      // stale the moment a descendant's done-state changes (pas-2KY5X.11).
-      // Reparenting has no UI path today (create is the only mutation that
-      // sets parentId, and it always targets a fresh, previously-absent row),
-      // so it's intentionally not handled here: adjusting one chain without
-      // knowing the other risks a wrong count, which is worse than a stale
-      // one that a real refetch will still correct.
-      const reparented = previousTracker !== null && previousTracker.parentId !== updated.parentId;
-      if (!reparented) {
-        const wasDone = previousTracker !== null && isDone(previousTracker);
-        const isDoneNow = isDone(updated);
-        let doneDelta = 0;
-        if (isDoneNow && !wasDone) {
-          doneDelta = 1;
-        } else if (!isDoneNow && wasDone) {
-          doneDelta = -1;
-        }
-        const childDelta = previousTracker === null ? 1 : 0;
-        next = adjustAncestorCounts(next, updated.parentId, doneDelta, childDelta, updated.id);
-      }
-      return next;
-    });
-  }, []);
-
-  const removeTrackers = useCallback((ids: string[]) => {
-    const idSet = new Set(ids);
-    setSections((current) => {
-      // Computed from `current` (pre-removal) before any row is dropped —
-      // see computeAncestorRemovalDeltas for why the walk needs to see
-      // through an ancestor that is itself part of this same removal.
-      const ancestorDeltas = computeAncestorRemovalDeltas(current, idSet);
-      const next = createEmptySections();
-      for (const status of LIST_SECTION_STATUSES) {
-        let cursors = current[status].cursors;
-        const kept: AggregatedTracker[] = [];
-        for (const tracker of current[status].trackers) {
-          if (idSet.has(tracker.id)) {
-            cursors = adjustProjectTotal(cursors, projectKeyOf(tracker), -1);
-            continue;
-          }
-          kept.push(tracker);
-        }
-        next[status] = { trackers: kept, cursors };
-      }
-      // A parent's subtree badge must lose exactly what this delete removed
-      // (pas-2KY5X.11) — the same staleness patchTracker's ancestor walk
-      // fixes for a status/create mutation, on the delete path.
-      return applyAncestorRemovalDeltas(next, ancestorDeltas);
-    });
-  }, []);
-
   const refetch = useCallback(() => {
-    // Forces the next syncSections call to treat this as a fresh scope even
-    // though scopeKey itself hasn't changed.
     lastScopeKeyRef.current = null;
     void syncSections(desiredSections);
   }, [syncSections, desiredSections]);
+
+  const applyTracker = useCallback(
+    (updated: AggregatedTracker) => {
+      const inProjectScope = relevantProjects.some(
+        (project) => projectKeyOf(project) === projectKeyOf(updated),
+      );
+      const matchesType = options.type === undefined || updated.type === options.type;
+      const matchesPriority =
+        options.priority === undefined || updated.priority === options.priority;
+      if (!inProjectScope) return;
+      if (!matchesType || !matchesPriority) {
+        if (findTrackerStatus(sectionsRef.current, trackerKey(updated)) !== null) refetch();
+        return;
+      }
+      const projectKey = projectKeyOf(updated);
+      setSections((current) => {
+        const previousStatus = findTrackerStatus(current, trackerKey(updated));
+        const previousTracker =
+          previousStatus !== null
+            ? (current[previousStatus].trackers.find(
+                (tracker) => trackerKey(tracker) === trackerKey(updated),
+              ) ?? null)
+            : null;
+        let next = createEmptySections();
+        for (const status of LIST_SECTION_STATUSES) {
+          next[status].cursors = current[status].cursors;
+          next[status].trackers = current[status].trackers.filter(
+            (tracker) => trackerKey(tracker) !== trackerKey(updated),
+          );
+        }
+        next[updated.status].trackers.push(updated);
+        sortMerged(next[updated.status].trackers);
+        // A move between sections shifts the count by one on each side; an
+        // in-place edit (previousStatus === updated.status) doesn't change
+        // either total, and a brand-new tracker (previousStatus === null) only
+        // adds to its landing section.
+        if (previousStatus !== null && previousStatus !== updated.status) {
+          next[previousStatus].cursors = adjustProjectTotal(
+            next[previousStatus].cursors,
+            projectKey,
+            -1,
+          );
+        }
+        if (previousStatus !== updated.status) {
+          next[updated.status].cursors = adjustProjectTotal(
+            next[updated.status].cursors,
+            projectKey,
+            1,
+          );
+        }
+        // A parent's subtree badge ("1 of 2 done") is server-computed per row
+        // (docs/tracker-data.md) and this patch only ever touches `updated`'s
+        // own row — left alone, every ancestor's childCount/doneCount would go
+        // stale the moment a descendant's done-state changes (pas-2KY5X.11).
+        // Reparenting has no UI path today (create is the only mutation that
+        // sets parentId, and it always targets a fresh, previously-absent row),
+        // so it's intentionally not handled here: adjusting one chain without
+        // knowing the other risks a wrong count, which is worse than a stale
+        // one that a real refetch will still correct.
+        const reparented =
+          previousTracker !== null && previousTracker.parentId !== updated.parentId;
+        if (!reparented) {
+          const wasDone = previousTracker !== null && isDone(previousTracker);
+          const isDoneNow = isDone(updated);
+          let doneDelta = 0;
+          if (isDoneNow && !wasDone) {
+            doneDelta = 1;
+          } else if (!isDoneNow && wasDone) {
+            doneDelta = -1;
+          }
+          const childDelta = previousTracker === null ? 1 : 0;
+          next = adjustAncestorCounts(next, updated, doneDelta, childDelta);
+        }
+        return next;
+      });
+    },
+    [options.type, options.priority, relevantProjects, refetch],
+  );
+
+  const patchTracker = useCallback(
+    (updated: AggregatedTracker) => {
+      if (findTrackerStatus(sectionsRef.current, trackerKey(updated)) === null) {
+        refetch();
+        return;
+      }
+      applyTracker(updated);
+    },
+    [applyTracker, refetch],
+  );
+
+  const removeTrackers = useCallback(
+    (ids: string[], project: Pick<AggregatedTracker, "serverId" | "projectId">) => {
+      const keys = ids.map((id) => trackerKey({ ...project, id }));
+      if (keys.some((key) => findTrackerStatus(sectionsRef.current, key) === null)) {
+        refetch();
+        return;
+      }
+      const idSet = new Set(keys);
+      setSections((current) => {
+        // Computed from `current` (pre-removal) before any row is dropped —
+        // see computeAncestorRemovalDeltas for why the walk needs to see
+        // through an ancestor that is itself part of this same removal.
+        const ancestorDeltas = computeAncestorRemovalDeltas(current, idSet);
+        const next = createEmptySections();
+        for (const status of LIST_SECTION_STATUSES) {
+          let cursors = current[status].cursors;
+          const kept: AggregatedTracker[] = [];
+          for (const tracker of current[status].trackers) {
+            if (idSet.has(trackerKey(tracker))) {
+              cursors = adjustProjectTotal(cursors, projectKeyOf(tracker), -1);
+              continue;
+            }
+            kept.push(tracker);
+          }
+          next[status] = { trackers: kept, cursors };
+        }
+        // A parent's subtree badge must lose exactly what this delete removed
+        // (pas-2KY5X.11) — the same staleness patchTracker's ancestor walk
+        // fixes for a status/create mutation, on the delete path.
+        return applyAncestorRemovalDeltas(next, ancestorDeltas);
+      });
+    },
+    [refetch],
+  );
 
   return {
     trackers,
@@ -1528,6 +1567,7 @@ export function useTrackerProjectData(
     isLoading,
     projectErrors,
     patchTracker,
+    insertTracker: applyTracker,
     removeTrackers,
     refetch,
   };

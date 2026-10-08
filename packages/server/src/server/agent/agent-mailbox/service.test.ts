@@ -174,6 +174,22 @@ describe("AgentMailbox", () => {
     expect(await fixture.mailbox.listEntries("lead")).toEqual([]);
   });
 
+  test("does not dispatch over a delivered batch awaiting its turn outcome", async () => {
+    const fixture = createFixture({ directory, running: ["lead"] });
+    await fixture.mailbox.enqueue("lead", agentPrompt("first"));
+    fixture.mailbox.stop();
+    await fixture.mailbox.flush();
+    const file = await fixture.store.load("lead");
+    if (!file) throw new Error("Expected persisted mail");
+    file.entries[0]!.state = "delivering";
+    await fixture.store.save(file);
+    fixture.setRunning("lead", false);
+    const dispatch = vi.fn(async () => "ran");
+    const admission = await fixture.mailbox.admit("lead", agentPrompt("second"), dispatch);
+    expect(admission.status).toBe("queued");
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   test("when the agent goes idle the mail arrives as one batch in seq order", async () => {
     const fixture = createFixture({ directory, running: ["lead"], turns: ["keeps-running"] });
     for (const text of ["one", "two", "three"]) {

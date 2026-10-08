@@ -4,7 +4,7 @@
 import React from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
+import type { AggregatedTracker } from "@/tracker/aggregated-trackers";
 
 vi.mock("@/components/tracker/tracker-kanban-card", () => ({
   TrackerKanbanCard: ({ id, title }: { id: string; title: string }) =>
@@ -60,8 +60,12 @@ vi.mock("react-i18next", () => ({
   }),
 }));
 
-function tracker(id: string): TrackerSummary {
+function tracker(id: string): AggregatedTracker {
   return {
+    serverId: "host-a",
+    serverName: "Host A",
+    projectId: "prj-a",
+    projectName: "Project A",
     id,
     title: `Tracker ${id}`,
     type: "task",

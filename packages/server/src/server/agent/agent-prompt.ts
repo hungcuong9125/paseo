@@ -1,6 +1,7 @@
 import {
   formatSystemNotificationPrompt,
   formatAgentMessage,
+  escapeXml,
   parseAgentMessage,
   prepareAgentMessage,
   type AgentPromptSource,
@@ -446,7 +447,7 @@ export async function sendPromptToAgent(
       ...(params.sessionMode ? { sessionMode: params.sessionMode } : {}),
       ...(params.notifyCallerAgentId ? { notifyCallerAgentId: params.notifyCallerAgentId } : {}),
     },
-    () => dispatchPrompt(params),
+    () => dispatchPrompt({ ...params, replaceRunning: false }),
   );
   return admission.status === "queued"
     ? { disposition: "queued", position: admission.position }
@@ -557,7 +558,7 @@ export interface SetupFinishNotificationParams {
    * Bind to a turn that is already running instead of waiting for `bindTurn`.
    * Use it when a blocking wait gave up on a turn still in progress.
    */
-  expectedTurnId?: string;
+  expectedTurnId?: string | null;
   requireParentOwnership?: boolean;
   logger: Logger;
 }
@@ -642,11 +643,17 @@ function renderMailboxDelivery(delivery: MailboxDelivery): { prompt: string } {
     };
   }
   const items = delivery.entries.map((entry) => {
-    const attributes = [`id="${entry.id}"`, `from="${describeMailboxSource(entry)}"`];
+    const attributes = [
+      `id="${escapeXml(entry.id)}"`,
+      `from="${escapeXml(describeMailboxSource(entry))}"`,
+    ];
     if (entry.redelivered) {
       attributes.push(`redelivered="true"`);
     }
-    return `<paseo-mailbox-item ${attributes.join(" ")}>\n${entry.prompt.text}\n</paseo-mailbox-item>`;
+    const notification =
+      entry.source.kind === "notification" ? parseAgentMessage(entry.prompt.text) : null;
+    const body = notification ? formatAgentMessage(notification) : escapeXml(entry.prompt.text);
+    return `<paseo-mailbox-item ${attributes.join(" ")}>\n${body}\n</paseo-mailbox-item>`;
   });
   return { prompt: formatSystemNotificationPrompt(items.join("\n\n")) };
 }
@@ -852,9 +859,11 @@ export function setupFinishNotification(
     });
   }
 
+  let terminalQueued = false;
   function release(): void {
+    if (!terminalQueued) fired = true;
     detach();
-    forgetPersistedWatch();
+    if (!terminalQueued) forgetPersistedWatch();
   }
 
   async function notify(
@@ -926,16 +935,21 @@ export function setupFinishNotification(
     );
   }
 
+  let notificationQueue = Promise.resolve();
   function notifySafely(
     reason: FinishNotificationReason,
     permissionRequest?: AgentPermissionRequest,
   ): void {
-    void notify(reason, permissionRequest).catch((error) => {
-      logger.error(
-        { err: error, childAgentId, callerAgentId, reason },
-        "Failed to notify caller agent",
-      );
-    });
+    if (fired || terminalQueued) return;
+    if (reason !== "needs permission") terminalQueued = true;
+    notificationQueue = notificationQueue
+      .then(() => notify(reason, permissionRequest))
+      .catch((error) => {
+        logger.error(
+          { err: error, childAgentId, callerAgentId, reason },
+          "Failed to notify caller agent",
+        );
+      });
   }
 
   function handleLifecycle(lifecycle: ManagedAgent["lifecycle"]): void {
@@ -1061,6 +1075,10 @@ export function setupFinishNotification(
   return {
     cancel() {
       if (fired) {
+        return;
+      }
+      if (terminalQueued) {
+        detach();
         return;
       }
       fired = true;

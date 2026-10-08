@@ -9,7 +9,7 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import type { StyleProp, ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
-import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
+import { trackerKey, type AggregatedTracker } from "@/tracker/aggregated-trackers";
 import { TrackerKanbanCard } from "@/components/tracker/tracker-kanban-card";
 import { TrackerKanbanCardMenu } from "@/components/tracker/tracker-kanban-move-menu";
 import { TrackerKanbanLaneSkeleton } from "@/components/tracker/tracker-skeletons";
@@ -35,9 +35,9 @@ function transitionLaneFor(lane: TrackerBoardLaneKey): TrackerLane {
 }
 
 interface TrackerKanbanCardPressableProps {
-  trackerId: string;
+  tracker: AggregatedTracker;
   pending: boolean;
-  onCardPress: (trackerId: string) => void;
+  onCardPress: (tracker: AggregatedTracker) => void;
   testID?: string;
 }
 
@@ -48,17 +48,17 @@ interface TrackerKanbanCardPressableProps {
 // docstring). Web's TrackerKanbanCardMenu renders `children` with no outer Pressable at
 // all, so this wrapper is the only one covering the card there — no conflict.
 //
-// Its own `onPress` is memoized per trackerId instead of allocating a closure
+// Its own `onPress` is memoized per tracker instead of allocating a closure
 // inline in the column's card list — see TrackerKanbanMoveItem's identical
 // rationale in tracker-kanban-move-menu.tsx.
 const TrackerKanbanCardPressable = memo(function TrackerKanbanCardPressable({
   children,
-  trackerId,
+  tracker,
   pending,
   onCardPress,
   testID,
 }: PropsWithChildren<TrackerKanbanCardPressableProps>): ReactElement {
-  const handlePress = useCallback(() => onCardPress(trackerId), [onCardPress, trackerId]);
+  const handlePress = useCallback(() => onCardPress(tracker), [onCardPress, tracker]);
   return (
     <Pressable
       disabled={pending}
@@ -79,19 +79,19 @@ export interface TrackerKanbanColumnProps {
   laneHasMore?: boolean;
   laneLoadingMore?: boolean;
   onLoadMore?: (lane: TrackerBoardLaneKey) => void;
-  getProjectLabel?: (tracker: TrackerSummary) => string | null;
-  isPending: (trackerId: string) => boolean;
-  onTransition: (trackerId: string, transition: TrackerTransition) => void;
+  getProjectLabel?: (tracker: AggregatedTracker) => string | null;
+  isPending: (tracker: AggregatedTracker) => boolean;
+  onTransition: (tracker: AggregatedTracker, transition: TrackerTransition) => void;
   /** Opens the caller's edit sheet for a card — omit to hide the kebab menu's Edit entry. */
-  onEdit?: (trackerId: string) => void;
+  onEdit?: (tracker: AggregatedTracker) => void;
   /** Performs the delete after the user confirms — omit to hide the kebab menu's
    * Remove/Delete tree entry. */
-  onDelete?: (trackerId: string) => void;
+  onDelete?: (tracker: AggregatedTracker) => void;
   /** Resolves whether a tracker has descendants from the caller's own (unfiltered)
    * hierarchy — falls back to this column's own `hierarchy` prop when omitted. */
-  getHasChildren?: (trackerId: string) => boolean;
+  getHasChildren?: (tracker: AggregatedTracker) => boolean;
   /** Tapping a card body (not the move menu) — omit to render cards non-pressable. */
-  onCardPress?: (trackerId: string) => void;
+  onCardPress?: (tracker: AggregatedTracker) => void;
   /** Position in the rendered lane row — only decides how many skeleton cards
    * this lane shows, so the placeholder board doesn't read as a uniform grid. */
   laneIndex?: number;
@@ -144,21 +144,21 @@ export function TrackerKanbanColumn({
       const tracker = card.tracker;
       let childCount = tracker.childCount;
       if (childCount === undefined) {
-        childCount = hierarchy.descendantStats(tracker.id).childCount;
+        childCount = hierarchy.descendantStats(trackerKey(tracker)).childCount;
       }
       let doneCount = tracker.doneCount;
       if (doneCount === undefined) {
-        doneCount = hierarchy.descendantStats(tracker.id).doneCount;
+        doneCount = hierarchy.descendantStats(trackerKey(tracker)).doneCount;
       }
       let hasChildren = false;
       if (getHasChildren != null) {
-        hasChildren = getHasChildren(tracker.id);
+        hasChildren = getHasChildren(tracker);
       } else if (tracker.childCount !== undefined) {
         hasChildren = tracker.childCount > 0;
       } else {
-        hasChildren = hierarchy.descendantStats(tracker.id).childCount > 0;
+        hasChildren = hierarchy.descendantStats(trackerKey(tracker)).childCount > 0;
       }
-      const pending = isPending(tracker.id);
+      const pending = isPending(tracker);
       const cardTestID = `tracker-kanban-card-${tracker.id}`;
       const cardBody = (
         <TrackerKanbanCard
@@ -179,8 +179,8 @@ export function TrackerKanbanColumn({
       // no outer Pressable there, so TrackerKanbanCardPressable owns the tap.
       return (
         <TrackerKanbanCardMenu
-          key={tracker.id}
-          trackerId={tracker.id}
+          key={trackerKey(tracker)}
+          tracker={tracker}
           trackerTitle={tracker.title}
           lane={transitionLane}
           isPending={pending}
@@ -194,7 +194,7 @@ export function TrackerKanbanColumn({
         >
           {!isNative && onCardPress ? (
             <TrackerKanbanCardPressable
-              trackerId={tracker.id}
+              tracker={tracker}
               pending={pending}
               onCardPress={onCardPress}
               testID={`${cardTestID}-press`}

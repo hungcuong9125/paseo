@@ -1,4 +1,5 @@
 import type { TrackerSummary } from "@getpaseo/protocol/tracker/types";
+import { trackerKey, type AggregatedTracker } from "@/tracker/aggregated-trackers";
 
 // Guards against malformed `parentId` chains emitted by the `ait` CLI:
 // ancestor cycles (a tracker that is its own descendant) and unbounded depth.
@@ -53,6 +54,7 @@ export function compareByCreatedNewest(left: TrackerSummary, right: TrackerSumma
   if (left.createdAt === undefined && right.createdAt !== undefined) {
     return 1;
   }
+  if (left.id === right.id) return 0;
   return left.id < right.id ? 1 : -1;
 }
 
@@ -60,56 +62,57 @@ export function compareByCreatedNewest(left: TrackerSummary, right: TrackerSumma
 // reused so descendant stats cost no repeated scans. The guards live inside
 // `descendantStats`, which is the operation a status board calls per parent.
 export interface TrackerHierarchy {
-  trackerMap: ReadonlyMap<string, TrackerSummary>;
-  childrenOf: ReadonlyMap<string, TrackerSummary[]>;
+  trackersByKey: ReadonlyMap<string, AggregatedTracker>;
+  childrenByParentKey: ReadonlyMap<string, AggregatedTracker[]>;
   // Aggregates the entire subtree under `parentId` (direct children + all
   // descendants). `childCount`/`doneCount` match the descendantStats shape the
   // card progress line consumes. Never visits an ancestor twice and never descends
   // past `MAX_TREE_DEPTH`, so a cyclic or deep `parentId` chain cannot loop.
   descendantStats(
-    parentId: string,
+    parentKey: string,
     ancestors?: ReadonlySet<string>,
     depth?: number,
   ): DescendantStats;
 }
 
-export function buildTrackerHierarchy(trackers: TrackerSummary[]): TrackerHierarchy {
-  const trackerMap = new Map<string, TrackerSummary>(
-    trackers.map((tracker) => [tracker.id, tracker]),
+export function buildTrackerHierarchy(trackers: AggregatedTracker[]): TrackerHierarchy {
+  const trackersByKey = new Map<string, AggregatedTracker>(
+    trackers.map((tracker) => [trackerKey(tracker), tracker]),
   );
-  const childrenOf = new Map<string, TrackerSummary[]>();
+  const childrenByParentKey = new Map<string, AggregatedTracker[]>();
   for (const tracker of trackers) {
     if (!tracker.parentId) {
       continue;
     }
-    const children = childrenOf.get(tracker.parentId) ?? [];
+    const parentKey = trackerKey({ ...tracker, id: tracker.parentId });
+    const children = childrenByParentKey.get(parentKey) ?? [];
     children.push(tracker);
-    childrenOf.set(tracker.parentId, children);
+    childrenByParentKey.set(parentKey, children);
   }
-  for (const children of childrenOf.values()) {
+  for (const children of childrenByParentKey.values()) {
     children.sort(compareTrackers);
   }
 
   const descendantStats = (
-    parentId: string,
+    parentKey: string,
     ancestors: ReadonlySet<string> = new Set<string>(),
     depth = 0,
   ): DescendantStats => {
-    if (depth >= MAX_TREE_DEPTH || ancestors.has(parentId)) {
+    if (depth >= MAX_TREE_DEPTH || ancestors.has(parentKey)) {
       return { childCount: 0, doneCount: 0 };
     }
-    const nextAncestors = new Set(ancestors).add(parentId);
+    const nextAncestors = new Set(ancestors).add(parentKey);
     let childCount = 0;
     let doneCount = 0;
-    for (const child of childrenOf.get(parentId) ?? []) {
+    for (const child of childrenByParentKey.get(parentKey) ?? []) {
       childCount += 1;
       doneCount += isDone(child) ? 1 : 0;
-      const nested = descendantStats(child.id, nextAncestors, depth + 1);
+      const nested = descendantStats(trackerKey(child), nextAncestors, depth + 1);
       childCount += nested.childCount;
       doneCount += nested.doneCount;
     }
     return { childCount, doneCount };
   };
 
-  return { trackerMap, childrenOf, descendantStats };
+  return { trackersByKey, childrenByParentKey, descendantStats };
 }
