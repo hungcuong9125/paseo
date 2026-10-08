@@ -51,6 +51,7 @@ const mockState = vi.hoisted(() => {
         env?: Record<string, string>;
         providerId?: string;
         label?: string;
+        configuredModels?: unknown[];
       }>,
     },
     isCommandAvailable: vi.fn(async (_command: string) => false),
@@ -309,6 +310,7 @@ vi.mock("./providers/generic-acp-agent.js", () => ({
       env?: Record<string, string>;
       providerId?: string;
       label?: string;
+      configuredModels?: unknown[];
     }) {
       this.runtimeSettings = {
         command: {
@@ -322,6 +324,7 @@ vi.mock("./providers/generic-acp-agent.js", () => ({
         env: options.env,
         providerId: options.providerId,
         label: options.label,
+        configuredModels: options.configuredModels,
       });
     }
 
@@ -680,6 +683,13 @@ test("new provider extending acp uses GenericACPAgentClient", () => {
         env: {
           ACP_TOKEN: "secret",
         },
+        models: [
+          {
+            id: "gemini-3.8-flash",
+            label: "Gemini 3.8 Flash",
+            thinkingOptions: [{ id: "high", label: "High" }],
+          },
+        ],
       },
     },
   });
@@ -693,6 +703,13 @@ test("new provider extending acp uses GenericACPAgentClient", () => {
       },
       providerId: "my-agent",
       label: "My Agent",
+      configuredModels: [
+        {
+          id: "gemini-3.8-flash",
+          label: "Gemini 3.8 Flash",
+          thinkingOptions: [{ id: "high", label: "High" }],
+        },
+      ],
     },
     {
       command: ["my-agent", "--acp"],
@@ -701,6 +718,13 @@ test("new provider extending acp uses GenericACPAgentClient", () => {
       },
       providerId: "my-agent",
       label: "My Agent",
+      configuredModels: [
+        {
+          id: "gemini-3.8-flash",
+          label: "Gemini 3.8 Flash",
+          thinkingOptions: [{ id: "high", label: "High" }],
+        },
+      ],
     },
   ]);
 });

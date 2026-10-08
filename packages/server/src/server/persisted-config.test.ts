@@ -843,3 +843,30 @@ describe.skipIf(process.platform === "win32")("persisted config file permissions
     }
   });
 });
+
+describe("PersistedConfigSchema mailbox config", () => {
+  test("accepts a global mailbox setting and one per provider entry", () => {
+    const parsed = PersistedConfigSchema.parse({
+      version: 1,
+      agents: {
+        mailbox: { enabled: false, resumeOnStartup: false },
+        providers: {
+          "claude-lead": {
+            extends: "claude",
+            label: "Claude Lead",
+            mailbox: { enabled: true },
+          },
+        },
+      },
+    });
+
+    expect(parsed.agents?.mailbox).toEqual({ enabled: false, resumeOnStartup: false });
+    expect(parsed.agents?.providers?.["claude-lead"]?.mailbox).toEqual({ enabled: true });
+  });
+
+  test("rejects unknown keys in the global mailbox setting", () => {
+    expect(() =>
+      PersistedConfigSchema.parse({ version: 1, agents: { mailbox: { enable: true } } }),
+    ).toThrow();
+  });
+});

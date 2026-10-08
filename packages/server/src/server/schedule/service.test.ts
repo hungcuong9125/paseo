@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { AgentManager } from "../agent/agent-manager.js";
 import { AgentStorage } from "../agent/agent-storage.js";
 import { createAgentCommand } from "../agent/create-agent/create.js";
+import { createAgentMailbox } from "../agent/agent-prompt.js";
+import { MemoryMailboxStore } from "../agent/agent-mailbox/store.js";
 import type {
   AgentCapabilityFlags,
   AgentClient,
@@ -81,6 +83,17 @@ type TestScheduleServiceOptions = Omit<
 };
 
 function createScheduleService(options: TestScheduleServiceOptions): ScheduleService {
+  if (!options.agentManager.getMailbox()) {
+    options.agentManager.setMailbox(
+      createAgentMailbox({
+        agentManager: options.agentManager,
+        agentStorage: options.agentStorage,
+        store: new MemoryMailboxStore(),
+        resolvePolicy: async () => ({ enabled: false, resumeOnStartup: false }),
+        logger: options.logger,
+      }),
+    );
+  }
   let workspaceCounter = 0;
   const workspaces = new Map<string, PersistedWorkspaceRecord>();
   const workspaceGitService = createNoopWorkspaceGitService();
@@ -488,6 +501,82 @@ describe("ScheduleService", () => {
       expect.stringContaining(`Schedule fired (id=${schedule.id}, run=`),
       undefined,
     ]);
+  });
+
+  test("a fire on a busy agent with a mailbox waits in it instead of failing", async () => {
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const mailbox = createAgentMailbox({
+      agentManager: manager,
+      agentStorage,
+      store: new MemoryMailboxStore(),
+      resolvePolicy: async () => ({ enabled: true, resumeOnStartup: false }),
+      logger: createTestLogger(),
+    });
+    manager.setMailbox(mailbox);
+    const agent = await manager.createAgent({ provider: "claude", cwd: tempDir }, undefined, {
+      workspaceId: undefined,
+    });
+    vi.spyOn(manager, "hasInFlightRun").mockReturnValue(true);
+    const steerOrReplace = vi.spyOn(manager, "steerOrReplaceActiveTurn");
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+    });
+    const schedule = await service.create({
+      prompt: "Check scheduled work",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: { type: "agent", agentId: agent.id },
+    });
+
+    const inspected = await service.runOnce(schedule.id);
+    mailbox.stop();
+
+    expect(inspected.runs[0]?.status).toBe("succeeded");
+    expect(inspected.runs[0]?.output).toContain("waits in its mailbox (position 1)");
+    expect(steerOrReplace).not.toHaveBeenCalled();
+    const entries = await mailbox.listEntries(agent.id);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.source).toEqual({ kind: "schedule", scheduleId: schedule.id });
+    expect(entries[0]?.prompt.text).toContain(`Schedule fired (id=${schedule.id}, run=`);
+    expect(entries[0]?.prompt.text).not.toContain("<paseo-system>");
+  });
+
+  test("a fire on a busy agent without a mailbox still fails the run", async () => {
+    const manager = new AgentManager({
+      logger: createTestLogger(),
+      clients: createTestAgentClients(),
+      registry: agentStorage,
+    });
+    const agent = await manager.createAgent({ provider: "claude", cwd: tempDir }, undefined, {
+      workspaceId: undefined,
+    });
+    vi.spyOn(manager, "hasInFlightRun").mockReturnValue(true);
+    const service = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: manager,
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+    });
+    const schedule = await service.create({
+      prompt: "Check scheduled work",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: { type: "agent", agentId: agent.id },
+    });
+
+    const inspected = await service.runOnce(schedule.id);
+
+    expect(inspected.runs[0]?.status).toBe("failed");
+    expect(inspected.runs[0]?.error).toContain("already has an active run");
   });
 
   test("titles scheduled new agents from the schedule prompt", async () => {
