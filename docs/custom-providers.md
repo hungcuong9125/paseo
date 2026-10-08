@@ -484,6 +484,8 @@ The [Agent Client Protocol (ACP)](https://agentclientprotocol.com) is an open st
 
 ACP agents communicate over JSON-RPC 2.0 on stdio. Paseo spawns the agent process and talks to it through stdin/stdout.
 
+For Antigravity ACP (`agy-acp`), configure base model IDs in `models` and put the available levels in each model's `thinkingOptions`. Paseo selects the corresponding ACP model variant (for example, `gemini-3.8-flash-high`) when the user changes thinking. Keep the configured ID unsuffixed.
+
 Paseo also ships an in-app ACP provider catalog for common agents, including CodeWhale, Cursor, DeepAgents, DimCode, Gemini CLI, Hermes, Qwen Code, and Kimi Code. Catalog entries create the same `extends: "acp"` provider config shown below.
 
 ### Adding a generic ACP provider

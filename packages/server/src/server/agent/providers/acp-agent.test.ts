@@ -48,6 +48,7 @@ import {
   writeCopilotProviderMode,
 } from "./copilot-acp-agent.js";
 import { GenericACPAgentClient } from "./generic-acp-agent.js";
+import { createAntigravityACPThinkingBridge } from "./antigravity-acp.js";
 import {
   buildGrokNewSessionMeta,
   buildGrokSetSessionModelMeta,
@@ -172,6 +173,20 @@ interface GrokThinkingSessionInternals {
       value: string;
     }) => Promise<unknown>;
   };
+}
+
+interface ACPConfiguredModelWriterInternals extends ACPModelSelectionInternals {
+  availableModels: Array<{ modelId: string; name: string }> | null;
+  thinkingOptionId: string | null;
+  providerModelWriter: (context: {
+    requestedModelId: string;
+    currentThinkingOptionId: string | null;
+  }) => Promise<{
+    handled: boolean;
+    currentModelId?: string;
+    currentThinkingOptionId?: string;
+    configOptions?: SessionConfigOption[];
+  }>;
 }
 
 function grokModelInfo(
@@ -1401,6 +1416,116 @@ describe("ACPAgentSession Zed parity", () => {
     });
   });
 
+  test("sends Antigravity thinking through its exact configured model variant", async () => {
+    const baseModelId = "gemini-3.8-flash";
+    const highVariant = `${baseModelId}-high\tGemini 3.8 Flash (High)`;
+    const lowVariant = `${baseModelId}-low\tGemini 3.8 Flash (Low)`;
+    const modelOption: SessionConfigOption = {
+      id: "model",
+      name: "Model",
+      category: "model",
+      type: "select",
+      currentValue: highVariant,
+      options: [
+        { value: highVariant, name: highVariant },
+        { value: lowVariant, name: lowVariant },
+      ],
+    };
+    const setSessionConfigOption = vi.fn(async () => ({ configOptions: [modelOption] }));
+    const bridge = createAntigravityACPThinkingBridge([
+      {
+        id: baseModelId,
+        label: "Gemini 3.8 Flash",
+        thinkingOptions: [
+          { id: "high", label: "High" },
+          { id: "low", label: "Low" },
+        ],
+      },
+    ]);
+    if (!bridge) throw new Error("Configured thinking options must create the bridge");
+
+    const session = new ACPAgentSession(
+      { provider: "acp", cwd: "/tmp/paseo-acp-test", model: baseModelId },
+      {
+        provider: "acp",
+        logger: createTestLogger(),
+        defaultCommand: ["agy-acp"],
+        defaultModes: [],
+        capabilities: DEFAULT_ACP_TEST_CAPABILITIES,
+        ...bridge,
+      },
+    );
+    const internals = asInternals<ACPConfiguredModelWriterInternals>(session);
+    internals.sessionId = "session-1";
+    internals.currentModel = highVariant;
+    internals.configOptions = [modelOption];
+    internals.availableModels = [{ modelId: highVariant, name: highVariant }];
+    internals.connection = { setSessionConfigOption };
+
+    await session.setThinkingOption("low");
+
+    expect(setSessionConfigOption).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      configId: "model",
+      value: lowVariant,
+    });
+    await expect(session.getRuntimeInfo()).resolves.toMatchObject({
+      model: highVariant,
+      thinkingOptionId: "low",
+    });
+  });
+
+  test("lets Antigravity's provider model writer handle a configured base model", async () => {
+    const baseModelId = "gemini-3.8-flash";
+    const variant = `${baseModelId}-medium\tGemini 3.8 Flash (Medium)`;
+    const modelOption: SessionConfigOption = {
+      id: "model",
+      name: "Model",
+      category: "model",
+      type: "select",
+      currentValue: variant,
+      options: [{ value: variant, name: variant }],
+    };
+    const setSessionConfigOption = vi.fn(async () => ({ configOptions: [modelOption] }));
+    const bridge = createAntigravityACPThinkingBridge([
+      {
+        id: baseModelId,
+        label: "Gemini 3.8 Flash",
+        thinkingOptions: [{ id: "medium", label: "Medium", isDefault: true }],
+      },
+    ]);
+    if (!bridge) throw new Error("Configured thinking options must create the bridge");
+
+    const session = new ACPAgentSession(
+      { provider: "acp", cwd: "/tmp/paseo-acp-test" },
+      {
+        provider: "acp",
+        logger: createTestLogger(),
+        defaultCommand: ["agy-acp"],
+        defaultModes: [],
+        capabilities: DEFAULT_ACP_TEST_CAPABILITIES,
+        ...bridge,
+      },
+    );
+    const internals = asInternals<ACPConfiguredModelWriterInternals>(session);
+    internals.sessionId = "session-1";
+    internals.availableModels = [{ modelId: `${baseModelId}-high`, name: "High" }];
+    internals.configOptions = [modelOption];
+    internals.connection = { setSessionConfigOption };
+
+    await session.setModel(baseModelId);
+
+    expect(setSessionConfigOption).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      configId: "model",
+      value: variant,
+    });
+    await expect(session.getRuntimeInfo()).resolves.toMatchObject({
+      model: baseModelId,
+      thinkingOptionId: "medium",
+    });
+  });
+
   test("keeps the existing thought-level error when a non-Grok ACP has no writer", async () => {
     const session = createSession();
     const internals = asInternals<ACPModelSelectionInternals>(session);
@@ -1414,6 +1539,90 @@ describe("ACPAgentSession Zed parity", () => {
       "claude-acp does not expose ACP thought-level selection",
     );
     expect(internals.connection.setSessionConfigOption).not.toHaveBeenCalled();
+  });
+
+  test("Antigravity maps a configured model to the exact advertised variant value", async () => {
+    const modelId = "gemini-3.8-flash";
+    const variant = `${modelId}-low\tGemini 3.8 Flash (Low)`;
+    const configOption: SessionConfigOption = {
+      id: "model",
+      name: "Model",
+      category: "model",
+      type: "select",
+      currentValue: `${modelId}-high\tGemini 3.8 Flash (High)`,
+      options: [
+        { value: `${modelId}-high\tGemini 3.8 Flash (High)`, name: "High" },
+        { value: variant, name: "Low" },
+      ],
+    };
+    const setSessionConfigOption = vi.fn(async () => ({ configOptions: [configOption] }));
+    const bridge = createAntigravityACPThinkingBridge([
+      {
+        id: modelId,
+        label: "Gemini 3.8 Flash",
+        thinkingOptions: [
+          { id: "high", label: "High" },
+          { id: "low", label: "Low" },
+        ],
+      },
+    ]);
+    expect(bridge).not.toBeNull();
+
+    await bridge!.thinkingOptionWriter({
+      connection: { setSessionConfigOption } as unknown as ClientSideConnection,
+      sessionId: "session-1",
+      thinkingOptionId: "low",
+      modelId: `${modelId}-high\tGemini 3.8 Flash (High)`,
+      availableModels: null,
+      sessionMeta: null,
+      configOptions: [configOption],
+    });
+
+    expect(setSessionConfigOption).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      configId: "model",
+      value: variant,
+    });
+  });
+
+  test("provider model writer handles configured models before ACP's advertised-model validation", async () => {
+    const session = createSession();
+    const internals = asInternals<
+      ACPModelSelectionInternals & {
+        providerModelWriter: (context: {
+          requestedModelId: string;
+          currentThinkingOptionId: string | null;
+        }) => Promise<{
+          handled: boolean;
+          currentModelId?: string;
+          currentThinkingOptionId?: string;
+        }>;
+      }
+    >(session);
+    const providerModelWriter = vi.fn(async () => ({
+      handled: true,
+      currentModelId: "gemini-3.8-flash",
+      currentThinkingOptionId: "medium",
+    }));
+    internals.sessionId = "session-1";
+    internals.availableModels = [{ modelId: "gemini-3.8-flash-high", name: "High" }];
+    internals.configOptions = [];
+    internals.connection = { setSessionConfigOption: vi.fn() };
+    internals.providerModelWriter = providerModelWriter;
+
+    await session.setModel("gemini-3.8-flash");
+
+    expect(providerModelWriter).toHaveBeenCalledWith({
+      connection: internals.connection,
+      sessionId: "session-1",
+      requestedModelId: "gemini-3.8-flash",
+      currentThinkingOptionId: null,
+      configOptions: [],
+    });
+    await expect(session.getRuntimeInfo()).resolves.toMatchObject({
+      model: "gemini-3.8-flash",
+      thinkingOptionId: "medium",
+    });
   });
 
   test("passes generic ACP permission requests through to the user", async () => {
