@@ -15,10 +15,11 @@ import equal from "fast-deep-equal";
 import { SessionDelivery, type OwnedSubscription } from "./session/owned-subscriptions/index.js";
 import { v4 as uuidv4 } from "uuid";
 import { lstat, mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises";
-import { basename, resolve, sep } from "path";
+import { basename, join, resolve, sep } from "path";
 import { homedir } from "node:os";
 import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
 import { formatPluginSourceReference } from "@getpaseo/protocol/plugin-source-reference";
+import { checkAitInitialized } from "./ait-init-status.js";
 import {
   serializeAgentStreamEvent,
   type AgentSnapshotPayload,
@@ -179,6 +180,9 @@ import {
   createGitMetadataGenerator,
 } from "./session/checkout/git-metadata-generator.js";
 import { ScheduleSession } from "./session/schedule/schedule-session.js";
+import { TrackerSession } from "./session/tracker/tracker-session.js";
+import type { AitService } from "../services/ait-cli-service.js";
+import type { TrackerSyncManager } from "./tracker-sync-manager.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { UsageSession } from "./session/usage/usage-session.js";
 import { WorkspaceFilesSession } from "./session/files/workspace-files-session.js";
@@ -467,6 +471,8 @@ export interface SessionOptions {
   workspaceLabelService?: WorkspaceLabelService;
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
+  aitService: AitService;
+  trackerSyncManager?: TrackerSyncManager;
   checkoutDiffManager: CheckoutDiffManager;
   github?: ForgeService;
   createAgentMcpTransport?: AgentMcpTransportFactory;
@@ -787,6 +793,7 @@ export class Session {
   private readonly voiceSessions: VoiceSessions;
   private readonly checkoutSession: CheckoutSession;
   private readonly scheduleSession: ScheduleSession;
+  private readonly trackerSession: TrackerSession;
   private readonly providerCatalogSession: ProviderCatalogSession;
   private readonly usageSession: UsageSession;
   private readonly workspaceFilesSession: WorkspaceFilesSession;
@@ -826,6 +833,8 @@ export class Session {
       workspaceLabelService,
       filesystem,
       scheduleService,
+      aitService,
+      trackerSyncManager,
       checkoutDiffManager,
       github,
       renameCurrentBranch,
@@ -962,6 +971,21 @@ export class Session {
       host: { emit: (msg) => this.emit(msg) },
       scheduleService,
       logger: this.sessionLogger,
+    });
+    this.trackerSession = new TrackerSession({
+      host: {
+        emit: (msg) => this.emit(msg),
+        refreshProjectDescriptor: async (projectId) => {
+          const project = await this.projectRegistry.get(projectId);
+          if (project) {
+            await this.emitProjectUpdate({ kind: "upsert", project });
+          }
+        },
+      },
+      aitService,
+      projectRegistry: this.projectRegistry,
+      logger: this.sessionLogger,
+      trackerSyncManager,
     });
     this.providerCatalogSession = new ProviderCatalogSession({
       host: {
@@ -2287,6 +2311,12 @@ export class Session {
     return undefined;
   }
 
+  private dispatchAutomationAndTrackerMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    return this.dispatchScheduleMessage(msg) ?? this.dispatchTrackerMessage(msg);
+  }
+
   private async dispatchInboundMessage(msg: SessionInboundMessage, source?: object): Promise<void> {
     const promise =
       this.dispatchSubscriptionMessage(msg, source) ??
@@ -2306,7 +2336,7 @@ export class Session {
       this.dispatchPluginDirectoryMessage(msg) ??
       this.dispatchPluginMessage(msg) ??
       this.dispatchTerminalMessage(msg) ??
-      this.dispatchScheduleMessage(msg) ??
+      this.dispatchAutomationAndTrackerMessage(msg) ??
       this.dispatchMiscMessage(msg);
     if (promise) await promise;
   }
@@ -3057,6 +3087,43 @@ export class Session {
         return this.scheduleSession.handleScheduleRunOnceRequest(msg);
       case "schedule/update":
         return this.scheduleSession.handleScheduleUpdateRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private dispatchTrackerMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "project.tracker.list.request":
+        return this.trackerSession.handleProjectTrackerListRequest(msg);
+      case "project.tracker.stats.request":
+        return this.trackerSession.handleProjectTrackerStatsRequest(msg);
+      case "project.tracker.search.request":
+        return this.trackerSession.handleProjectTrackerSearchRequest(msg);
+      case "project.tracker.subscribe.request":
+        return this.trackerSession.handleProjectTrackerSubscribeRequest(msg);
+      case "project.tracker.unsubscribe.request":
+        return this.trackerSession.handleProjectTrackerUnsubscribeRequest(msg);
+      case "project.tracker.show.request":
+        return this.trackerSession.handleProjectTrackerShowRequest(msg);
+      case "project.tracker.create.request":
+        return this.trackerSession.handleProjectTrackerCreateRequest(msg);
+      case "project.tracker.update.request":
+        return this.trackerSession.handleProjectTrackerUpdateRequest(msg);
+      case "project.tracker.close.request":
+        return this.trackerSession.handleProjectTrackerCloseRequest(msg);
+      case "project.tracker.reopen.request":
+        return this.trackerSession.handleProjectTrackerReopenRequest(msg);
+      case "project.tracker.cancel.request":
+        return this.trackerSession.handleProjectTrackerCancelRequest(msg);
+      case "project.tracker.delete.request":
+        return this.trackerSession.handleProjectTrackerDeleteRequest(msg);
+      case "project.tracker.note_add.request":
+        return this.trackerSession.handleProjectTrackerNoteAddRequest(msg);
+      case "project.tracker.init.request":
+        return this.trackerSession.handleProjectTrackerInitRequest(msg);
+      case "project.tracker.ready.request":
+        return this.trackerSession.handleProjectTrackerReadyRequest(msg);
       default:
         return undefined;
     }
@@ -4290,6 +4357,9 @@ export class Session {
           workspaceId: resolvedIntent.intent.workspaceId,
           worktreeName,
           initialPrompt,
+          source: msg.callerAgentId
+            ? { kind: "agent-message", agentId: msg.callerAgentId }
+            : undefined,
           clientMessageId,
           outputSchema,
           images,
@@ -5056,8 +5126,13 @@ export class Session {
     try {
       const workspaceCwd = cwd?.trim();
       const searchesWorkspace = Boolean(workspaceCwd);
+      const homeRoot = process.env.HOME ?? homedir();
+      // readdir on TCC-protected folders under ~/Library blocks forever for a process that cannot
+      // show a consent prompt, and each blocked call holds a libuv threadpool thread.
+      const excludedDiscoveryPaths =
+        !searchesWorkspace && process.platform === "darwin" ? [join(homeRoot, "Library")] : [];
       const entries = await searchDirectoryEntries({
-        root: workspaceCwd ? expandTilde(workspaceCwd) : (process.env.HOME ?? homedir()),
+        root: workspaceCwd ? expandTilde(workspaceCwd) : homeRoot,
         query,
         pathFormat: searchesWorkspace ? "relative" : "absolute",
         pathQueryPolicy: searchesWorkspace ? "slashes" : "rooted",
@@ -5068,6 +5143,7 @@ export class Session {
           : [],
         confidentResultScanThreshold: searchesWorkspace ? undefined : 5_000,
         respectGitIgnore: searchesWorkspace,
+        excludedDiscoveryPaths,
         includeFiles,
         includeDirectories,
         matchMode,
@@ -5808,6 +5884,7 @@ export class Session {
       projectIconRevision: icon.revision,
       projectRootPath: project.rootPath,
       projectKind: project.kind,
+      aitInitialized: await checkAitInitialized(project.rootPath),
     };
   }
 
@@ -8088,6 +8165,9 @@ export class Session {
           agentStorage: this.agentStorage,
           agentId,
           prompt,
+          source: msg.sourceAgentId
+            ? { kind: "agent-message", agentId: msg.sourceAgentId }
+            : undefined,
           messageId: msg.messageId,
           activeTurnBehavior: msg.activeTurnBehavior ?? "interrupt",
           clearPendingPermissions: true,
@@ -8105,9 +8185,13 @@ export class Session {
         await this.messageReceipts.send({
           agentId,
           messageId: msg.messageId,
-          request: { prompt, activeTurnBehavior: msg.activeTurnBehavior ?? "interrupt" },
+          request: {
+            prompt,
+            sourceAgentId: msg.sourceAgentId,
+            activeTurnBehavior: msg.activeTurnBehavior ?? "interrupt",
+          },
           prepare: async () => {
-            await this.prepareAgentMessage(agentId, msg.text);
+            if (!msg.sourceAgentId) await this.prepareAgentMessage(agentId, msg.text);
           },
           send,
         });
@@ -8452,6 +8536,8 @@ export class Session {
     this.terminalController.dispose();
 
     this.checkoutSession.cleanup();
+
+    await this.trackerSession.cleanup();
 
     this.workspaceGitObserver.dispose();
   }

@@ -1,6 +1,10 @@
 import type { Logger } from "pino";
 
-import { checkProviderLaunchAvailable, resolveProviderLaunch } from "../provider-launch-config.js";
+import {
+  checkProviderLaunchAvailable,
+  resolveProviderLaunch,
+  type ProviderProfileModel,
+} from "../provider-launch-config.js";
 import {
   ACPAgentClient,
   type ACPCatalogModelResolver,
@@ -9,6 +13,13 @@ import {
   DEFAULT_ACP_CAPABILITIES,
   type ACPExtensionCommandsParser,
 } from "./acp-agent.js";
+import { createAntigravityACPThinkingBridge, isAntigravityACPProvider } from "./antigravity-acp.js";
+import {
+  buildGrokNewSessionMeta,
+  buildGrokSetSessionModelMeta,
+  isGrokACPProvider,
+  writeGrokThinkingOption,
+} from "./grok-acp.js";
 import {
   buildBinaryDiagnosticRows,
   formatProviderDiagnostic,
@@ -29,6 +40,7 @@ interface GenericACPAgentClientOptions {
   configFeatureOptions?: ACPConfigFeatureOption[];
   extensionCommandsParser?: ACPExtensionCommandsParser;
   catalogModelResolver?: ACPCatalogModelResolver;
+  configuredModels?: ProviderProfileModel[];
   now?: () => number;
 }
 
@@ -39,6 +51,10 @@ export class GenericACPAgentClient extends ACPAgentClient {
   private readonly diagnosticPhaseTimeoutMs?: number;
 
   constructor(options: GenericACPAgentClientOptions) {
+    const grokAcp = isGrokACPProvider(options.providerId, options.command);
+    const antigravityThinkingBridge = isAntigravityACPProvider(options.providerId, options.command)
+      ? createAntigravityACPThinkingBridge(options.configuredModels ?? [])
+      : null;
     super({
       provider: "acp",
       logger: options.logger,
@@ -55,6 +71,14 @@ export class GenericACPAgentClient extends ACPAgentClient {
       configFeatureOptions: options.configFeatureOptions,
       extensionCommandsParser: options.extensionCommandsParser,
       catalogModelResolver: options.catalogModelResolver,
+      ...antigravityThinkingBridge,
+      ...(grokAcp
+        ? {
+            thinkingOptionWriter: writeGrokThinkingOption,
+            buildNewSessionMeta: buildGrokNewSessionMeta,
+            buildSetSessionModelMeta: buildGrokSetSessionModelMeta,
+          }
+        : {}),
       now: options.now,
     });
 

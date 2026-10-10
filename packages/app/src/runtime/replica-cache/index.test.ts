@@ -256,6 +256,18 @@ function deleteDirectory(cache: ReplicaCache, serverId: string): void {
 }
 
 describe("ReplicaCache", () => {
+  it("preserves AIT initialization through persisted directory hydration", async () => {
+    const storage = new MemoryStorage();
+    const writer = createCache(storage);
+    const baseline = directory();
+    const project = baseline.projects.get("project-1");
+    if (!project) throw new Error("Expected project fixture");
+    baseline.projects.set(project.projectId, { ...project, aitInitialized: true });
+    writer.replaceDirectoryBaseline(SERVER_ID, baseline);
+    await writer.flush();
+    const restored = await createCache(storage).readDirectory(SERVER_ID);
+    expect(restored.projects.get(project.projectId)?.aitInitialized).toBe(true);
+  });
   it("rejects pre-baseline-fix checkpoints without discarding cached rows or timelines", async () => {
     const storage = new MemoryStorage();
     const writer = createCache(storage);
@@ -858,4 +870,37 @@ describe("ReplicaCache", () => {
 
     expect(storage.cleanups).toBe(1);
   });
+});
+
+it("retains semantic agent messages across disk-cache reconstruction", async () => {
+  const storage = new MemoryStorage();
+  const writer = createCache(storage);
+  const value = timeline();
+  value.items = [
+    {
+      kind: "tool_call",
+      id: "delivery",
+      timestamp: new Date(1),
+      timelineCursor: { epoch: "epoch-1", seq: 12 },
+      payload: {
+        source: "agent",
+        data: {
+          provider: "codex",
+          callId: "delivery",
+          name: "agent_message",
+          status: "completed",
+          error: null,
+          detail: { type: "plain_text", text: "Done" },
+          agentMessage: {
+            event: "finished",
+            sender: { id: "remote::worker", title: "Reviewer" },
+            text: "Done",
+          },
+        },
+      },
+    },
+  ];
+  writer.commitTimeline(SERVER_ID, "agent-1", value);
+  await writer.flush();
+  expect(await createCache(storage).readTimeline(SERVER_ID, "agent-1")).toEqual(value);
 });

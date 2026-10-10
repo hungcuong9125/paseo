@@ -1,4 +1,6 @@
 export const PARENT_AGENT_ID_LABEL = "paseo.parent-agent-id";
+/** "on" or "off"; overrides the provider entry's mailbox setting for one agent. */
+export const MAILBOX_LABEL = "paseo.mailbox";
 const OPEN_AGENT_TAB_LABEL_PREFIX = "paseo.open-agent-tab.";
 
 export function getOpenAgentTabLabel(clientId: string): string {
@@ -28,4 +30,13 @@ export function hasOpenAgentTab(labels: Record<string, unknown> | null | undefin
   return Object.entries(labels ?? {}).some(
     ([label, value]) => isOpenAgentTabLabel(label) && value === "true",
   );
+}
+
+export function getMailboxLabelSetting(
+  labels: Record<string, unknown> | null | undefined,
+): boolean | null {
+  const value = labels?.[MAILBOX_LABEL];
+  if (value === "on") return true;
+  if (value === "off") return false;
+  return null;
 }

@@ -473,6 +473,51 @@ test("Hub management requires daemon support before dispatching requests", async
   expect(mock.sent).toEqual([]);
 });
 
+test("threads tracker list sort through the daemon request", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "tracker_sort_unit_test",
+    transportFactory: () => mock.transport,
+    reconnect: { enabled: false },
+  });
+  clients.push(client);
+
+  const connecting = client.connect();
+  mock.triggerOpen({ features: { aitTrackerSort: true } });
+  await connecting;
+
+  const listPromise = client.trackerList({
+    projectId: "prj_test",
+    sort: "newest",
+    page: { limit: 20 },
+  });
+  await Promise.resolve();
+  const request = parseSentFrame(mock.sent[0]);
+  expect(request).toMatchObject({
+    type: "project.tracker.list.request",
+    projectId: "prj_test",
+    sort: "newest",
+    page: { limit: 20 },
+  });
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "project.tracker.list.response",
+      payload: {
+        requestId: request.requestId,
+        projectId: "prj_test",
+        trackers: [],
+        hiddenCount: 0,
+        pageInfo: { nextCursor: null, hasMore: false },
+        error: null,
+        errorCode: null,
+      },
+    }),
+  );
+  await expect(listPromise).resolves.toMatchObject({ trackers: [], hiddenCount: 0 });
+});
+
 test("timeline observation consumes broadcasts from a host without selective delivery", async () => {
   const mock = createMockTransport();
   const client = new DaemonClient({
@@ -7325,3 +7370,49 @@ test("usage request timeout detaches its update listener", async () => {
     vi.useRealTimers();
   }
 });
+
+test.each([false, true])(
+  "agent provenance requires host support=%s while human sends remain compatible",
+  async (supported) => {
+    const transport = createMockTransport();
+    const client = new DaemonClient({
+      url: "ws://test",
+      clientId: "provenance",
+      transportFactory: () => transport.transport,
+      reconnect: { enabled: false },
+    });
+    clients.push(client);
+    const connecting = client.connect();
+    transport.triggerOpen({ features: { agentMessageProvenance: supported } });
+    await connecting;
+    if (!supported) {
+      await expect(
+        client.sendAgentMessage("recipient", "review", { sourceAgentId: "server::sender" }),
+      ).rejects.toThrow("Update the Paseo host");
+      expect(transport.sent).toHaveLength(0);
+    }
+    const send = client.sendAgentMessage("recipient", "review", {
+      messageId: "delivery",
+      ...(supported ? { sourceAgentId: "server::sender" } : {}),
+    });
+    const request = parseSentFrame(transport.sent[0]);
+    expect(request).toMatchObject({
+      type: "send_agent_message_request",
+      text: "review",
+      messageId: "delivery",
+    });
+    expect(request.sourceAgentId).toBe(supported ? "server::sender" : undefined);
+    transport.triggerMessage(
+      wrapSessionMessage({
+        type: "send_agent_message_response",
+        payload: {
+          requestId: request.requestId,
+          agentId: "recipient",
+          accepted: true,
+          error: null,
+        },
+      }),
+    );
+    await send;
+  },
+);

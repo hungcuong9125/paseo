@@ -78,6 +78,22 @@ Permission requests are notification checkpoints, not the end of that subscripti
 The permission notification includes the normalized request plus the child and request IDs, so the caller can inspect it and respond without fetching agent status.
 A watched child that closes before its finish event also notifies the caller so delegated work cannot disappear silently during archive or workspace teardown.
 
+## Mailbox
+
+With its mailbox on (config: [data-model.md](data-model.md#2-daemon-configuration)), an agent's
+turn is never replaced or steered by another agent or a schedule. Their prompts wait while it runs,
+has mail waiting, or is paused, and arrive in order as one `<paseo-system>` prompt of
+`<paseo-mailbox-item>` blocks when it goes idle. Interrupt authority sits with the receiver: a
+person and the receiver's parent agent interrupt as before, so a Lead can redirect its Peers and a
+Peer cannot cut into its Lead. No caller-side switch exists.
+
+A person's Stop pauses the mailbox before cancelling the turn; their next prompt, or the parent's,
+lifts the pause, and waiting mail follows that turn. Internal replacement, Hub interrupts, and an
+agent's `cancel_agent` never pause. A subagent's `cancel_agent` on its parent is refused. Finish notifications and their watches use the mailbox whether it is
+on or not, so they survive a restart: a leftover watch becomes "was interrupted by a daemon
+restart", and a waiting permission notice is rewritten as expired. Mail starts a turn at boot only
+with `resumeOnStartup`. Archive keeps the mailbox; deleting the agent removes it.
+
 ## Provider-managed child agents
 
 Some providers can create their own child sessions inside one provider runtime. OMP's task tool reports these with `child_session` events; `AgentManager` imports the live provider handle, stamps `paseo.parent-agent-id`, and surfaces the result as a normal subagent in the parent's subagents track.

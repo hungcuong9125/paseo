@@ -128,6 +128,7 @@ import {
   toDiagnosticErrorMessage,
   truncateForDiagnostic,
 } from "./diagnostic-utils.js";
+import { deriveGrokCurrentThinkingOptionId, deriveGrokThinkingOptions } from "./grok-acp.js";
 import { withTimeout } from "../../../utils/promise-timeout.js";
 
 const ACP_AUTO_ACCEPT_FEATURE_ID = "auto_accept";
@@ -473,11 +474,16 @@ interface ACPAgentClientOptions {
     context: ACPProviderModeWriterContext,
   ) => Promise<ACPProviderModeWriteResult>;
   beforeModeWriter?: (context: ACPProviderModeWriterContext) => Promise<ACPBeforeModeWriteResult>;
+  providerModelWriter?: (
+    context: ACPProviderModelWriterContext,
+  ) => Promise<ACPProviderModelWriteResult>;
   thinkingOptionWriter?: (
-    connection: ClientSideConnection,
-    sessionId: string,
-    thinkingOptionId: string,
-  ) => Promise<void>;
+    context: ACPThinkingOptionWriterContext,
+  ) => Promise<ACPThinkingOptionWriteResult>;
+  buildNewSessionMeta?: (config: AgentSessionConfig) => { [key: string]: unknown } | undefined;
+  buildSetSessionModelMeta?: (
+    input: ACPSessionModelMetaInput,
+  ) => { [key: string]: unknown } | undefined;
   capabilities?: AgentCapabilityFlags;
   extensionCommandsParser?: ACPExtensionCommandsParser;
   waitForInitialCommands?: boolean;
@@ -504,11 +510,16 @@ interface ACPAgentSessionOptions {
     context: ACPProviderModeWriterContext,
   ) => Promise<ACPProviderModeWriteResult>;
   beforeModeWriter?: (context: ACPProviderModeWriterContext) => Promise<ACPBeforeModeWriteResult>;
+  providerModelWriter?: (
+    context: ACPProviderModelWriterContext,
+  ) => Promise<ACPProviderModelWriteResult>;
   thinkingOptionWriter?: (
-    connection: ClientSideConnection,
-    sessionId: string,
-    thinkingOptionId: string,
-  ) => Promise<void>;
+    context: ACPThinkingOptionWriterContext,
+  ) => Promise<ACPThinkingOptionWriteResult>;
+  buildNewSessionMeta?: (config: AgentSessionConfig) => { [key: string]: unknown } | undefined;
+  buildSetSessionModelMeta?: (
+    input: ACPSessionModelMetaInput,
+  ) => { [key: string]: unknown } | undefined;
   capabilities: AgentCapabilityFlags;
   extensionCommandsParser?: ACPExtensionCommandsParser;
   handle?: AgentPersistenceHandle;
@@ -707,6 +718,41 @@ export interface ACPProviderModeWriterContext {
   logger: Logger;
 }
 
+export interface ACPThinkingOptionWriterContext {
+  connection: ClientSideConnection;
+  sessionId: string;
+  thinkingOptionId: string;
+  modelId: string | null;
+  availableModels: AvailableACPModel[] | null;
+  sessionMeta: { [key: string]: unknown } | null;
+  configOptions: SessionConfigOption[];
+}
+
+export interface ACPThinkingOptionWriteResult {
+  /** Raw options returned by ACP; null when the request returned no options. */
+  configOptions: SessionConfigOption[] | null;
+}
+
+export interface ACPProviderModelWriterContext {
+  connection: ClientSideConnection;
+  sessionId: string;
+  requestedModelId: string;
+  currentThinkingOptionId: string | null;
+  configOptions: SessionConfigOption[];
+}
+
+export interface ACPProviderModelWriteResult {
+  handled: boolean;
+  currentModelId?: string;
+  currentThinkingOptionId?: string;
+  configOptions?: SessionConfigOption[];
+}
+
+export interface ACPSessionModelMetaInput {
+  modelId: string;
+  thinkingOptionId: string | null;
+}
+
 export interface ACPProviderModeWriteResult {
   handled: boolean;
   currentModeId?: string;
@@ -804,20 +850,30 @@ export function deriveModelDefinitionsFromACP(
   provider: string,
   models: SessionModelState | null | undefined,
   configOptions?: SessionConfigOption[] | null,
+  sessionMeta?: { [key: string]: unknown } | null,
 ): AgentModelDefinition[] {
-  const thinkingOptions = deriveSelectorOptions(configOptions, "thought_level");
-  const defaultThinkingOptionId = thinkingOptions.find((option) => option.isDefault)?.id ?? null;
+  const sharedThinkingOptions = deriveSelectorOptions(configOptions, "thought_level");
+  const sharedDefaultThinkingOptionId =
+    sharedThinkingOptions.find((option) => option.isDefault)?.id ?? null;
 
   if (models?.availableModels?.length) {
-    return models.availableModels.map((model) => ({
-      provider,
-      id: model.modelId,
-      label: model.name,
-      description: model.description ?? undefined,
-      isDefault: model.modelId === models.currentModelId,
-      thinkingOptions: thinkingOptions.length > 0 ? thinkingOptions : undefined,
-      defaultThinkingOptionId: defaultThinkingOptionId ?? undefined,
-    }));
+    return models.availableModels.map((model) => {
+      const thinking = resolveACPModelThinkingOptions({
+        sharedThinkingOptions,
+        sharedDefaultThinkingOptionId,
+        modelMeta: model._meta,
+        sessionMeta,
+      });
+      return {
+        provider,
+        id: model.modelId,
+        label: model.name,
+        description: model.description ?? undefined,
+        isDefault: model.modelId === models.currentModelId,
+        thinkingOptions: thinking.thinkingOptions,
+        defaultThinkingOptionId: thinking.defaultThinkingOptionId,
+      };
+    });
   }
 
   const modelOptions = deriveSelectorOptions(configOptions, "model");
@@ -827,10 +883,45 @@ export function deriveModelDefinitionsFromACP(
     label: option.label,
     description: option.description,
     isDefault: option.isDefault,
-    thinkingOptions: thinkingOptions.length > 0 ? thinkingOptions : undefined,
-    defaultThinkingOptionId: defaultThinkingOptionId ?? undefined,
+    thinkingOptions: sharedThinkingOptions.length > 0 ? sharedThinkingOptions : undefined,
+    defaultThinkingOptionId: sharedDefaultThinkingOptionId ?? undefined,
     metadata: option.metadata,
   }));
+}
+
+function resolveACPModelThinkingOptions({
+  sharedThinkingOptions,
+  sharedDefaultThinkingOptionId,
+  modelMeta,
+  sessionMeta,
+}: {
+  sharedThinkingOptions: ConfigOptionSelector[];
+  sharedDefaultThinkingOptionId: string | null;
+  modelMeta?: { [key: string]: unknown } | null;
+  sessionMeta?: { [key: string]: unknown } | null;
+}): {
+  thinkingOptions: ConfigOptionSelector[] | undefined;
+  defaultThinkingOptionId: string | undefined;
+} {
+  if (sharedThinkingOptions.length > 0) {
+    return {
+      thinkingOptions: sharedThinkingOptions,
+      defaultThinkingOptionId: sharedDefaultThinkingOptionId ?? undefined,
+    };
+  }
+
+  const grokThinkingOptions = deriveGrokThinkingOptions({ modelMeta, sessionMeta });
+  if (grokThinkingOptions.length === 0) {
+    return {
+      thinkingOptions: undefined,
+      defaultThinkingOptionId: undefined,
+    };
+  }
+
+  return {
+    thinkingOptions: grokThinkingOptions,
+    defaultThinkingOptionId: grokThinkingOptions.find((option) => option.isDefault)?.id,
+  };
 }
 
 export function deriveFeaturesFromACP(
@@ -937,11 +1028,18 @@ export class ACPAgentClient implements AgentClient {
   private readonly beforeModeWriter?: (
     context: ACPProviderModeWriterContext,
   ) => Promise<ACPBeforeModeWriteResult>;
+  private readonly providerModelWriter?: (
+    context: ACPProviderModelWriterContext,
+  ) => Promise<ACPProviderModelWriteResult>;
   private readonly thinkingOptionWriter?: (
-    connection: ClientSideConnection,
-    sessionId: string,
-    thinkingOptionId: string,
-  ) => Promise<void>;
+    context: ACPThinkingOptionWriterContext,
+  ) => Promise<ACPThinkingOptionWriteResult>;
+  private readonly buildNewSessionMeta?: (
+    config: AgentSessionConfig,
+  ) => { [key: string]: unknown } | undefined;
+  private readonly buildSetSessionModelMeta?: (
+    input: ACPSessionModelMetaInput,
+  ) => { [key: string]: unknown } | undefined;
   private readonly waitForInitialCommands: boolean;
   private readonly initialCommandsWaitTimeoutMs: number;
   private readonly extensionCommandsParser?: ACPExtensionCommandsParser;
@@ -971,7 +1069,10 @@ export class ACPAgentClient implements AgentClient {
     this.toolSnapshotTransformer = options.toolSnapshotTransformer;
     this.providerModeWriter = options.providerModeWriter;
     this.beforeModeWriter = options.beforeModeWriter;
+    this.providerModelWriter = options.providerModelWriter;
     this.thinkingOptionWriter = options.thinkingOptionWriter;
+    this.buildNewSessionMeta = options.buildNewSessionMeta;
+    this.buildSetSessionModelMeta = options.buildSetSessionModelMeta;
     this.waitForInitialCommands = options.waitForInitialCommands ?? false;
     this.initialCommandsWaitTimeoutMs = options.initialCommandsWaitTimeoutMs ?? 1500;
     this.extensionCommandsParser = options.extensionCommandsParser;
@@ -1003,7 +1104,10 @@ export class ACPAgentClient implements AgentClient {
         toolSnapshotTransformer: this.toolSnapshotTransformer,
         providerModeWriter: this.providerModeWriter,
         beforeModeWriter: this.beforeModeWriter,
+        providerModelWriter: this.providerModelWriter,
         thinkingOptionWriter: this.thinkingOptionWriter,
+        buildNewSessionMeta: this.buildNewSessionMeta,
+        buildSetSessionModelMeta: this.buildSetSessionModelMeta,
         capabilities: {
           ...this.capabilities,
           supportsMcpServers:
@@ -1060,7 +1164,10 @@ export class ACPAgentClient implements AgentClient {
       toolSnapshotTransformer: this.toolSnapshotTransformer,
       providerModeWriter: this.providerModeWriter,
       beforeModeWriter: this.beforeModeWriter,
+      providerModelWriter: this.providerModelWriter,
       thinkingOptionWriter: this.thinkingOptionWriter,
+      buildNewSessionMeta: this.buildNewSessionMeta,
+      buildSetSessionModelMeta: this.buildSetSessionModelMeta,
       capabilities: {
         ...this.capabilities,
         supportsMcpServers:
@@ -1143,6 +1250,7 @@ export class ACPAgentClient implements AgentClient {
         this.provider,
         transformed.models,
         transformed.configOptions,
+        transformed._meta,
       );
       const models = this.catalogModelResolver
         ? await runProviderRefreshActivity(context, "catalog.resolve", () =>
@@ -1596,6 +1704,7 @@ export class ACPAgentClient implements AgentClient {
           this.provider,
           transformed.models,
           transformed.configOptions,
+          transformed._meta,
         );
         const modeInfo = deriveModesFromACP(
           this.defaultModes,
@@ -1708,11 +1817,18 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   private readonly beforeModeWriter?: (
     context: ACPProviderModeWriterContext,
   ) => Promise<ACPBeforeModeWriteResult>;
+  private readonly providerModelWriter?: (
+    context: ACPProviderModelWriterContext,
+  ) => Promise<ACPProviderModelWriteResult>;
   private readonly thinkingOptionWriter?: (
-    connection: ClientSideConnection,
-    sessionId: string,
-    thinkingOptionId: string,
-  ) => Promise<void>;
+    context: ACPThinkingOptionWriterContext,
+  ) => Promise<ACPThinkingOptionWriteResult>;
+  private readonly buildNewSessionMeta?: (
+    config: AgentSessionConfig,
+  ) => { [key: string]: unknown } | undefined;
+  private readonly buildSetSessionModelMeta?: (
+    input: ACPSessionModelMetaInput,
+  ) => { [key: string]: unknown } | undefined;
   private readonly agentId?: string;
   private readonly launchEnv?: Record<string, string>;
   private readonly subscribers = new Set<(event: AgentStreamEvent) => void>();
@@ -1735,6 +1851,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
   private availableModes: AgentMode[];
   private currentModel: string | null = null;
   private availableModels: AvailableACPModel[] | null = null;
+  private sessionMeta: { [key: string]: unknown } | null = null;
   private thinkingOptionId: string | null = null;
   private currentTitle: string | null = null;
   private lastActivityAt: string | null = null;
@@ -1773,7 +1890,10 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     this.toolSnapshotTransformer = options.toolSnapshotTransformer;
     this.providerModeWriter = options.providerModeWriter;
     this.beforeModeWriter = options.beforeModeWriter;
+    this.providerModelWriter = options.providerModelWriter;
     this.thinkingOptionWriter = options.thinkingOptionWriter;
+    this.buildNewSessionMeta = options.buildNewSessionMeta;
+    this.buildSetSessionModelMeta = options.buildSetSessionModelMeta;
     this.availableModes = options.defaultModes;
     this.agentId = options.agentId;
     this.launchEnv = options.launchEnv;
@@ -1804,6 +1924,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
         this.connection!.newSession({
           cwd: this.config.cwd,
           mcpServers: this.acpMcpServers(),
+          ...sessionRequestMeta(this.buildNewSessionMeta?.(this.config)),
         }),
       );
       this.sessionId = response.sessionId;
@@ -2228,6 +2349,33 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       throw new Error("ACP session not initialized");
     }
 
+    const providerModelWriter = this.providerModelWriter;
+    if (providerModelWriter) {
+      const { connection, sessionId } = this;
+      const result = await this.runACPRequest(() =>
+        providerModelWriter({
+          connection,
+          sessionId,
+          requestedModelId: modelId,
+          currentThinkingOptionId: this.thinkingOptionId,
+          configOptions: this.configOptions,
+        }),
+      );
+      if (result.handled) {
+        if (result.configOptions) {
+          this.configOptions = this.transformConfigOptions(result.configOptions);
+        }
+        this.currentModel = result.currentModelId ?? modelId;
+        this.thinkingOptionId = result.currentThinkingOptionId ?? this.thinkingOptionId;
+        this.pushEvent({
+          type: "model_changed",
+          provider: this.provider,
+          runtimeInfo: this.runtimeInfo(),
+        });
+        return;
+      }
+    }
+
     if (selection.hasAvailableModels && !selection.availableModel) {
       this.warnInvalidSelection(
         modelId,
@@ -2242,12 +2390,22 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       selection.availableModel &&
       typeof this.connection.unstable_setSessionModel === "function"
     ) {
+      const targetThinkingOptionId = this.resolveThinkingForModel(modelId);
       try {
         await this.connection.unstable_setSessionModel({
           sessionId: this.sessionId,
           modelId,
+          ...sessionRequestMeta(
+            this.buildSetSessionModelMeta?.({
+              modelId,
+              thinkingOptionId: targetThinkingOptionId,
+            }),
+          ),
         });
         this.currentModel = modelId;
+        // set_model does not return refreshed config options, so use the target
+        // model's reconciled selection rather than reading the previous model's value.
+        this.thinkingOptionId = targetThinkingOptionId;
         this.pushEvent({
           type: "model_changed",
           provider: this.provider,
@@ -2283,18 +2441,43 @@ export class ACPAgentSession implements AgentSession, ACPClient {
         value: modelId,
       }),
     );
-    this.currentModel = this.applyConfigOptionResponse({
+    const selectedModel = this.applyConfigOptionResponse({
       response,
       configId: modelOption.id,
       category: "model",
       requestedValue: modelId,
       label: "model",
     });
+    this.thinkingOptionId = this.readConfigThinkingOptionId();
+    this.currentModel = selectedModel;
     this.pushEvent({
       type: "model_changed",
       provider: this.provider,
       runtimeInfo: this.runtimeInfo(),
     });
+  }
+
+  private resolveThinkingForModel(modelId: string): string | null {
+    if (this.currentModel === modelId) return this.thinkingOptionId;
+    const definition = deriveModelDefinitionsFromACP(
+      this.provider,
+      { currentModelId: modelId, availableModels: this.availableModels ?? [] },
+      this.configOptions,
+      this.sessionMeta,
+    ).find((model) => model.id === modelId);
+    const canKeepThinking = definition?.thinkingOptions?.some(
+      (option) => option.id === this.thinkingOptionId,
+    );
+    if (canKeepThinking) return this.thinkingOptionId;
+    return definition?.defaultThinkingOptionId ?? null;
+  }
+
+  private readConfigThinkingOptionId(): string | null {
+    const option = findSelectConfigOption({
+      configOptions: this.configOptions,
+      category: "thought_level",
+    });
+    return option?.currentValue ?? null;
   }
 
   async setThinkingOption(thinkingOptionId: string | null): Promise<void> {
@@ -2309,7 +2492,20 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     const thinkingOptionWriter = this.thinkingOptionWriter;
     if (thinkingOptionWriter) {
       const { connection, sessionId } = this;
-      await this.runACPRequest(() => thinkingOptionWriter(connection, sessionId, thinkingOptionId));
+      const result = await this.runACPRequest(() =>
+        thinkingOptionWriter({
+          connection,
+          sessionId,
+          thinkingOptionId,
+          modelId: this.currentModel,
+          availableModels: this.availableModels,
+          sessionMeta: this.sessionMeta,
+          configOptions: this.configOptions,
+        }),
+      );
+      if (result.configOptions !== null) {
+        this.configOptions = this.transformConfigOptions(result.configOptions);
+      }
       this.thinkingOptionId = thinkingOptionId;
       this.pushEvent({
         type: "thinking_option_changed",
@@ -2901,6 +3097,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
       : response;
 
     this.configOptions = this.transformConfigOptions(transformed.configOptions ?? []);
+    this.sessionMeta = transformed._meta ?? null;
 
     const modeInfo = deriveModesFromACP(this.defaultModes, transformed.modes, this.configOptions);
     this.availableModes = modeInfo.modes;
@@ -2910,7 +3107,13 @@ export class ACPAgentSession implements AgentSession, ACPClient {
     this.currentModel =
       transformed.models?.currentModelId ?? deriveCurrentConfigValue(this.configOptions, "model");
     this.thinkingOptionId =
-      deriveCurrentConfigValue(this.configOptions, "thought_level") ?? this.thinkingOptionId;
+      deriveCurrentConfigValue(this.configOptions, "thought_level") ??
+      deriveGrokCurrentThinkingOptionId({
+        models: this.availableModels,
+        currentModelId: this.currentModel,
+        sessionMeta: this.sessionMeta,
+      }) ??
+      this.thinkingOptionId;
   }
 
   private transformConfigOptions(configOptions: SessionConfigOption[]): SessionConfigOption[] {
@@ -3516,6 +3719,15 @@ function normalizeConfigFeatureValue(value: unknown): string {
     return "";
   }
   throw new Error(`ACP feature value must be a string`);
+}
+
+function sessionRequestMeta(meta: { [key: string]: unknown } | undefined): {
+  _meta?: { [key: string]: unknown };
+} {
+  if (!meta || Object.keys(meta).length === 0) {
+    return {};
+  }
+  return { _meta: meta };
 }
 
 export function deriveSelectorOptions(
