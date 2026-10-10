@@ -166,7 +166,6 @@ export function Button({
   leftIcon,
   trailing,
   style,
-  hoverStyle,
   textStyle,
   disabled,
   loading = false,
@@ -180,7 +179,6 @@ export function Button({
     leftIcon?: LeftIcon;
     trailing?: ReactNode;
     style?: StyleProp<ViewStyle>;
-    hoverStyle?: StyleProp<ViewStyle>;
     textStyle?: StyleProp<TextStyle>;
     loading?: boolean;
   }
@@ -224,9 +222,8 @@ export function Button({
       pressed ? styles.pressed : null,
       isDisabled ? styles.disabled : null,
       style,
-      hovered ? hoverStyle : null,
     ],
-    [sizeStyle, variantStyle, isDisabled, style, hovered, hoverStyle],
+    [sizeStyle, variantStyle, isDisabled, style],
   );
 
   const resolvedTextStyle = useMemo(
@@ -236,8 +233,8 @@ export function Button({
       variant === "default" ? styles.textDefault : null,
       variant === "destructive" ? styles.textDestructive : null,
       variant === "ghost" ? styles.textGhost : null,
-      isGhostHovered ? styles.textGhostHovered : null,
       textStyle,
+      isGhostHovered ? styles.textGhostHovered : null,
     ],
     [size, variant, textStyle, isGhostHovered],
   );

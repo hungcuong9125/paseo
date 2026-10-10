@@ -212,21 +212,6 @@ const INBOUND_PERMISSION = {
   workspace_setup_status_request: "workspace.read",
   "workspace.setup.run.request": "workspace.write",
   write_project_config_request: "workspace.write",
-  "project.tracker.list.request": "workspace.read",
-  "project.tracker.show.request": "workspace.read",
-  "project.tracker.create.request": "workspace.write",
-  "project.tracker.update.request": "workspace.write",
-  "project.tracker.close.request": "workspace.write",
-  "project.tracker.reopen.request": "workspace.write",
-  "project.tracker.cancel.request": "workspace.write",
-  "project.tracker.delete.request": "workspace.write",
-  "project.tracker.note_add.request": "workspace.write",
-  "project.tracker.init.request": "workspace.write",
-  "project.tracker.ready.request": "workspace.read",
-  "project.tracker.search.request": "workspace.read",
-  "project.tracker.subscribe.request": "workspace.read",
-  "project.tracker.unsubscribe.request": "workspace.read",
-  "project.tracker.stats.request": "workspace.read",
 } as const satisfies Record<InboundOperation, PermissionRequirement>;
 
 const OUTBOUND_PERMISSION = {
@@ -454,21 +439,6 @@ const OUTBOUND_PERMISSION = {
   "workspace.setup.run.response": "workspace.write",
   workspace_update: ["workspace.read", "hub.execute"],
   write_project_config_response: "workspace.write",
-  "project.tracker.list.response": "workspace.read",
-  "project.tracker.search.response": "workspace.read",
-  "project.tracker.subscribe.response": "workspace.read",
-  "project.tracker.updated": "workspace.read",
-  "project.tracker.show.response": "workspace.read",
-  "project.tracker.create.response": "workspace.write",
-  "project.tracker.update.response": "workspace.write",
-  "project.tracker.close.response": "workspace.write",
-  "project.tracker.reopen.response": "workspace.write",
-  "project.tracker.cancel.response": "workspace.write",
-  "project.tracker.delete.response": "workspace.write",
-  "project.tracker.note_add.response": "workspace.write",
-  "project.tracker.init.response": "workspace.write",
-  "project.tracker.ready.response": "workspace.read",
-  "project.tracker.stats.response": "workspace.read",
 } as const satisfies Record<OutboundOperation, PermissionRequirement>;
 
 export function requiredPermissionForInbound(operation: InboundOperation): PermissionRequirement {

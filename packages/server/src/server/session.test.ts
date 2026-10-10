@@ -1020,9 +1020,6 @@ describe("project command-center RPCs", () => {
               projectIconRevision: "automatic:none:v1",
               projectRootPath: directoryPath,
               projectKind: "non_git",
-              // A freshly created directory has no `.ait/ait.db` inside it,
-              // so the fresh check (pas-2KY5X.28) correctly reports false.
-              aitInitialized: false,
             },
             error: null,
             errorCode: null,
@@ -5477,9 +5474,6 @@ test("project.list returns every active project descriptor", async () => {
             projectIconRevision: "automatic:none:v1",
             projectRootPath: "/tmp/project-active",
             projectKind: "git",
-            // rootPath doesn't exist on disk in this fixture, so the fresh
-            // `.ait/ait.db` check (pas-2KY5X.28) correctly reports false.
-            aitInitialized: false,
           },
         ],
       },

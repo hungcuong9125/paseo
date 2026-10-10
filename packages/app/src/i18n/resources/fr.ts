@@ -1252,7 +1252,6 @@ export const fr: TranslationResources = {
       sessions: "Historique",
       search: "Recherche",
       schedules: "Planifications",
-      tracker: "Suivi",
     },
     worktreeSetup: {
       title: "Configurer les scripts de worktree",
@@ -2874,61 +2873,6 @@ export const fr: TranslationResources = {
         saving: "Enregistrement…",
         cancel: "Annuler",
       },
-    },
-  },
-  tracker: {
-    card: {
-      childProgress: "{{done}}/{{count}}",
-      claimedBy: "Revendiqué par {{name}}",
-      created: "Créé {{time}}",
-      closed: "Fermé {{time}}",
-    },
-    kanban: {
-      lane: {
-        open: "À faire",
-        inProgress: "En cours",
-        done: "Terminé",
-        cancelled: "Annulé",
-      },
-      empty: {
-        open: "Aucun élément à faire",
-        inProgress: "Aucun élément en cours",
-        done: "Aucun élément terminé",
-        cancelled: "Aucun élément annulé",
-      },
-      showMore: "Afficher {{count}} de plus",
-      blocked: "Bloqué",
-      refresh: "Actualiser",
-      moveMenu: {
-        trigger: "Actions pour {{title}}",
-        title: "Actions",
-      },
-      moveTo: {
-        open: "Déplacer vers Ouvert",
-        inProgress: "Déplacer vers En cours",
-        done: "Déplacer vers Terminé",
-        cancelled: "Déplacer vers Annulé",
-      },
-      type: {
-        tasks: "Tâches",
-        epics: "Épopées",
-        initiatives: "Initiatives",
-        all: "Tout",
-      },
-      error: {
-        transitionFailed: "Impossible de déplacer {{title}}. Réessayez.",
-        deleteFailed: "Impossible de supprimer {{title}}. Réessayez.",
-      },
-    },
-    list: {
-      section: {
-        open: "À faire",
-        inProgress: "En cours",
-        done: "Terminé",
-        cancelled: "Annulé",
-      },
-      showMore: "Afficher {{count}} de plus",
-      loadMore: "Charger plus",
     },
   },
 };

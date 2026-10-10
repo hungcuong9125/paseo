@@ -1,6 +1,5 @@
 import { resolve } from "node:path";
 import type pino from "pino";
-import { checkAitInitialized } from "./ait-init-status.js";
 import type {
   AgentSnapshotPayload,
   SessionInboundMessage,
@@ -568,11 +567,11 @@ export class WorkspaceDirectory {
         .filter((workspace) => !workspace.archivedAt)
         .map((workspace) => workspace.projectId),
     );
-    const relevantProjects = persistedProjects.filter(
-      (project) => !project.archivedAt && !projectIdsWithActiveWorkspaces.has(project.projectId),
-    );
-    return Promise.all(
-      relevantProjects.map(async (project) => ({
+    return persistedProjects
+      .filter(
+        (project) => !project.archivedAt && !projectIdsWithActiveWorkspaces.has(project.projectId),
+      )
+      .map((project) => ({
         projectId: project.projectId,
         projectKey: project.projectKey ?? undefined,
         projectDisplayName: resolveProjectDisplayName(project),
@@ -580,9 +579,7 @@ export class WorkspaceDirectory {
         projectCustomIconRevision: project.customIconRevision ?? null,
         projectRootPath: project.rootPath,
         projectKind: project.kind,
-        aitInitialized: await checkAitInitialized(project.rootPath),
-      })),
-    );
+      }));
   }
 
   async listObservationTargets(): Promise<

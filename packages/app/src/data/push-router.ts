@@ -602,13 +602,12 @@ function readServerDataRoute(value: Record<string, unknown>): ServerDataRoute | 
   const domain = value.domain;
   const enabled = value.enabled;
   const serverId = value.serverId;
-  if (typeof enabled !== "boolean" || typeof serverId !== "string") {
+  const cwd = value.cwd;
+  if (typeof enabled !== "boolean" || typeof serverId !== "string" || typeof cwd !== "string") {
     return null;
   }
 
   if (domain === "checkoutDiff") {
-    const cwd = value.cwd;
-    if (typeof cwd !== "string") return null;
     const subscriptionId = value.subscriptionId;
     const compare = readCheckoutDiffCompare(value.compare);
     if (typeof subscriptionId !== "string" || !compare) {
@@ -625,8 +624,6 @@ function readServerDataRoute(value: Record<string, unknown>): ServerDataRoute | 
   }
 
   if (domain === "workspaceTerminals") {
-    const cwd = value.cwd;
-    if (typeof cwd !== "string") return null;
     const workspaceId = value.workspaceId;
     if (workspaceId !== undefined && typeof workspaceId !== "string") {
       return null;
