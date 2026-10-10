@@ -927,6 +927,11 @@ export default function contribute(client: PluginClientContext) {
 
 Paseo owns the route, header, close action, host picker, error boundary, and query client. The plugin owns the screen body.
 
+`addScreen({ id, title, Component, HeaderRight })` accepts an optional `HeaderRight` component. It
+receives the same `PluginScreenProps` as the body and renders at the right of the header, before the
+host picker and close button. It shares the body's query cache and RPCs. If it throws, the slot
+disappears and the rest of the header and body keep working.
+
 `addScreen({ id, title, Component })` registers a screen. `title` is the screen header's title: a
 string, or a function that takes the screen's params and returns one, so a bot screen can show the
 bot's name. The function runs again when the params change. Registration throws on an empty title

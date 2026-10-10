@@ -179,6 +179,8 @@ export interface PluginScreenContribution {
   id: string;
   title: PluginScreenTitle;
   Component: ComponentType<PluginScreenProps>;
+  /** Rendered at the right of the screen header, before the host picker and the close button. */
+  HeaderRight?: ComponentType<PluginScreenProps>;
 }
 
 export interface PluginSurfaceContribution {

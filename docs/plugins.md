@@ -326,10 +326,12 @@ created by plugin code. Paseo removes registered contributions, unmounts surface
 state, rejects pending RPCs, closes the plugin's daemon session, and stops the subprocess. Cleanup
 errors are logged and do not interrupt host teardown.
 
-Paseo owns the route, screen header, Lucide icon validation, close action, theme DTO, layout facts,
-and render error boundary. The contributed component owns the complete body below the header.
-The plugin owns the header's text through the screen's `title` (`resolvePluginScreenTitle` in
-`plugins/surface-contribution.ts`). A legacy `addSidebarItem` route (`/sidebar/<id>`) shows the
+Paseo owns the route, screen header, Lucide icon validation, close action, host picker, theme DTO,
+layout facts, and render error boundary. The contributed component owns the complete body below the
+header. The plugin owns the header's text through the screen's `title` (`resolvePluginScreenTitle`
+in `plugins/surface-contribution.ts`) and may fill the header's right side with `HeaderRight`, which
+renders before the host picker and close button under the same installation providers and its own
+error boundary (a throw hides only that slot). A legacy `addSidebarItem` route (`/sidebar/<id>`) shows the
 item's title and icon instead, as before screens had titles; the `addSurface` alias titles its
 screen with the id. A `/sidebar/<id>` route with no legacy item of that id opens the screen with
 that id, so links saved before a plugin migrated keep working.

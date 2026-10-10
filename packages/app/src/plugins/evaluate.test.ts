@@ -210,6 +210,21 @@ describe("evaluatePluginClientBundle", () => {
     expect(plugin.legacySidebarItems).toEqual([]);
   });
 
+  it("keeps a screen's HeaderRight and omits it when absent", () => {
+    const plugin = evaluatePluginClientBundle(
+      "example",
+      bundle(`
+        function Screen() { return null; }
+        function Actions() { return null; }
+        plugin.addScreen({ id: "with", title: "With", Component: Screen, HeaderRight: Actions });
+        plugin.addScreen({ id: "without", title: "Without", Component: Screen });
+      `),
+    );
+
+    expect(plugin.surfaces[0]?.HeaderRight).toBeTypeOf("function");
+    expect(plugin.surfaces[1]).not.toHaveProperty("HeaderRight");
+  });
+
   it.each([
     [`plugin.addScreen("main", Screen);`, "addScreen takes { id, title, Component }"],
     [`plugin.addScreen({ id: "main", Component: Screen });`, "Screen main needs a title"],
@@ -224,6 +239,10 @@ describe("evaluatePluginClientBundle", () => {
     [
       `plugin.addScreen({ id: "main", title: "Main", Component: "Main" });`,
       "Screen main is not a component",
+    ],
+    [
+      `plugin.addScreen({ id: "main", title: "Main", Component: Screen, HeaderRight: "Actions" });`,
+      "Screen main HeaderRight is not a component",
     ],
   ])("rejects a malformed screen: %s", (call, message) => {
     expect(() =>
