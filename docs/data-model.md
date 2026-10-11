@@ -582,6 +582,8 @@ fails closed for that mailbox. Delivery is at least once: an entry leaves only w
 interrupted, or never-started turn, or a crash, puts it back marked `redelivered`, retried after
 5 s, 20 s, 80 s, then 5 min. After 5 such turns it is `held` on disk, and newer mail still flows,
 until a person or the parent prompts the agent.
+A watch with `mode: "standing"` survives recovery and is re-armed; it reports a restart only
+when its child was running.
 
 ---
 
