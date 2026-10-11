@@ -134,6 +134,7 @@ import { createSpeechService } from "./speech/speech-runtime.js";
 import { AgentManager } from "./agent/agent-manager.js";
 import { AgentStorage } from "./agent/agent-storage.js";
 import { createAgentMailbox } from "./agent/agent-prompt.js";
+import { rearmStandingFinishNotifications } from "./agent/standing-finish-notification.js";
 import { DISABLED_MAILBOX_POLICY, resolveMailboxPolicy } from "./agent/agent-mailbox/policy.js";
 import { FileMailboxStore } from "./agent/agent-mailbox/store.js";
 import type { AgentMailbox } from "./agent/agent-mailbox/service.js";
@@ -1006,8 +1007,9 @@ export async function createPaseoDaemon(
   const mailbox = createDaemonMailbox({ config, agentManager, agentStorage, logger });
   agentManager.setMailbox(mailbox);
   const agentsWithMail = await mailbox.recover();
+  const standingWatches = rearmStandingFinishNotifications({ agentManager, agentStorage, logger });
   logger.info(
-    { elapsed: elapsed(), agentsWithMail: agentsWithMail.length },
+    { elapsed: elapsed(), agentsWithMail: agentsWithMail.length, standingWatches },
     "Agent mailboxes recovered",
   );
   await bootstrapWorkspaceRegistries({

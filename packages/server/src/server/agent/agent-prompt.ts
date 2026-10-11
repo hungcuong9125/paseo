@@ -25,16 +25,18 @@ import type { AgentStorage } from "./agent-storage.js";
 import { ensureAgentLoaded } from "./agent-loading.js";
 import { isStaleProviderSessionError } from "./stale-provider-session-error.js";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+import {
+  callerTurnClaims,
+  type CallerTurnHandle,
+  UNIDENTIFIED_TURN,
+} from "./finish-notification-claims.js";
 import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
-
-/** Key for a terminal event a provider emitted without a turn id. */
-const UNIDENTIFIED_TURN = "unidentified-turn";
 
 /**
  * A cancelled turn is over but did not finish its work. Calling that "finished"
  * hands the caller a partial answer as if it were the result.
  */
-function terminalTurnReason(type: AgentStreamEvent["type"]): FinishNotificationReason {
+export function terminalTurnReason(type: AgentStreamEvent["type"]): FinishNotificationReason {
   if (type === "turn_failed") {
     return "errored";
   }
@@ -44,7 +46,7 @@ function terminalTurnReason(type: AgentStreamEvent["type"]): FinishNotificationR
   return "finished";
 }
 
-function isTurnTerminalStreamEvent(event: AgentStreamEvent): boolean {
+export function isTurnTerminalStreamEvent(event: AgentStreamEvent): boolean {
   return (
     event.type === "turn_completed" ||
     event.type === "turn_failed" ||
@@ -740,14 +742,14 @@ async function bindWatchesToStartedTurn(
   }
 }
 
-type FinishNotificationReason =
+export type FinishNotificationReason =
   | "finished"
   | "errored"
   | "was interrupted"
   | "needs permission"
   | "was closed";
 
-function finishNotificationEvent(
+export function finishNotificationEvent(
   reason: FinishNotificationReason,
 ): Extract<AgentPromptSource, { kind: "agent-notification" }>["event"] | undefined {
   switch (reason) {
@@ -774,7 +776,7 @@ interface FinishNotificationBodyInput {
   permissionRequest?: AgentPermissionRequest;
 }
 
-function formatFinishNotificationBody(params: FinishNotificationBodyInput): string {
+export function formatFinishNotificationBody(params: FinishNotificationBodyInput): string {
   const statusLine = `Agent ${params.childAgentId} (${params.title}) ${params.reason}.`;
   const sections = [statusLine];
   if (params.reason === "needs permission" && params.permissionRequest) {
@@ -843,11 +845,15 @@ export function setupFinishNotification(
   const armedKey = JSON.stringify([childAgentId, callerAgentId]);
   armedByManager.get(armedKey)?.();
   armedByManager.set(armedKey, release);
+  // A standing watch on the same pair skips the turn this watch reports.
+  const claimHandle = registerCallerClaim(agentManager, childAgentId, callerAgentId, watch);
+  if (bound) claimHandle.bind(watchedTurnId);
 
   function detach(): void {
     const subscribed = unsubscribe;
     unsubscribe = null;
     subscribed?.();
+    claimHandle.release();
     if (armedByManager.get(armedKey) === release) {
       armedByManager.delete(armedKey);
     }
@@ -1015,6 +1021,7 @@ export function setupFinishNotification(
     if (!isWatchedTurn(turnId)) {
       return;
     }
+    claimHandle.claim(turnId ?? UNIDENTIFIED_TURN);
     notifySafely(reason);
   }
 
@@ -1069,6 +1076,7 @@ export function setupFinishNotification(
   }
   if (expectedTurnId && childSnapshot && childSnapshot.activeForegroundTurnId !== expectedTurnId) {
     // The turn we were handed is already over; its terminal event is gone.
+    claimHandle.claim(expectedTurnId);
     notifySafely("finished");
   }
 
@@ -1091,11 +1099,11 @@ export function setupFinishNotification(
       }
       bound = true;
       watchedTurnId = turnId;
-      const buffered = turnId
-        ? (terminalBeforeBind.get(turnId) ?? terminalBeforeBind.get(UNIDENTIFIED_TURN))
-        : // Unknown id: the caller's turn is whichever one ended while arming.
-          [...terminalBeforeBind.values()][0];
+      const bufferedKey = bufferedTurnKey(terminalBeforeBind, turnId);
+      const buffered = bufferedKey ? terminalBeforeBind.get(bufferedKey) : undefined;
       terminalBeforeBind.clear();
+      if (bufferedKey) claimHandle.claim(bufferedKey);
+      claimHandle.bind(turnId);
       if (buffered) {
         notifySafely(buffered);
       }
@@ -1104,4 +1112,31 @@ export function setupFinishNotification(
       return !cancelled;
     },
   };
+}
+
+const NO_CLAIM: CallerTurnHandle = { bind() {}, claim() {}, release() {} };
+
+/** Only a prompt's own watch claims turns; the creation watch never does. */
+function registerCallerClaim(
+  agentManager: AgentManager,
+  childAgentId: string,
+  callerAgentId: string,
+  watch: "next-turn" | "any-idle",
+): CallerTurnHandle {
+  return watch === "next-turn"
+    ? callerTurnClaims(agentManager, childAgentId, callerAgentId).register()
+    : NO_CLAIM;
+}
+
+/** Which buffered terminal event belongs to the turn a next-turn watch was just bound to. */
+function bufferedTurnKey(
+  terminalBeforeBind: ReadonlyMap<string, FinishNotificationReason>,
+  turnId: string | null,
+): string | undefined {
+  if (!turnId) {
+    // Unknown id: the caller's turn is whichever one ended while arming.
+    return terminalBeforeBind.keys().next().value;
+  }
+  if (terminalBeforeBind.has(turnId)) return turnId;
+  return terminalBeforeBind.has(UNIDENTIFIED_TURN) ? UNIDENTIFIED_TURN : undefined;
 }

@@ -1867,7 +1867,17 @@ export class AgentManager {
         archivedAt: archivedRecord.archivedAt,
       });
     }
+    await this.clearArchivedMailbox(record.id);
     return archivedRecord;
+  }
+
+  /** Mail outlives an archive; the stop flag and the watches do not. */
+  private async clearArchivedMailbox(agentId: string): Promise<void> {
+    try {
+      await this.mailbox?.onAgentArchived(agentId);
+    } catch (error) {
+      this.logger.warn({ err: error, agentId }, "Failed to clear archived agent's mailbox");
+    }
   }
 
   private async fireAgentArchived(agentId: string): Promise<void> {

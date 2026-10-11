@@ -28,6 +28,7 @@ interface Fixture {
   setRunning(agentId: string, running: boolean): void;
   endTurn(agentId: string, outcome: "completed" | "failed" | "canceled"): void;
   archive(agentId: string): void;
+  setRecord(agentId: string, patch: Partial<StoredAgentRecord>): void;
 }
 
 const TURN_EVENT = {
@@ -128,7 +129,27 @@ function createFixture(options: {
     archive(agentId) {
       record(agentId).archivedAt = "2026-10-07T00:00:00.000Z";
     },
+    setRecord(agentId, patch) {
+      Object.assign(record(agentId), patch);
+    },
   };
+}
+
+function standingNotice(childAgentId: string, text: string) {
+  return { source: { kind: "notification" as const, childAgentId, standing: true }, text };
+}
+
+async function seedStandingWatch(directory: string, caller: string, childAgentId: string) {
+  const store = new FileMailboxStore(directory, createTestLogger());
+  const file = createEmptyMailboxFile(caller);
+  file.watches.push({
+    id: `watch_${childAgentId}`,
+    childAgentId,
+    turnId: null,
+    armedAt: "2026-10-11T00:00:00.000Z",
+    mode: "standing",
+  });
+  await store.save(file);
 }
 
 function agentPrompt(text: string, senderAgentId = "peer") {
@@ -508,5 +529,102 @@ describe("AgentMailbox", () => {
 
     await vi.waitFor(() => expect(fixture.deliveries).toHaveLength(1));
     expect(fixture.deliveries[0]?.plainNotifications).toBe(true);
+  });
+
+  test("recovery keeps a standing watch on an idle child and reports nothing", async () => {
+    await seedStandingWatch(directory, "supervisor", "lead");
+    const fixture = createFixture({ directory });
+    fixture.setRecord("lead", { lastStatus: "idle", labels: {} });
+
+    await fixture.mailbox.recover();
+
+    expect(await fixture.mailbox.listEntries("supervisor")).toEqual([]);
+    expect(await fixture.mailbox.listWatches("supervisor")).toMatchObject([
+      { id: "watch_lead", mode: "standing" },
+    ]);
+    expect(fixture.mailbox.takeRecoveredStandingWatches()).toMatchObject([
+      { callerAgentId: "supervisor", watch: { id: "watch_lead", childAgentId: "lead" } },
+    ]);
+    expect(fixture.mailbox.takeRecoveredStandingWatches()).toEqual([]);
+  });
+
+  test("recovery reports a restart once for a standing watch whose child was running", async () => {
+    await seedStandingWatch(directory, "supervisor", "lead");
+    const fixture = createFixture({ directory });
+    fixture.setRecord("lead", { lastStatus: "running" });
+
+    await fixture.mailbox.recover();
+
+    const entries = await fixture.mailbox.listEntries("supervisor");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.source).toEqual({ kind: "restart", childAgentId: "lead" });
+    expect(await fixture.mailbox.listWatches("supervisor")).toHaveLength(1);
+  });
+
+  test("recovery drops a standing watch whose child or caller is archived", async () => {
+    await seedStandingWatch(directory, "supervisor", "lead");
+    await seedStandingWatch(directory, "archived-caller", "peer");
+    const fixture = createFixture({ directory });
+    fixture.archive("lead");
+    fixture.archive("archived-caller");
+
+    await fixture.mailbox.recover();
+
+    expect(await fixture.mailbox.listWatches("supervisor")).toEqual([]);
+    expect(await fixture.mailbox.listWatches("archived-caller")).toEqual([]);
+    expect(fixture.mailbox.takeRecoveredStandingWatches()).toEqual([]);
+  });
+
+  test("a standing notice replaces one from the same child that is still waiting", async () => {
+    const fixture = createFixture({ directory, running: ["supervisor"] });
+
+    await fixture.mailbox.enqueue("supervisor", standingNotice("lead", "first turn"));
+    await fixture.mailbox.enqueue("supervisor", standingNotice("other", "other child"));
+    await fixture.mailbox.enqueue("supervisor", standingNotice("lead", "second turn"));
+
+    const entries = await fixture.mailbox.listEntries("supervisor");
+    expect(entries.map((entry) => entry.prompt.text)).toEqual(["second turn", "other child"]);
+    fixture.mailbox.stop();
+  });
+
+  test("a one-shot notice is never folded into a standing one", async () => {
+    const fixture = createFixture({ directory, running: ["supervisor"] });
+
+    await fixture.mailbox.enqueue("supervisor", standingNotice("lead", "standing"));
+    await fixture.mailbox.enqueue("supervisor", {
+      source: { kind: "notification", childAgentId: "lead" },
+      text: "prompted turn",
+    });
+
+    expect(await fixture.mailbox.listEntries("supervisor")).toHaveLength(2);
+    fixture.mailbox.stop();
+  });
+
+  test("archiving drops the stop flag and the watches; an empty mailbox disappears", async () => {
+    const fixture = createFixture({ directory });
+    await fixture.mailbox.pause("lead");
+    await fixture.mailbox.armWatch("lead", {
+      id: "watch_peer",
+      childAgentId: "peer",
+      turnId: null,
+      armedAt: "2026-10-11T00:00:00.000Z",
+    });
+
+    await fixture.mailbox.onAgentArchived("lead");
+
+    expect(await fixture.store.listAgentIds()).toEqual([]);
+  });
+
+  test("archiving keeps mail that never got delivered", async () => {
+    const fixture = createFixture({ directory, running: ["lead"] });
+    await fixture.mailbox.admit("lead", agentPrompt("still waiting"), async () => undefined);
+    await fixture.mailbox.pause("lead");
+    fixture.mailbox.stop();
+
+    await fixture.mailbox.onAgentArchived("lead");
+
+    const file = await fixture.store.load("lead");
+    expect(file?.entries.map((entry) => entry.prompt.text)).toEqual(["still waiting"]);
+    expect(file?.paused).toBe(true);
   });
 });

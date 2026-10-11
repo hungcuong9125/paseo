@@ -18,6 +18,7 @@ import type { AgentStorage } from "../agent-storage.js";
 import type { AgentOwner } from "../agent-owner.js";
 import type { ProviderSnapshotManager } from "../provider-snapshot-manager.js";
 import { setupFinishNotification, startCreatedAgentInitialPrompt } from "../agent-prompt.js";
+import { setupStandingFinishNotification } from "../standing-finish-notification.js";
 import { resolveCreateAgentTitles } from "../create-agent-title.js";
 import { buildAgentPrompt } from "../prompt-attachments.js";
 import { normalizeClientMessageId, resolveClientMessageId } from "../../client-message-id.js";
@@ -95,7 +96,8 @@ export interface CreateAgentFromMcpInput {
   unattended?: boolean;
   promptFailure?: CreateAgentPromptFailureMode;
   background: boolean;
-  notifyOnFinish: boolean;
+  /** "every-turn" keeps reporting each turn the caller did not prompt, not only the first. */
+  notifyOnFinish: boolean | "every-turn";
   internal?: boolean;
   detached?: boolean;
   owner?: AgentOwner;
@@ -209,7 +211,25 @@ export async function createAgentCommand(
     initialPromptError = sendResult.error ?? null;
   }
 
-  if (input.kind === "mcp" && input.notifyOnFinish && input.callerAgentId && initialPromptStarted) {
+  if (
+    input.kind === "mcp" &&
+    input.notifyOnFinish === "every-turn" &&
+    input.callerAgentId &&
+    initialPromptStarted
+  ) {
+    setupStandingFinishNotification({
+      agentManager: dependencies.agentManager,
+      agentStorage: dependencies.agentStorage,
+      childAgentId: snapshot.id,
+      callerAgentId: input.callerAgentId,
+      logger: dependencies.logger,
+    });
+  } else if (
+    input.kind === "mcp" &&
+    input.notifyOnFinish &&
+    input.callerAgentId &&
+    initialPromptStarted
+  ) {
     setupFinishNotification({
       agentManager: dependencies.agentManager,
       agentStorage: dependencies.agentStorage,

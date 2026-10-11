@@ -78,6 +78,8 @@ Permission requests are notification checkpoints, not the end of that subscripti
 The permission notification includes the normalized request plus the child and request IDs, so the caller can inspect it and respond without fetching agent status.
 A watched child that closes before its finish event also notifies the caller so delegated work cannot disappear silently during archive or workspace teardown.
 
+`create_agent` with `notifyOnFinish: "every-turn"` arms a standing watch instead: the caller also hears about every turn the child ends without being prompted by the caller (woken by its own agents, a schedule, or a person), until the child closes or either side is archived. A turn the caller prompted is reported once, by that prompt's watch. A standing notice still waiting in the caller's mailbox is replaced by the child's next one, and the watch is re-armed after a restart.
+
 ## Mailbox
 
 With its mailbox on (config: [data-model.md](data-model.md#2-daemon-configuration)), an agent's
@@ -92,7 +94,8 @@ lifts the pause, and waiting mail follows that turn. Internal replacement, Hub i
 agent's `cancel_agent` never pause. A subagent's `cancel_agent` on its parent is refused. Finish notifications and their watches use the mailbox whether it is
 on or not, so they survive a restart: a leftover watch becomes "was interrupted by a daemon
 restart", and a waiting permission notice is rewritten as expired. Mail starts a turn at boot only
-with `resumeOnStartup`. Archive keeps the mailbox; deleting the agent removes it.
+with `resumeOnStartup`. Archive keeps waiting mail but drops the pause and the watches, so an
+empty mailbox disappears; deleting the agent removes it.
 
 ## Provider-managed child agents
 

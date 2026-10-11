@@ -13,6 +13,8 @@ const MailboxSourceSchema = z.discriminatedUnion("kind", [
     kind: z.literal("notification"),
     childAgentId: z.string(),
     requestId: z.string().optional(),
+    /** From a standing watch; a newer one from the same child replaces it while queued. */
+    standing: z.boolean().optional(),
   }),
   z.object({ kind: z.literal("restart"), childAgentId: z.string() }),
 ]);
@@ -37,6 +39,12 @@ const MailboxWatchSchema = z.object({
   childAgentId: z.string(),
   turnId: z.string().nullable(),
   armedAt: z.string(),
+  /**
+   * "standing" reports every turn of the child that the caller did not prompt,
+   * until the child is closed or either side is archived, and survives a
+   * restart. Absent means the one-shot watch of a single prompt or creation.
+   */
+  mode: z.enum(["once", "standing"]).optional(),
 });
 
 const MailboxFileSchema = z.object({
