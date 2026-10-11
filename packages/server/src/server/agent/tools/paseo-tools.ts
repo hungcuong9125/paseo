@@ -1138,11 +1138,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   const agentToAgentInputSchema = {
     ...canonicalCreateAgentFields,
     notifyOnFinish: z
-      .boolean()
+      .union([z.boolean(), z.literal("every-turn")])
       .optional()
       .default(true)
       .describe(
-        "Get notified when the created agent finishes, errors, or needs permission. Set false only for truly fire-and-forget agents.",
+        'Get notified when the created agent finishes, errors, or needs permission. "every-turn" also notifies you each time the agent ends a turn you did not prompt (woken by its own agents, a schedule, or a person), until it is archived. Set false only for truly fire-and-forget agents.',
       ),
   };
   const canonicalTopLevelInputSchema = {
@@ -1551,7 +1551,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       const resolvedArgs = await resolveCreateAgentToolArgs(args);
       const { parsedArgs, worktree } = resolvedArgs;
       let requestedBackground: boolean;
-      let notifyOnFinish: boolean;
+      let notifyOnFinish: boolean | "every-turn";
       if (resolvedArgs.kind === "agent-scoped") {
         requestedBackground = true;
         notifyOnFinish = parsedArgs.notifyOnFinish;

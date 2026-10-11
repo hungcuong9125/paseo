@@ -61,6 +61,12 @@ export interface MailboxEnqueueInput {
   notifyCallerAgentId?: string;
 }
 
+/** A standing watch found on disk at recovery, for the caller to re-arm. */
+export interface RecoveredStandingWatch {
+  callerAgentId: string;
+  watch: MailboxWatch;
+}
+
 export type MailboxAdmission<T> =
   | { status: "queued"; entry: MailboxEntry; position: number }
   | { status: "dispatched"; result: T };
@@ -128,6 +134,7 @@ export class AgentMailbox {
   private readonly now: () => number;
   private readonly stopSignal = createDeferred();
   private stopped = false;
+  private recoveredStanding: RecoveredStandingWatch[] = [];
 
   constructor(private readonly dependencies: AgentMailboxDependencies) {
     this.delay = dependencies.delay ?? defaultDelay;
@@ -169,7 +176,11 @@ export class AgentMailbox {
     return admission;
   }
 
-  /** Always queues. `resolvesWatchId` retires that watch in the same write. */
+  /**
+   * Always queues. `resolvesWatchId` retires that watch in the same write. A
+   * standing notification replaces one from the same child that is still
+   * waiting, so a caller that is busy reads the child's latest turn once.
+   */
   async enqueue(
     agentId: string,
     input: MailboxEnqueueInput,
@@ -179,6 +190,19 @@ export class AgentMailbox {
       const file = await this.loadOrCreate(agentId);
       if (options?.resolvesWatchId) {
         file.watches = file.watches.filter((watch) => watch.id !== options.resolvesWatchId);
+      }
+      const replaceable = standingChildOf(input.source)
+        ? file.entries.find(
+            (waiting) =>
+              waiting.state === "queued" &&
+              standingChildOf(waiting.source) === standingChildOf(input.source),
+          )
+        : undefined;
+      if (replaceable) {
+        replaceable.prompt = { text: input.text };
+        replaceable.enqueuedAt = new Date(this.now()).toISOString();
+        await this.dependencies.store.save(file);
+        return replaceable;
       }
       const appended = this.append(file, input);
       await this.dependencies.store.save(file);
@@ -264,6 +288,31 @@ export class AgentMailbox {
     return (await this.dependencies.store.load(agentId))?.watches ?? [];
   }
 
+  /**
+   * An archived agent drains nothing and watches nothing. Its mail stays on
+   * disk; with no mail left, the stop flag goes too, so the file disappears.
+   */
+  async onAgentArchived(agentId: string): Promise<void> {
+    await this.withLock(agentId, async () => {
+      const file = await this.dependencies.store.load(agentId);
+      if (!file) {
+        return;
+      }
+      file.watches = [];
+      if (file.entries.length === 0) {
+        file.paused = false;
+      }
+      await this.dependencies.store.save(file);
+    });
+  }
+
+  /** Standing watches found by the last `recover()`, handed over once. */
+  takeRecoveredStandingWatches(): RecoveredStandingWatch[] {
+    const recovered = this.recoveredStanding;
+    this.recoveredStanding = [];
+    return recovered;
+  }
+
   /** Archive keeps the file; only deleting the agent removes it. */
   async deleteAgent(agentId: string): Promise<void> {
     await this.withLock(agentId, () => this.dependencies.store.remove(agentId));
@@ -273,8 +322,10 @@ export class AgentMailbox {
    * Bring every mailbox on disk back after a restart. Nothing that was in
    * flight survived the old process: a delivering batch goes back in line
    * marked as redelivered, a permission notice points at a request that died
-   * with its provider, and every armed watch belongs to a child that was
-   * stopped mid-turn. Returns the agents that have mail waiting.
+   * with its provider, and every one-shot watch belongs to a child that was
+   * stopped mid-turn. A standing watch is kept for re-arming and only reports
+   * a restart when its child was running. Returns the agents that have mail
+   * waiting.
    */
   async recover(): Promise<string[]> {
     const withMail: string[] = [];
@@ -370,13 +421,30 @@ export class AgentMailbox {
         entry.source = { kind: "notification", childAgentId: entry.source.childAgentId };
       }
     }
+    const callerRecord = await this.dependencies.agentStorage.get(agentId);
+    const kept: MailboxWatch[] = [];
     for (const watch of file.watches) {
+      if (watch.mode === "standing") {
+        const child = await this.dependencies.agentStorage.get(watch.childAgentId);
+        if (!child || child.archivedAt || !callerRecord || callerRecord.archivedAt) {
+          continue;
+        }
+        if (child.lastStatus === "running") {
+          this.append(file, {
+            source: { kind: "restart", childAgentId: watch.childAgentId },
+            text: await this.restartText(watch.childAgentId),
+          });
+        }
+        kept.push(watch);
+        this.recoveredStanding.push({ callerAgentId: agentId, watch });
+        continue;
+      }
       this.append(file, {
         source: { kind: "restart", childAgentId: watch.childAgentId },
         text: await this.restartText(watch.childAgentId),
       });
     }
-    file.watches = [];
+    file.watches = kept;
     await this.dependencies.store.save(file);
     return file.entries.some((entry) => entry.state !== "held");
   }
@@ -717,4 +785,8 @@ function selectBatch(entries: readonly MailboxEntry[]): MailboxEntry[] {
     size += entry.prompt.text.length;
   }
   return batch;
+}
+
+function standingChildOf(source: MailboxSource): string | undefined {
+  return source.kind === "notification" && source.standing ? source.childAgentId : undefined;
 }

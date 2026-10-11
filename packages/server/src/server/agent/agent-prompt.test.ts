@@ -28,6 +28,7 @@ import {
   type MailboxStore,
 } from "./agent-mailbox/store.js";
 import type { FinishNotificationRegistration } from "./agent-prompt.js";
+import { setupStandingFinishNotification } from "./standing-finish-notification.js";
 import type { AgentManagerEvent, ManagedAgent } from "./agent-manager.js";
 import type { AgentStreamEvent } from "./agent-sdk-types.js";
 
@@ -1052,4 +1053,150 @@ test("a human pasting an agent envelope stays a human message through provider r
     messageId: "provider-echo",
     clientMessageId: "human-submission",
   });
+});
+
+function watchEveryTurn(harness: Harness, childAgentId: string) {
+  return setupStandingFinishNotification({
+    agentManager: harness.agentManager,
+    agentStorage: harness.agentStorage,
+    childAgentId,
+    callerAgentId: CALLER,
+    logger: createTestLogger(),
+  });
+}
+
+const FINISH_STATUS = /Agent child \([^)]*\) (finished|errored|was interrupted|was closed)\./g;
+
+/** Every finish notice about `child` the caller was handed, merged prompts split apart. */
+function finishNotices(harness: Harness): string[] {
+  return harness.deliveredTo(CALLER).flatMap((prompt) => prompt.match(FINISH_STATUS) ?? []);
+}
+
+function quiet(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 50));
+}
+
+test("a standing watch reports turns the caller did not prompt and never repeats one it did", async () => {
+  const harness = createHarness({ agents: { child: { title: "Lead" } } });
+  watchEveryTurn(harness, "child");
+
+  // Woken by its own children, twice, the caller reading in between.
+  startTurn(harness, "child", "grandchild-1");
+  endTurn(harness, "child", "grandchild-1");
+  await vi.waitFor(() => expect(finishNotices(harness)).toHaveLength(1));
+  startTurn(harness, "child", "grandchild-2");
+  endTurn(harness, "child", "grandchild-2");
+  await vi.waitFor(() => expect(finishNotices(harness)).toHaveLength(2));
+  // Prompted by the caller, which arms its own next-turn watch.
+  runTurn(harness, "child", "prompted");
+
+  await vi.waitFor(() => expect(finishNotices(harness)).toHaveLength(3));
+  await quiet();
+  expect(finishNotices(harness)).toHaveLength(3);
+});
+
+test("turns that end before the caller reads collapse into the latest notice", async () => {
+  let reply = "first";
+  const harness = createHarness({
+    agents: { child: { title: "Lead" } },
+    lastAssistantMessage: () => reply,
+  });
+  watchEveryTurn(harness, "child");
+  const mailbox = getAgentMailbox(harness.agentManager);
+  harness.setLifecycle(CALLER, "running");
+
+  startTurn(harness, "child", "grandchild-1");
+  endTurn(harness, "child", "grandchild-1");
+  await vi.waitFor(async () => expect(await mailbox.listEntries(CALLER)).toHaveLength(1));
+  reply = "second";
+  startTurn(harness, "child", "grandchild-2");
+  endTurn(harness, "child", "grandchild-2");
+  await vi.waitFor(async () =>
+    expect((await mailbox.listEntries(CALLER))[0]?.prompt.text).toContain("second"),
+  );
+  expect(await mailbox.listEntries(CALLER)).toHaveLength(1);
+  harness.setLifecycle(CALLER, "idle");
+
+  await vi.waitFor(() => expect(finishNotices(harness)).toHaveLength(1));
+  await quiet();
+  expect(finishNotices(harness)).toHaveLength(1);
+  expect(harness.deliveredTo(CALLER).join("\n")).toContain("second");
+});
+
+test("a prompt's own watch, armed and torn down, leaves the standing watch running", async () => {
+  const harness = createHarness({ agents: { child: { title: "Lead" } } });
+  watchEveryTurn(harness, "child");
+
+  watchNextTurn(harness, "child").cancel();
+  startTurn(harness, "child", "after-cancel");
+  endTurn(harness, "child", "after-cancel");
+
+  await vi.waitFor(() => expect(finishNotices(harness)).toHaveLength(1));
+});
+
+test("a standing watch armed after the prompt's watch still skips the prompted turn", async () => {
+  const harness = createHarness({ agents: { child: { title: "Lead" } } });
+  // A restart re-arms the standing watch after the caller's prompt watch
+  // exists, so the prompt watch hears the turn end first.
+  const prompted = watchNextTurn(harness, "child");
+  watchEveryTurn(harness, "child");
+  startTurn(harness, "child", "prompted");
+  prompted.bindTurn("prompted");
+  endTurn(harness, "child", "prompted");
+
+  await vi.waitFor(() => expect(finishNotices(harness)).toHaveLength(1));
+  await quiet();
+  expect(finishNotices(harness)).toHaveLength(1);
+});
+
+test("a stranger's turn ending before the prompt's watch names its turn is reported once", async () => {
+  const harness = createHarness({ agents: { child: { title: "Lead" } } });
+  watchEveryTurn(harness, "child");
+  const prompted = watchNextTurn(harness, "child");
+
+  startTurn(harness, "child", "stranger");
+  endTurn(harness, "child", "stranger");
+  startTurn(harness, "child", "prompted");
+  prompted.bindTurn("prompted");
+  endTurn(harness, "child", "prompted");
+
+  await vi.waitFor(() => expect(finishNotices(harness)).toHaveLength(2));
+  await quiet();
+  expect(finishNotices(harness)).toHaveLength(2);
+});
+
+test("a standing watch ends with one closed notice when the child is closed", async () => {
+  const harness = createHarness({ agents: { child: { title: "Lead" } } });
+  watchEveryTurn(harness, "child");
+
+  harness.setLifecycle("child", "closed");
+  startTurn(harness, "child", "after-close");
+  endTurn(harness, "child", "after-close");
+
+  await vi.waitFor(() =>
+    expect(finishNotices(harness)).toEqual(["Agent child (Lead) was closed."]),
+  );
+  await quiet();
+  expect(finishNotices(harness)).toHaveLength(1);
+  expect(await getAgentMailbox(harness.agentManager).listWatches(CALLER)).toEqual([]);
+});
+
+test("a standing watch tells an archived caller nothing and retires", async () => {
+  const harness = createHarness({ agents: { child: { title: "Lead" } } });
+  watchEveryTurn(harness, "child");
+  await vi.waitFor(async () =>
+    expect(await getAgentMailbox(harness.agentManager).listWatches(CALLER)).toMatchObject([
+      { childAgentId: "child", mode: "standing" },
+    ]),
+  );
+
+  harness.archive(CALLER);
+  startTurn(harness, "child", "turn-1");
+  endTurn(harness, "child", "turn-1");
+
+  await vi.waitFor(async () =>
+    expect(await getAgentMailbox(harness.agentManager).listWatches(CALLER)).toEqual([]),
+  );
+  expect(await getAgentMailbox(harness.agentManager).listEntries(CALLER)).toEqual([]);
+  expect(finishNotices(harness)).toEqual([]);
 });
