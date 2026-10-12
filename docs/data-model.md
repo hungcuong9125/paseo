@@ -578,7 +578,8 @@ These small files are not validated as full Zod schemas but are persisted under 
 It holds the agent's waiting prompts, its `paused` flag, and the finish watches it armed, and exists
 only while one of those is non-empty. Writes fsync the file and then the directory, which
 `writeFileAtomic` does not. An unreadable current file is retained for inspection and delivery
-fails closed for that mailbox. Delivery is at least once: an entry leaves only when its turn is seen completing. A failed,
+fails closed for that mailbox. Delivery is at least once: an entry leaves only when the turn
+its delivery started is seen completing; any other turn's end settles nothing. A failed,
 interrupted, or never-started turn, or a crash, puts it back marked `redelivered`, retried after
 5 s, 20 s, 80 s, then 5 min. After 5 such turns it is `held` on disk, and newer mail still flows,
 until a person or the parent prompts the agent.

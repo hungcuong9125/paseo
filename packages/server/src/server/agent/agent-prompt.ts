@@ -74,6 +74,8 @@ export interface StartAgentRunOptions {
   runOptions?: AgentRunOptions;
   /** Ask the provider to deny permissions blocking this steer. */
   clearPendingPermissions?: boolean;
+  /** Called with the id of each turn this dispatch's own run starts. */
+  onTurnStarted?: (turnId: string) => void;
 }
 
 export type PromptDispatchDisposition = "out_of_band" | "steered" | "turn_started";
@@ -144,9 +146,14 @@ async function startOrReplaceRun(
 
 async function drainAgentRunIterator(
   iterator: AsyncGenerator<import("./agent-sdk-types.js").AgentStreamEvent>,
+  onTurnStarted?: (turnId: string) => void,
 ): Promise<void> {
-  for await (const _ of iterator) {
-    // Events are broadcast via AgentManager subscribers.
+  // Events are broadcast via AgentManager subscribers; only this run's own
+  // turn start is read here.
+  for await (const event of iterator) {
+    if (event.type === "turn_started" && event.turnId) {
+      onTurnStarted?.(event.turnId);
+    }
   }
 }
 
@@ -215,7 +222,7 @@ async function startAgentRunInner(
   void (async () => {
     try {
       try {
-        await drainAgentRunIterator(iterator);
+        await drainAgentRunIterator(iterator, options?.onTurnStarted);
       } catch (error) {
         if (!isStaleProviderSessionError(error)) throw error;
         logger.info(
@@ -224,7 +231,7 @@ async function startAgentRunInner(
         );
         await agentManager.reloadAgentSession(agentId);
         const retry = await startOrReplaceRun(agentManager, agentId, prompt, options);
-        await drainAgentRunIterator(retry.iterator);
+        await drainAgentRunIterator(retry.iterator, options?.onTurnStarted);
       }
       logger.trace(
         {
@@ -303,6 +310,8 @@ export interface SendPromptToAgentParams {
   sender?: PromptSender;
   /** Agent to notify when a queued prompt's turn ends; armed when it is delivered. */
   notifyCallerAgentId?: string;
+  /** See {@link StartAgentRunOptions.onTurnStarted}. */
+  onTurnStarted?: (turnId: string) => void;
   logger: Logger;
 }
 
@@ -495,6 +504,7 @@ async function dispatchPrompt(
     params.logger,
     {
       replaceRunning: params.replaceRunning ?? true,
+      onTurnStarted: params.onTurnStarted,
       activeTurnBehavior: params.activeTurnBehavior,
       clearPendingPermissions: params.clearPendingPermissions,
       runOptions,
@@ -706,6 +716,7 @@ async function deliverMailboxBatch(
       sender: { kind: "mailbox" },
       unarchive: false,
       replaceRunning: false,
+      onTurnStarted: delivery.bindTurn,
       logger,
     });
   } catch (error) {

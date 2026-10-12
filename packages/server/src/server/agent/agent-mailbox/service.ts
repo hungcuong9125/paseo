@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
 
 import type { AgentManager, AgentManagerEvent } from "../agent-manager.js";
+import { getAgentStreamEventTurnId } from "../agent-sdk-types.js";
 import type { AgentStorage } from "../agent-storage.js";
 import type { MailboxPolicy } from "./policy.js";
 import {
@@ -52,6 +53,8 @@ export interface MailboxDelivery {
    * per item so a redelivered item can be recognized.
    */
   plainNotifications: boolean;
+  /** Called with the id of the turn the delivery itself started. */
+  bindTurn: (turnId: string) => void;
 }
 
 export interface MailboxEnqueueInput {
@@ -104,7 +107,10 @@ function defaultDelay(ms: number): Promise<void> {
 
 /** What the agent reported for the turn that carried the last batch. */
 interface BatchTurnWatch {
-  outcome: "completed" | "interrupted" | null;
+  /** Named by the delivery's own run; only this turn completing settles the batch. */
+  turnId: string | null;
+  /** Kept per turn, since a turn can end before the delivery names it. */
+  completedTurnIds: Set<string>;
   unsubscribe: () => void;
 }
 
@@ -572,7 +578,7 @@ export class AgentMailbox {
     await this.dependencies.store.save(file);
 
     // Armed before the hand-over so a turn that ends at once is still seen.
-    this.watchBatchTurn(agentId);
+    const watch = this.watchBatchTurn(agentId);
     try {
       await this.dependencies.deliver({
         agentId,
@@ -581,6 +587,9 @@ export class AgentMailbox {
         plainNotifications:
           !policy.enabled &&
           batch.every((entry) => entry.source.kind === "notification" && !entry.redelivered),
+        bindTurn: (turnId) => {
+          watch.turnId = turnId;
+        },
       });
       return { kind: "delivered" };
     } catch (error) {
@@ -611,7 +620,7 @@ export class AgentMailbox {
     if (delivering.length === 0) {
       return { kind: "nothing" };
     }
-    if (watch?.outcome === "completed") {
+    if (watch?.turnId && watch.completedTurnIds.has(watch.turnId)) {
       file.entries = file.entries.filter((entry) => entry.state !== "delivering");
       return { kind: "completed" };
     }
@@ -634,23 +643,27 @@ export class AgentMailbox {
     return { kind: "requeued", attempts };
   }
 
-  private watchBatchTurn(agentId: string): void {
+  private watchBatchTurn(agentId: string): BatchTurnWatch {
     this.forgetBatchTurn(agentId);
-    const watch: BatchTurnWatch = { outcome: null, unsubscribe: () => undefined };
+    const watch: BatchTurnWatch = {
+      turnId: null,
+      completedTurnIds: new Set(),
+      unsubscribe: () => undefined,
+    };
     watch.unsubscribe = this.dependencies.agentManager.subscribe(
       (event: AgentManagerEvent) => {
-        if (watch.outcome !== null || event.type !== "agent_stream") {
+        if (event.type !== "agent_stream" || event.event.type !== "turn_completed") {
           return;
         }
-        if (event.event.type === "turn_completed") {
-          watch.outcome = "completed";
-        } else if (event.event.type === "turn_failed" || event.event.type === "turn_canceled") {
-          watch.outcome = "interrupted";
+        const turnId = getAgentStreamEventTurnId(event.event);
+        if (turnId) {
+          watch.completedTurnIds.add(turnId);
         }
       },
       { agentId, replayState: false },
     );
     this.batchTurns.set(agentId, watch);
+    return watch;
   }
 
   private forgetBatchTurn(agentId: string): void {

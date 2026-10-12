@@ -106,10 +106,11 @@ function createFixture(options: {
     agentStorage,
     resolvePolicy: async () => options.policy ?? ENABLED,
     deliver: async (delivery) => {
-      deliveries.push(structuredClone(delivery));
+      deliveries.push(structuredClone({ ...delivery, bindTurn: undefined }));
       const outcome = turns.shift() ?? options.everyTurn ?? "completed";
       if (outcome === "never-started") return;
       setRunning(delivery.agentId, true);
+      delivery.bindTurn("turn");
       if (outcome !== "keeps-running") endTurn(delivery.agentId, outcome);
     },
     logger: createTestLogger(),

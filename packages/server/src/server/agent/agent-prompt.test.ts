@@ -140,16 +140,15 @@ function createHarness(options?: {
       delivered.set(agentId, [prompt]);
     }
     // A delivered prompt's turn completes, which is what retires mailbox items.
+    const turnId = `delivered-${agentId}-${delivered.get(agentId)?.length}`;
     dispatch(agentId, {
       type: "agent_stream",
       agentId,
-      event: {
-        type: "turn_completed",
-        provider: "codex",
-        turnId: `delivered-${agentId}-${delivered.get(agentId)?.length}`,
-      },
+      event: { type: "turn_completed", provider: "codex", turnId },
     });
-    return (async function* noop() {})();
+    return (async function* startedTurn(): AsyncGenerator<AgentStreamEvent> {
+      yield { type: "turn_started", provider: "codex", turnId };
+    })();
   });
   Reflect.set(agentManager, "replaceAgentRun", async (agentId: string) => {
     throw new Error(`Agent ${agentId} already has an active run`);
