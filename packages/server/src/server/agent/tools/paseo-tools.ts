@@ -62,6 +62,7 @@ import {
   waitForAgentWithTimeout,
 } from "../mcp-shared.js";
 import {
+  isMailboxEnabled,
   sendPromptToAgent,
   setupFinishNotification,
   waitForAgentRunStartWithTimeout,
@@ -2298,6 +2299,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             }),
           };
         }
+      }
+      if (callerAgentId && (await isMailboxEnabled(agentManager, agentId))) {
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            success: false,
+            error: `Agent ${agentId} has a mailbox, so only a person can stop its turn. Prompts sent with send_agent_prompt wait in its mailbox and are delivered when the turn ends.`,
+          }),
+        };
       }
       // Agents cancelling each other must not hold a mailbox; that stays a person's call.
       const { cancelled } = await cancelAgentRunCommand(

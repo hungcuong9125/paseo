@@ -254,7 +254,7 @@ function itemOrder(prompt: string): string[] {
   return [...prompt.matchAll(/<paseo-mailbox-item [^>]*>\n([^\n]*)\n/g)].map((match) => match[1]!);
 }
 
-test("peers and a non-parent agent queue behind a lead's long turn and arrive in order", async () => {
+test("peers, a non-parent agent, and the parent queue behind a lead's long turn in order", async () => {
   const daemon = await launch(await tempDir("paseo-mbx2-queue-"));
   const lead = await createAgent(daemon, "codex", await tempDir("paseo-mbx2-lead-"), {
     "paseo.parent-agent-id": "supervisor-agent",
@@ -269,9 +269,10 @@ test("peers and a non-parent agent queue behind a lead's long turn and arrive in
     await send(daemon, lead, "peer B report", { kind: "agent", agentId: "peer-b" }),
     await send(daemon, lead, "peer A second", { kind: "agent", agentId: "peer-a" }),
     await send(daemon, lead, "not my parent", { kind: "agent", agentId: "other-agent" }),
+    await send(daemon, lead, "from my parent", { kind: "agent", agentId: "supervisor-agent" }),
   ];
   expect(dispositions).toEqual(
-    [1, 2, 3, 4].map((position) => ({ disposition: "queued", position })),
+    [1, 2, 3, 4, 5].map((position) => ({ disposition: "queued", position })),
   );
   const queued = await readMailbox(daemon.handle.paseoHome, lead);
   expect(queued?.entries.map((entry) => [entry.seq, entry.state])).toEqual([
@@ -279,6 +280,7 @@ test("peers and a non-parent agent queue behind a lead's long turn and arrive in
     [1, "queued"],
     [2, "queued"],
     [3, "queued"],
+    [4, "queued"],
   ]);
   expect(session().turns).toHaveLength(1);
   expect(session().turns[0]!.outcome).toBe("running");
@@ -292,9 +294,10 @@ test("peers and a non-parent agent queue behind a lead's long turn and arrive in
     "peer B report",
     "peer A second",
     "not my parent",
+    "from my parent",
   ]);
   const delivering = await readMailbox(daemon.handle.paseoHome, lead);
-  expect(delivering?.entries.map((entry) => entry.state)).toEqual(Array(4).fill("delivering"));
+  expect(delivering?.entries.map((entry) => entry.state)).toEqual(Array(5).fill("delivering"));
 
   session().end("completed");
   await vi.waitFor(async () => expect(await readMailbox(daemon.handle.paseoHome, lead)).toBeNull());

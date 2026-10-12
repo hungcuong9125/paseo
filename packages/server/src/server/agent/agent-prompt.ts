@@ -87,8 +87,8 @@ export type SendPromptResult =
 
 /**
  * Who a prompt comes from decides whether it may interrupt the receiver.
- * People and the receiver's parent agent may; any other agent and schedules
- * wait in the receiver's mailbox when it has one.
+ * People always may. When the receiver has a mailbox, every agent, its parent
+ * included, and every schedule waits in it.
  */
 export type PromptSender =
   | { kind: "human" }
@@ -420,12 +420,24 @@ export async function sendPromptToAgent(
     throw error;
   }
 
+  return await routePrompt(params, record?.labels);
+}
+
+async function routePrompt(
+  params: SendPromptToAgentParams,
+  receiverLabels: Record<string, unknown> | undefined,
+): Promise<SendPromptResult> {
   const sender = params.sender ?? HUMAN_SENDER;
   if (sender.kind === "mailbox") {
     return await dispatchPrompt(params);
   }
   const mailbox = getAgentMailbox(params.agentManager);
-  if (hasInterruptAuthority(sender, record?.labels)) {
+  const { enabled } = await mailbox.resolvePolicy(params.agentId);
+  const fromParent =
+    sender.kind === "agent" &&
+    sender.agentId !== null &&
+    getParentAgentIdFromLabels(receiverLabels) === sender.agentId;
+  if (sender.kind === "human" || (fromParent && !enabled)) {
     // Someone with authority prompting is the cue a person's stop is over.
     await mailbox.resume(params.agentId);
     const result = await dispatchPrompt(params);
@@ -434,9 +446,22 @@ export async function sendPromptToAgent(
     void mailbox.kick(params.agentId);
     return result;
   }
-  if (!(await mailbox.resolvePolicy(params.agentId)).enabled) {
+  if (!enabled) {
     return await dispatchPrompt(params);
   }
+  // With a mailbox only a person may cut in. The parent still lifts a
+  // person's stop, so its own mail and what was held behind it get delivered.
+  if (fromParent) {
+    await mailbox.resume(params.agentId);
+  }
+  return await admitToMailbox(params, sender, mailbox);
+}
+
+async function admitToMailbox(
+  params: SendPromptToAgentParams,
+  sender: Exclude<PromptSender, { kind: "mailbox" }>,
+  mailbox: AgentMailbox,
+): Promise<SendPromptResult> {
   // Replacing the run would break the mailbox's promise, and it stores text only.
   if (typeof params.prompt !== "string") {
     throw new Error(
@@ -463,20 +488,6 @@ export async function sendPromptToAgent(
   return admission.status === "queued"
     ? { disposition: "queued", position: admission.position }
     : admission.result;
-}
-
-/** A person, or the receiver's own parent agent, may cut into its turn. */
-function hasInterruptAuthority(
-  sender: PromptSender,
-  receiverLabels: Record<string, unknown> | undefined,
-): boolean {
-  if (sender.kind === "human") {
-    return true;
-  }
-  if (sender.kind !== "agent" || !sender.agentId) {
-    return false;
-  }
-  return getParentAgentIdFromLabels(receiverLabels) === sender.agentId;
 }
 
 async function dispatchPrompt(

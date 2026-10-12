@@ -3902,6 +3902,39 @@ describe("cancel_agent MCP tool", () => {
     expect(deps.spies.agentManager.cancelAgentRun).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["its parent", "parent-agent"],
+    ["an unrelated agent", "stranger-agent"],
+  ])("refuses %s cancelling a run of an agent with a mailbox", async (_label, caller) => {
+    const deps = familyDeps();
+    deps.agentManager.setMailbox(
+      createAgentMailbox({
+        agentManager: deps.agentManager,
+        agentStorage: deps.agentStorage,
+        store: new MemoryMailboxStore(),
+        resolvePolicy: async () => ({ enabled: true, resumeOnStartup: false }),
+        logger,
+      }),
+    );
+    const server = await createAgentMcpServer({
+      agentManager: deps.agentManager,
+      agentStorage: deps.agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: caller,
+      logger,
+    });
+
+    const response = await invokeToolWithParsedInput(registeredTool(server, "cancel_agent"), {
+      agentId: "child-agent",
+    });
+
+    expect(response.structuredContent).toEqual({
+      success: false,
+      error: expect.stringContaining("only a person can stop its turn"),
+    });
+    expect(deps.spies.agentManager.cancelAgentRun).not.toHaveBeenCalled();
+  });
+
   it("lets a parent cancel its subagent's run", async () => {
     const deps = familyDeps();
     const server = await createAgentMcpServer({

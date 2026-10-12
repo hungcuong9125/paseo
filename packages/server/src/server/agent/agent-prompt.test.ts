@@ -783,7 +783,7 @@ test("a child's prompt never interrupts its parent", async () => {
   expect(replace).not.toHaveBeenCalled();
 });
 
-test("a parent agent still interrupts its child", async () => {
+test("a parent's prompt to a busy child with a mailbox waits for its turn to end", async () => {
   // Every harness agent's parent is CALLER.
   const harness = createHarness({ agents: { worker: { lifecycle: "running" } } });
   registerMailbox(harness, ["worker"]);
@@ -793,13 +793,57 @@ test("a parent agent still interrupts its child", async () => {
     agentManager: harness.agentManager,
     agentStorage: harness.agentStorage,
     agentId: "worker",
-    prompt: "stop, change course",
+    prompt: "change course",
     sender: { kind: "agent", agentId: CALLER },
     logger: createTestLogger(),
   });
 
-  expect(result).toEqual({ disposition: "turn_started" });
-  expect(replace).toHaveBeenCalledWith("worker", "stop, change course", undefined);
+  expect(result).toEqual({ disposition: "queued", position: 1 });
+  expect(replace).not.toHaveBeenCalled();
+  expect(harness.deliveredTo("worker")).toEqual([]);
+  harness.setLifecycle("worker", "idle");
+  await vi.waitFor(() => expect(harness.deliveredTo("worker")).toHaveLength(1));
+  expect(harness.deliveredTo("worker")[0]).toContain(`from="agent:${CALLER}">\nchange course\n`);
+});
+
+test("after a person's stop, the parent's prompt lifts the pause and queues behind held mail", async () => {
+  const harness = createHarness({ agents: { worker: { lifecycle: "running" } } });
+  const store = new MemoryMailboxStore();
+  const file = createEmptyMailboxFile("worker");
+  file.paused = true;
+  file.entries.push({
+    id: "mbx_held",
+    seq: 0,
+    state: "held",
+    attempts: 5,
+    redelivered: true,
+    source: { kind: "agent", senderAgentId: "peer" },
+    prompt: { text: "stuck mail" },
+    enqueuedAt: "2026-10-07T00:00:00.000Z",
+  });
+  file.nextSeq = 1;
+  await store.save(file);
+  const mailbox = registerMailbox(harness, ["worker"], store);
+  const replace = stubReplace(harness);
+
+  const result = await sendPromptToAgent({
+    agentManager: harness.agentManager,
+    agentStorage: harness.agentStorage,
+    agentId: "worker",
+    prompt: "carry on",
+    sender: { kind: "agent", agentId: CALLER },
+    logger: createTestLogger(),
+  });
+
+  expect(result).toEqual({ disposition: "queued", position: 2 });
+  expect(replace).not.toHaveBeenCalled();
+  expect(await mailbox.isPaused("worker")).toBe(false);
+  harness.setLifecycle("worker", "idle");
+  await vi.waitFor(() => expect(harness.deliveredTo("worker")).toHaveLength(1));
+  const delivered = harness.deliveredTo("worker")[0]!;
+  expect(delivered.indexOf("stuck mail")).toBeGreaterThan(-1);
+  expect(delivered.indexOf("carry on")).toBeGreaterThan(delivered.indexOf("stuck mail"));
+  await vi.waitFor(async () => expect(await mailbox.listEntries("worker")).toEqual([]));
 });
 
 test("a person's prompt replaces the turn without pausing, and resumes a paused mailbox", async () => {
@@ -849,10 +893,7 @@ test("mail held by a stop follows the person's next prompt instead of preceding 
   expect(harness.deliveredTo("lead")[1]).toContain("queued while busy");
 });
 
-test.each([
-  ["a person", undefined],
-  ["the parent agent", { kind: "agent" as const, agentId: CALLER }],
-])("held mail is delivered again after %s prompts the agent", async (_label, sender) => {
+test("held mail is delivered again after a person prompts the agent", async () => {
   const harness = createHarness({ agents: { lead: {} } });
   const store = new MemoryMailboxStore();
   const file = createEmptyMailboxFile("lead");
@@ -875,7 +916,6 @@ test.each([
     agentStorage: harness.agentStorage,
     agentId: "lead",
     prompt: "carry on",
-    ...(sender ? { sender } : {}),
     logger: createTestLogger(),
   });
 
@@ -885,8 +925,12 @@ test.each([
   await vi.waitFor(async () => expect(await mailbox.listEntries("lead")).toEqual([]));
 });
 
-test("without a mailbox a peer's prompt keeps today's replace behavior", async () => {
+test.each([
+  ["a peer", "peer"],
+  ["the parent", CALLER],
+])("without a mailbox %s's prompt keeps today's replace behavior", async (_label, senderId) => {
   const harness = createHarness({ agents: { lead: { lifecycle: "running" } } });
+  registerMailbox(harness, []);
   const replace = stubReplace(harness);
 
   const result = await sendPromptToAgent({
@@ -894,7 +938,7 @@ test("without a mailbox a peer's prompt keeps today's replace behavior", async (
     agentStorage: harness.agentStorage,
     agentId: "lead",
     prompt: "please review",
-    sender: { kind: "agent", agentId: "peer" },
+    sender: { kind: "agent", agentId: senderId },
     logger: createTestLogger(),
   });
 
