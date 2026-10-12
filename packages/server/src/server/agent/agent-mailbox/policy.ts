@@ -2,7 +2,7 @@ import { getMailboxLabelSetting } from "@getpaseo/protocol/agent-labels";
 import type { MailboxSettings } from "@getpaseo/protocol/provider-config";
 
 export interface MailboxPolicy {
-  /** Prompts from anyone without interrupt authority wait in the mailbox. */
+  /** Prompts from agents, the parent included, and schedules wait in the mailbox. */
   enabled: boolean;
   /** Drain leftover mail when the daemon starts, which can start turns by itself. */
   resumeOnStartup: boolean;

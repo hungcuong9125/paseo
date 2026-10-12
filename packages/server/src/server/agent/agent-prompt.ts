@@ -639,7 +639,7 @@ export function getAgentMailbox(agentManager: AgentManager): AgentMailbox {
   return registered;
 }
 
-/** Whether prompts without interrupt authority wait in this agent's mailbox. */
+/** Whether prompts from agents and schedules wait in this agent's mailbox. */
 export async function isMailboxEnabled(
   agentManager: AgentManager,
   agentId: string,

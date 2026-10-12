@@ -2278,7 +2278,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     "cancel_agent",
     {
       title: "Cancel agent run",
-      description: "Abort the agent's current run but keep the agent alive for future tasks.",
+      description:
+        "Abort the agent's current run but keep the agent alive for future tasks. Refused when the target agent has a mailbox: only a person can stop its turn, and prompts sent with send_agent_prompt wait in its mailbox until the turn ends.",
       inputSchema: {
         agentId: z.string(),
       },
@@ -2309,7 +2310,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           }),
         };
       }
-      // Agents cancelling each other must not hold a mailbox; that stays a person's call.
+      // Reached only for a target without a mailbox or a caller that is not an agent; holding
+      // mail stays a person's Stop.
       const { cancelled } = await cancelAgentRunCommand(
         { agentManager, logger: childLogger },
         agentId,
