@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 
@@ -31,6 +31,10 @@ vi.mock("./acp-agent.js", () => ({
 import { GenericACPAgentClient } from "./generic-acp-agent.js";
 
 describe("GenericACPAgentClient", () => {
+  beforeEach(() => {
+    mockState.superConstructorOptions.length = 0;
+  });
+
   test("passes the custom command only as defaultCommand", () => {
     const _client = new GenericACPAgentClient({
       logger: createTestLogger(),
@@ -65,5 +69,26 @@ describe("GenericACPAgentClient", () => {
         waitForInitialCommands: true,
       },
     ]);
+  });
+
+  test("provides configured thinking writers to Antigravity ACP profiles", () => {
+    const _client = new GenericACPAgentClient({
+      logger: createTestLogger(),
+      command: ["agy-acp"],
+      providerId: "antigravity-peer",
+      configuredModels: [
+        {
+          id: "gemini-3.8-flash",
+          label: "Gemini 3.8 Flash",
+          thinkingOptions: [{ id: "low", label: "Low" }],
+        },
+      ],
+    });
+    void _client;
+
+    expect(mockState.superConstructorOptions[0]).toMatchObject({
+      providerModelWriter: expect.any(Function),
+      thinkingOptionWriter: expect.any(Function),
+    });
   });
 });

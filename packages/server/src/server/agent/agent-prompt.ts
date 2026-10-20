@@ -1,17 +1,58 @@
-import { prepareAgentMessage, type AgentPromptSource } from "./agent-messages/index.js";
+import {
+  formatSystemNotificationPrompt,
+  formatAgentMessage,
+  escapeXml,
+  parseAgentMessage,
+  prepareAgentMessage,
+  type AgentPromptSource,
+} from "./agent-messages/index.js";
 import type { Logger } from "pino";
 
 import type {
   AgentPermissionRequest,
   AgentPromptInput,
   AgentRunOptions,
+  AgentStreamEvent,
 } from "./agent-sdk-types.js";
+import { getAgentStreamEventTurnId } from "./agent-sdk-types.js";
+import { randomUUID } from "node:crypto";
+
 import type { AgentManager, ManagedAgent } from "./agent-manager.js";
+import { AgentMailbox, type MailboxDelivery } from "./agent-mailbox/service.js";
+import type { MailboxPolicy } from "./agent-mailbox/policy.js";
+import type { MailboxStore } from "./agent-mailbox/store.js";
 import type { AgentStorage } from "./agent-storage.js";
 import { ensureAgentLoaded } from "./agent-loading.js";
 import { isStaleProviderSessionError } from "./stale-provider-session-error.js";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+import {
+  callerTurnClaims,
+  type CallerTurnHandle,
+  UNIDENTIFIED_TURN,
+} from "./finish-notification-claims.js";
 import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
+
+/**
+ * A cancelled turn is over but did not finish its work. Calling that "finished"
+ * hands the caller a partial answer as if it were the result.
+ */
+export function terminalTurnReason(type: AgentStreamEvent["type"]): FinishNotificationReason {
+  if (type === "turn_failed") {
+    return "errored";
+  }
+  if (type === "turn_canceled") {
+    return "was interrupted";
+  }
+  return "finished";
+}
+
+export function isTurnTerminalStreamEvent(event: AgentStreamEvent): boolean {
+  return (
+    event.type === "turn_completed" ||
+    event.type === "turn_failed" ||
+    event.type === "turn_canceled"
+  );
+}
 
 export type AgentUnarchiveController = Pick<AgentManager, "notifyAgentState" | "unarchiveSnapshot">;
 
@@ -35,9 +76,30 @@ export interface StartAgentRunOptions {
   runOptions?: AgentRunOptions;
   /** Ask the provider to deny permissions blocking this steer. */
   clearPendingPermissions?: boolean;
+  /** Called with the id of each turn this dispatch's own run starts. */
+  onTurnStarted?: (turnId: string) => void;
 }
 
 export type PromptDispatchDisposition = "out_of_band" | "steered" | "turn_started";
+
+export type SendPromptResult =
+  | { disposition: PromptDispatchDisposition }
+  /** The receiver's mailbox holds the prompt until its current turn ends. */
+  | { disposition: "queued"; position: number };
+
+/**
+ * Who a prompt comes from decides whether it may interrupt the receiver.
+ * People always may. When the receiver has a mailbox, every agent, its parent
+ * included, and every schedule waits in it.
+ */
+export type PromptSender =
+  | { kind: "human" }
+  | { kind: "agent"; agentId: string | null }
+  | { kind: "schedule"; scheduleId: string }
+  /** The mailbox handing over mail it already held. */
+  | { kind: "mailbox" };
+
+const HUMAN_SENDER: PromptSender = { kind: "human" };
 
 async function steerOrReplaceActiveRun(
   agentManager: AgentRunController,
@@ -86,9 +148,14 @@ async function startOrReplaceRun(
 
 async function drainAgentRunIterator(
   iterator: AsyncGenerator<import("./agent-sdk-types.js").AgentStreamEvent>,
+  onTurnStarted?: (turnId: string) => void,
 ): Promise<void> {
-  for await (const _ of iterator) {
-    // Events are broadcast via AgentManager subscribers.
+  // Events are broadcast via AgentManager subscribers; only this run's own
+  // turn start is read here.
+  for await (const event of iterator) {
+    if (event.type === "turn_started" && event.turnId) {
+      onTurnStarted?.(event.turnId);
+    }
   }
 }
 
@@ -160,7 +227,7 @@ async function startAgentRunInner(
   void (async () => {
     try {
       try {
-        await drainAgentRunIterator(iterator);
+        await drainAgentRunIterator(iterator, options?.onTurnStarted);
       } catch (error) {
         if (!isStaleProviderSessionError(error)) throw error;
         logger.info(
@@ -169,7 +236,7 @@ async function startAgentRunInner(
         );
         await agentManager.reloadAgentSession(agentId);
         const retry = await startOrReplaceRun(agentManager, agentId, prompt, options);
-        await drainAgentRunIterator(retry.iterator);
+        await drainAgentRunIterator(retry.iterator, options?.onTurnStarted);
       }
       logger.trace(
         {
@@ -212,6 +279,10 @@ export async function unarchiveAgentState(
   return true;
 }
 
+function unwrapSystemEnvelope(text: string): string {
+  const match = /^<paseo-system>\n([\s\S]*)\n<\/paseo-system>$/.exec(text);
+  return match?.[1] ?? text;
+}
 export interface SendPromptToAgentParams {
   onDispatch?: StartAgentRunOptions["onDispatch"];
   agentManager: AgentManager;
@@ -231,8 +302,22 @@ export interface SendPromptToAgentParams {
    * schedule fires, notify-on-finish).
    */
   unarchive?: boolean;
+  /**
+   * Default true, which cancels the agent's in-flight turn and takes its place.
+   * That is right for a prompt a human just typed and wrong for anything the
+   * daemon injects on its own: a finish notification that replaces a running
+   * turn destroys whatever the agent was doing with the previous one. Pass
+   * false to fail loudly instead, and let the caller wait for idle and retry.
+   */
+  replaceRunning?: boolean;
   /** See {@link StartAgentRunOptions.clearPendingPermissions}. */
   clearPendingPermissions?: boolean;
+  /** Defaults to a person, which keeps every existing entrypoint's behavior. */
+  sender?: PromptSender;
+  /** Agent to notify when a queued prompt's turn ends; armed when it is delivered. */
+  notifyCallerAgentId?: string;
+  /** See {@link StartAgentRunOptions.onTurnStarted}. */
+  onTurnStarted?: (turnId: string) => void;
   logger: Logger;
 }
 
@@ -312,7 +397,7 @@ async function resolvePromptSource(
  */
 export async function sendPromptToAgent(
   params: SendPromptToAgentParams,
-): Promise<{ disposition: PromptDispatchDisposition }> {
+): Promise<SendPromptResult> {
   const unarchive = params.unarchive ?? true;
 
   const record = await params.agentStorage.get(params.agentId);
@@ -341,23 +426,108 @@ export async function sendPromptToAgent(
     throw error;
   }
 
+  return await routePrompt(params, record?.labels);
+}
+
+async function routePrompt(
+  params: SendPromptToAgentParams,
+  receiverLabels: Record<string, unknown> | undefined,
+): Promise<SendPromptResult> {
+  const sender = params.sender ?? HUMAN_SENDER;
+  if (sender.kind === "mailbox") {
+    return await dispatchPrompt(params);
+  }
+  const mailbox = getAgentMailbox(params.agentManager);
+  const { enabled } = await mailbox.resolvePolicy(params.agentId);
+  const fromParent =
+    sender.kind === "agent" &&
+    sender.agentId !== null &&
+    getParentAgentIdFromLabels(receiverLabels) === sender.agentId;
+  if (sender.kind === "human" || (fromParent && !enabled)) {
+    // Someone with authority prompting is the cue a person's stop is over.
+    await mailbox.resume(params.agentId);
+    const result = await dispatchPrompt(params);
+    // Kicked after the turn exists, so waiting mail follows it instead of
+    // starting first and being replaced. This also drains mail a restart left.
+    void mailbox.kick(params.agentId);
+    return result;
+  }
+  if (!enabled) {
+    return await dispatchPrompt(params);
+  }
+  // With a mailbox only a person may cut in. The parent still lifts a
+  // person's stop, so its own mail and what was held behind it get delivered.
+  if (fromParent) {
+    await mailbox.resume(params.agentId);
+  }
+  return await admitToMailbox(params, sender, mailbox);
+}
+
+async function admitToMailbox(
+  params: SendPromptToAgentParams,
+  sender: Exclude<PromptSender, { kind: "mailbox" }>,
+  mailbox: AgentMailbox,
+): Promise<SendPromptResult> {
+  // Replacing the run would break the mailbox's promise, and it stores text only.
+  if (typeof params.prompt !== "string") {
+    throw new Error(
+      `Agent ${params.agentId} has a mailbox, which accepts only text prompts from other agents and schedules`,
+    );
+  }
+  // Out-of-band commands never open a turn, so they never wait for one to end.
+  if (params.agentManager.tryRunOutOfBand(params.agentId, params.prompt, params.runOptions)) {
+    return { disposition: "out_of_band" };
+  }
+  const admission = await mailbox.admit(
+    params.agentId,
+    {
+      source:
+        sender.kind === "schedule"
+          ? { kind: "schedule", scheduleId: sender.scheduleId }
+          : { kind: "agent", senderAgentId: sender.kind === "agent" ? sender.agentId : null },
+      text: unwrapSystemEnvelope(params.prompt),
+      ...(params.sessionMode ? { sessionMode: params.sessionMode } : {}),
+      ...(params.notifyCallerAgentId ? { notifyCallerAgentId: params.notifyCallerAgentId } : {}),
+    },
+    () => dispatchPrompt({ ...params, replaceRunning: false }),
+  );
+  return admission.status === "queued"
+    ? { disposition: "queued", position: admission.position }
+    : admission.result;
+}
+
+async function dispatchPrompt(
+  params: SendPromptToAgentParams,
+): Promise<{ disposition: PromptDispatchDisposition }> {
   if (params.sessionMode) {
     await params.agentManager.setAgentMode(params.agentId, params.sessionMode);
   }
 
+  const sender = params.sender ?? HUMAN_SENDER;
   const source = await resolvePromptSource(params.source, params.agentManager, params.agentStorage);
-  const delivery = prepareAgentMessage(params.prompt, source, params.messageId);
-  const runOptions = delivery.messageId
-    ? { ...params.runOptions, clientMessageId: delivery.messageId }
+  const isUserOrigin = sender.kind === "human" || (sender.kind === "agent" && !sender.agentId);
+  const preparedDelivery =
+    source || isUserOrigin
+      ? prepareAgentMessage(params.prompt, source, params.messageId)
+      : { prompt: params.prompt, messageId: params.messageId };
+  const runOptions = preparedDelivery.messageId
+    ? { ...params.runOptions, clientMessageId: preparedDelivery.messageId }
     : params.runOptions;
 
-  return await startAgentRun(params.agentManager, params.agentId, delivery.prompt, params.logger, {
-    replaceRunning: true,
-    onDispatch: params.onDispatch,
-    activeTurnBehavior: params.activeTurnBehavior,
-    clearPendingPermissions: params.clearPendingPermissions,
-    runOptions,
-  });
+  return await startAgentRun(
+    params.agentManager,
+    params.agentId,
+    preparedDelivery.prompt,
+    params.logger,
+    {
+      replaceRunning: params.replaceRunning ?? true,
+      onDispatch: params.onDispatch,
+      onTurnStarted: params.onTurnStarted,
+      activeTurnBehavior: params.activeTurnBehavior,
+      clearPendingPermissions: params.clearPendingPermissions,
+      runOptions,
+    },
+  );
 }
 
 export async function startCreatedAgentInitialPrompt(
@@ -401,29 +571,231 @@ export interface SetupFinishNotificationParams {
   agentStorage: AgentStorage;
   childAgentId: string;
   callerAgentId: string;
-  requireParentOwnership?: boolean;
-  /** Retain pre-dispatch outcomes only when dispatch keeps the existing turn. */
+  /**
+   * Which of the child's turns this callback belongs to.
+   *
+   * "next-turn" reports one specific turn. Arm it *before* dispatching, then
+   * name the turn with `bindTurn` once the dispatch has started one. A child
+   * that ends a turn without finishing its work — answering a handshake, asking
+   * a question, hitting a permission prompt — must not retire the watch, which
+   * is what "any-idle" does.
+   *
+   * "any-idle" (default) fires on the first running→idle transition, whichever
+   * turn produced it.
+   */
+  watch?: "next-turn" | "any-idle";
+  /**
+   * Bind to a turn that is already running instead of waiting for `bindTurn`.
+   * Use it when a blocking wait gave up on a turn still in progress.
+   */
+  expectedTurnId?: string | null;
+  /** A failed dispatch must not replace an existing completion watch. */
   dispatchResult?: Promise<PromptDispatchDisposition | false>;
-  /** A replacement must observe its new start, not the displaced running snapshot. */
-  waitForTurnStart?: boolean;
+  requireParentOwnership?: boolean;
   logger: Logger;
 }
 
-type FinishNotificationReason =
+export interface FinishNotificationRegistration {
+  /** Tears the watch down. Nothing will be delivered for it. */
+  cancel(): void;
+  /**
+   * Names the turn this watch belongs to, once the dispatch that created it has
+   * started one. Pass null when the id could not be determined — the watch then
+   * takes the next turn to end (or one that already ended while arming).
+   *
+   * Until this is called a "next-turn" watch holds its fire. Anyone else can
+   * open a turn on the same child inside the arming window, and a dispatch that
+   * replaces that turn cancels it; reporting that cancellation would wake the
+   * caller with a stranger's result and retire the watch before the caller's own
+   * turn ever ends.
+   */
+  bindTurn(turnId: string | null): void;
+  /**
+   * Whether the caller will hear about this dispatch — still waiting, or
+   * already notified. False only once the watch has been torn down. Tool
+   * responses must key their "you will be notified" guidance off this and not
+   * off the request, or an out-of-band prompt promises a callback it cancelled.
+   */
+  willNotifyCaller(): boolean;
+}
+
+/** Permission prompts no longer consume the watch, so cap how many they can send. */
+const MAX_PERMISSION_NOTICES = 5;
+
+export interface CreateAgentMailboxParams {
+  agentManager: AgentManager;
+  agentStorage: AgentStorage;
+  store: MailboxStore;
+  resolvePolicy: (agentId: string) => Promise<MailboxPolicy>;
+  logger: Logger;
+}
+
+export function createAgentMailbox(params: CreateAgentMailboxParams): AgentMailbox {
+  const { agentManager, agentStorage, logger } = params;
+  return new AgentMailbox({
+    store: params.store,
+    agentManager,
+    agentStorage,
+    resolvePolicy: params.resolvePolicy,
+    logger: logger.child({ module: "agent-mailbox" }),
+    deliver: (delivery) => deliverMailboxBatch({ agentManager, agentStorage, logger }, delivery),
+  });
+}
+
+export function getAgentMailbox(agentManager: AgentManager): AgentMailbox {
+  const registered = agentManager.getMailbox();
+  if (!registered) throw new Error("Agent mailbox must be registered before dispatching prompts");
+  return registered;
+}
+
+/** Whether prompts from agents and schedules wait in this agent's mailbox. */
+export async function isMailboxEnabled(
+  agentManager: AgentManager,
+  agentId: string,
+): Promise<boolean> {
+  const mailbox = getAgentMailbox(agentManager);
+  return (await mailbox.resolvePolicy(agentId)).enabled;
+}
+
+function renderMailboxDelivery(delivery: MailboxDelivery): { prompt: string } {
+  if (delivery.plainNotifications && delivery.entries.length === 1) {
+    const entry = delivery.entries[0]!;
+    if (
+      entry.source.kind === "notification" &&
+      parseAgentMessage(entry.prompt.text)?.source?.kind === "agent-notification"
+    ) {
+      return { prompt: entry.prompt.text };
+    }
+  }
+  if (delivery.plainNotifications) {
+    return {
+      prompt: formatSystemNotificationPrompt(
+        delivery.entries.map((entry) => entry.prompt.text).join("\n\n"),
+      ),
+    };
+  }
+  const items = delivery.entries.map((entry) => {
+    const attributes = [
+      `id="${escapeXml(entry.id)}"`,
+      `from="${escapeXml(describeMailboxSource(entry))}"`,
+    ];
+    if (entry.redelivered) {
+      attributes.push(`redelivered="true"`);
+    }
+    const notification =
+      entry.source.kind === "notification" ? parseAgentMessage(entry.prompt.text) : null;
+    const body = notification ? formatAgentMessage(notification) : escapeXml(entry.prompt.text);
+    return `<paseo-mailbox-item ${attributes.join(" ")}>\n${body}\n</paseo-mailbox-item>`;
+  });
+  return { prompt: formatSystemNotificationPrompt(items.join("\n\n")) };
+}
+
+function describeMailboxSource(entry: MailboxDelivery["entries"][number]): string {
+  switch (entry.source.kind) {
+    case "agent":
+      return entry.source.senderAgentId ? `agent:${entry.source.senderAgentId}` : "agent";
+    case "schedule":
+      return `schedule:${entry.source.scheduleId}`;
+    case "notification":
+      return `notification:${entry.source.childAgentId}`;
+    case "restart":
+      return "daemon";
+  }
+}
+
+async function deliverMailboxBatch(
+  deps: { agentManager: AgentManager; agentStorage: AgentStorage; logger: Logger },
+  delivery: MailboxDelivery,
+): Promise<void> {
+  const { agentManager, agentStorage, logger } = deps;
+  // A queued prompt's finish watch is armed now, when its turn really starts,
+  // so it belongs to that turn and not to whatever ran while it waited.
+  const callers = new Set(
+    delivery.entries.flatMap((entry) =>
+      entry.notifyCallerAgentId ? [entry.notifyCallerAgentId] : [],
+    ),
+  );
+  const watches = [...callers].map((callerAgentId) =>
+    setupFinishNotification({
+      agentManager,
+      agentStorage,
+      childAgentId: delivery.agentId,
+      callerAgentId,
+      watch: "next-turn",
+      logger,
+    }),
+  );
+  let dispatch: SendPromptResult;
+  try {
+    dispatch = await sendPromptToAgent({
+      agentManager,
+      agentStorage,
+      agentId: delivery.agentId,
+      ...renderMailboxDelivery(delivery),
+      ...(delivery.sessionMode ? { sessionMode: delivery.sessionMode } : {}),
+      sender: { kind: "mailbox" },
+      unarchive: false,
+      replaceRunning: false,
+      onTurnStarted: delivery.bindTurn,
+      logger,
+    });
+  } catch (error) {
+    for (const watch of watches) {
+      watch.cancel();
+    }
+    throw error;
+  }
+  if (dispatch.disposition !== "turn_started") {
+    for (const watch of watches) {
+      watch.cancel();
+    }
+    return;
+  }
+  if (watches.length > 0) {
+    void bindWatchesToStartedTurn(agentManager, delivery.agentId, watches, logger);
+  }
+}
+
+async function bindWatchesToStartedTurn(
+  agentManager: AgentManager,
+  agentId: string,
+  watches: readonly FinishNotificationRegistration[],
+  logger: Logger,
+): Promise<void> {
+  try {
+    await waitForAgentRunStartWithTimeout(agentManager, agentId);
+  } catch (error) {
+    logger.debug({ err: error, agentId }, "Run start wait expired before binding mailbox watches");
+  }
+  const turnId = agentManager.getAgent(agentId)?.activeForegroundTurnId ?? null;
+  for (const watch of watches) {
+    watch.bindTurn(turnId);
+  }
+}
+
+export type FinishNotificationReason =
   | "finished"
   | "errored"
+  | "was interrupted"
   | "needs permission"
-  | "was closed"
-  | "was canceled";
+  | "was closed";
 
-const finishNotificationEvents = {
-  finished: "finished",
-  errored: "errored",
-  "needs permission": "permission-required",
-  "was closed": "closed",
-  // Use the existing failure event so older clients still parse agent-message metadata.
-  "was canceled": "errored",
-} as const;
+export function finishNotificationEvent(
+  reason: FinishNotificationReason,
+): Extract<AgentPromptSource, { kind: "agent-notification" }>["event"] | undefined {
+  switch (reason) {
+    case "finished":
+      return "finished";
+    case "errored":
+      return "errored";
+    case "needs permission":
+      return "permission-required";
+    case "was closed":
+      return "closed";
+    case "was interrupted":
+      return undefined;
+  }
+}
 
 const FINISH_NOTIFICATION_MESSAGE_LIMIT = 4000;
 
@@ -435,7 +807,7 @@ interface FinishNotificationBodyInput {
   permissionRequest?: AgentPermissionRequest;
 }
 
-function formatFinishNotificationBody(params: FinishNotificationBodyInput): string {
+export function formatFinishNotificationBody(params: FinishNotificationBodyInput): string {
   const statusLine = `Agent ${params.childAgentId} (${params.title}) ${params.reason}.`;
   const sections = [statusLine];
   if (params.reason === "needs permission" && params.permissionRequest) {
@@ -463,81 +835,108 @@ function formatFinishNotificationBody(params: FinishNotificationBodyInput): stri
   return sections.join("\n\n");
 }
 
-interface NotifySafelyOptions {
-  terminal?: boolean;
-  permissionRequest?: AgentPermissionRequest;
-}
-
-// Pending follow-ups coexist until acknowledgement. A successful dispatch replaces
-// every earlier observation for the caller/child pair; a failure removes only itself.
+// A caller waits on a child through one armed notification. Arming again, such as a
+// follow-up prompt while the child still runs, replaces the earlier one so the child's
+// next finish reaches the caller once.
 interface ArmedFinishNotification {
-  stop(): void;
+  release(): void;
   supersedeWhen(accepted: Promise<boolean>): void;
 }
-
 const armedFinishNotifications = new WeakMap<
   AgentManager,
   Map<string, Set<ArmedFinishNotification>>
 >();
 
-export function setupFinishNotification(params: SetupFinishNotificationParams): () => void {
+function getFinishRegistrations(
+  byKey: Map<string, Set<ArmedFinishNotification>>,
+  key: string,
+): Set<ArmedFinishNotification> {
+  const registrations = byKey.get(key) ?? new Set<ArmedFinishNotification>();
+  byKey.set(key, registrations);
+  return registrations;
+}
+
+function finishDispatchAccepted(
+  result?: Promise<PromptDispatchDisposition | false>,
+): Promise<boolean> {
+  return result
+    ? result.then((disposition) => disposition === "steered" || disposition === "turn_started")
+    : Promise.resolve(true);
+}
+
+export function setupFinishNotification(
+  params: SetupFinishNotificationParams,
+): FinishNotificationRegistration {
   const {
     agentManager,
     agentStorage,
     childAgentId,
     callerAgentId,
+    watch = "any-idle",
+    expectedTurnId,
     requireParentOwnership = false,
-    waitForTurnStart = false,
     logger,
   } = params;
+  const mailbox = getAgentMailbox(agentManager);
+  // The watch is written into the caller's mailbox so a restart that kills the
+  // child mid-turn still tells the caller, instead of leaving it waiting.
+  const watchId = `watch_${randomUUID()}`;
   let hasSeenRunning = false;
-  let hasSeenTurn = false;
-  let stopped = false;
-  const notifiedPermissionRequestIds = new Set<string>();
+  let fired = false;
+  let permissionNotices = 0;
+  // Bound means the caller has named its turn. The id can still be null: some
+  // providers end a turn without one, and a dispatch whose run-start wait
+  // expired cannot read one, so null means "the next turn to end is mine".
+  let cancelled = false;
+  let bound = expectedTurnId !== undefined;
+  let watchedTurnId: string | null = expectedTurnId ?? null;
+  // Terminal events seen before binding. One of them may turn out to be the
+  // caller's own turn finishing inside the arming window.
+  const terminalBeforeBind = new Map<string, FinishNotificationReason>();
   let unsubscribe: (() => void) | null = null;
-  let notificationQueue = Promise.resolve();
 
   const armedByManager = armedFinishNotifications.get(agentManager) ?? new Map();
   armedFinishNotifications.set(agentManager, armedByManager);
   const armedKey = JSON.stringify([childAgentId, callerAgentId]);
-  const registrations = armedByManager.get(armedKey) ?? new Set<ArmedFinishNotification>();
-  armedByManager.set(armedKey, registrations);
+  const registrations = getFinishRegistrations(armedByManager, armedKey);
   const previous = [...registrations];
   let superseded = Promise.resolve(false);
   let dispatchPending = Boolean(params.dispatchResult);
   const registration: ArmedFinishNotification = {
-    stop,
+    release,
     supersedeWhen(accepted) {
-      superseded = superseded.then(
-        async (alreadySuperseded) => alreadySuperseded || (await accepted),
-      );
+      superseded = superseded.then(async (already) => already || (await accepted));
     },
   };
   registrations.add(registration);
+  const accepted = finishDispatchAccepted(params.dispatchResult);
+  for (const observer of previous) observer.supersedeWhen(accepted);
   if (params.dispatchResult) {
-    const dispatchAccepted = params.dispatchResult.then((result) => result !== false);
-    for (const observer of previous) observer.supersedeWhen(dispatchAccepted);
-    void params.dispatchResult.then((accepted) => {
+    void accepted.then((success) => {
       dispatchPending = false;
-      if (accepted) {
-        for (const observer of previous) observer.stop();
-        if (stopped || accepted === "turn_started") stop();
+      if (success) {
+        for (const observer of previous) observer.release();
+        if (fired) detach();
       } else {
-        stop();
+        cancelled = true;
+        fired = true;
+        detach();
+        forgetPersistedWatch();
       }
       return undefined;
     });
   } else {
-    for (const observer of previous) {
-      observer.supersedeWhen(Promise.resolve(true));
-      observer.stop();
-    }
+    for (const observer of previous) observer.release();
   }
+  // A standing watch on the same pair skips the turn this watch reports.
+  const claimHandle = registerCallerClaim(agentManager, childAgentId, callerAgentId, watch);
+  if (bound) claimHandle.bind(watchedTurnId);
 
-  function stop(): void {
-    stopped = true;
-    unsubscribe?.();
-    // Pending observations remain visible to overlapping sends until acknowledgement.
+  function detach(): void {
+    const subscribed = unsubscribe;
+    unsubscribe = null;
+    subscribed?.();
+    claimHandle.release();
     if (!dispatchPending) {
       registrations.delete(registration);
       if (registrations.size === 0 && armedByManager.get(armedKey) === registrations) {
@@ -546,22 +945,50 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
     }
   }
 
+  function forgetPersistedWatch(): void {
+    void mailbox.removeWatch(callerAgentId, watchId).catch((error: unknown) => {
+      logger.error({ err: error, childAgentId, callerAgentId }, "Failed to remove finish watch");
+    });
+  }
+
+  let terminalQueued = false;
+  function release(): void {
+    if (!terminalQueued) fired = true;
+    detach();
+    if (!terminalQueued) forgetPersistedWatch();
+  }
+
   async function notify(
     reason: FinishNotificationReason,
     permissionRequest?: AgentPermissionRequest,
   ): Promise<void> {
-    if (params.dispatchResult) {
-      const result = await params.dispatchResult;
-      if (result === false || result === "turn_started") return;
-    }
+    if (params.dispatchResult && !(await accepted)) return;
     if (await superseded) return;
+    if (fired) {
+      return;
+    }
+    if (reason === "needs permission") {
+      permissionNotices += 1;
+      if (permissionNotices > MAX_PERMISSION_NOTICES) {
+        return;
+      }
+    } else {
+      // Terminal: this watch is done. The persisted watch stays until the
+      // notice replaces it in one write, so a crash in between still reports.
+      fired = true;
+      detach();
+    }
+    const terminal = reason !== "needs permission";
+
     const callerRecord = await agentStorage.get(callerAgentId);
     if (callerRecord?.archivedAt) {
+      if (terminal) forgetPersistedWatch();
       return;
     }
 
     const record = await agentStorage.get(childAgentId);
     if (requireParentOwnership && getParentAgentIdFromLabels(record?.labels) !== callerAgentId) {
+      if (terminal) forgetPersistedWatch();
       return;
     }
     const title = record?.title ?? childAgentId;
@@ -574,27 +1001,43 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
       permissionRequest,
     });
 
-    await sendPromptToAgent({
-      agentManager,
-      agentStorage,
-      agentId: callerAgentId,
-      prompt: body,
-      source: {
-        kind: "agent-notification",
-        agentId: childAgentId,
-        event: finishNotificationEvents[reason],
+    const messageEvent = finishNotificationEvent(reason);
+    const notification = messageEvent
+      ? formatAgentMessage({
+          id: watchId,
+          source: {
+            kind: "agent-notification",
+            agentId: childAgentId,
+            title,
+            event: messageEvent,
+          },
+          text: body,
+        })
+      : body;
+
+    await mailbox.enqueue(
+      callerAgentId,
+      {
+        source: {
+          kind: "notification",
+          childAgentId,
+          ...(permissionRequest ? { requestId: permissionRequest.id } : {}),
+        },
+        text: notification,
       },
-      activeTurnBehavior: "steer",
-      unarchive: false,
-      logger,
-    });
+      terminal ? { resolvesWatchId: watchId } : undefined,
+    );
   }
 
-  function notifySafely(reason: FinishNotificationReason, options: NotifySafelyOptions = {}): void {
-    if (stopped) return;
-    if (options.terminal ?? true) stop();
+  let notificationQueue = Promise.resolve();
+  function notifySafely(
+    reason: FinishNotificationReason,
+    permissionRequest?: AgentPermissionRequest,
+  ): void {
+    if (fired || terminalQueued) return;
+    if (reason !== "needs permission") terminalQueued = true;
     notificationQueue = notificationQueue
-      .then(() => notify(reason, options.permissionRequest))
+      .then(() => notify(reason, permissionRequest))
       .catch((error) => {
         logger.error(
           { err: error, childAgentId, callerAgentId, reason },
@@ -603,89 +1046,87 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
       });
   }
 
-  function observeState(agent: ManagedAgent): void {
-    for (const requestId of notifiedPermissionRequestIds) {
-      if (!agent.pendingPermissions.has(requestId)) {
-        notifiedPermissionRequestIds.delete(requestId);
-      }
-    }
-    if (agent.lifecycle === "running") {
-      if (waitForTurnStart && !hasSeenTurn) return;
-      hasSeenTurn = true;
-      if (agent.pendingPermissions.size === 0) {
-        hasSeenRunning = true;
-      }
+  function handleLifecycle(lifecycle: ManagedAgent["lifecycle"]): void {
+    if (lifecycle === "running") {
+      hasSeenRunning = true;
       return;
     }
-    // Prior terminal state is not this task's outcome. A failure before turn start
-    // is reported by the dispatch acknowledgement instead of a finish callback.
-    if (agent.lifecycle === "error" && hasSeenTurn) {
-      notifySafely("errored");
-      return;
-    }
-    // Idle is published before the terminal stream event for both completion
-    // and cancellation. Let that event identify the outcome instead.
-    if (agent.lifecycle === "closed") {
+    if (lifecycle === "closed") {
       notifySafely("was closed");
       return;
     }
-    return;
+    if (watch === "next-turn") {
+      // The turn stream decides when a watched turn ends. A bare "idle" here
+      // belongs to some other turn. An error with no turn to report it against
+      // is the one case the stream cannot cover.
+      if (lifecycle === "error" && bound && watchedTurnId === null) {
+        notifySafely("errored");
+      }
+      return;
+    }
+    if (lifecycle === "error") {
+      notifySafely("errored");
+      return;
+    }
+    if (lifecycle === "idle" && hasSeenRunning) {
+      notifySafely("finished");
+    }
+  }
+
+  function isWatchedTurn(turnId: string | undefined): boolean {
+    if (!turnId || watchedTurnId === null) {
+      return true;
+    }
+    return turnId === watchedTurnId;
+  }
+
+  function handleStreamEvent(streamEvent: AgentStreamEvent): void {
+    if (streamEvent.type === "permission_requested") {
+      if (
+        watch !== "next-turn" ||
+        (bound && isWatchedTurn(getAgentStreamEventTurnId(streamEvent)))
+      ) {
+        notifySafely("needs permission", streamEvent.request);
+      }
+      return;
+    }
+    if (watch !== "next-turn") {
+      return;
+    }
+    if (streamEvent.type === "turn_started") {
+      hasSeenRunning = true;
+      return;
+    }
+    if (!isTurnTerminalStreamEvent(streamEvent)) {
+      return;
+    }
+    const turnId = getAgentStreamEventTurnId(streamEvent);
+    const reason = terminalTurnReason(streamEvent.type);
+    if (!bound) {
+      terminalBeforeBind.set(turnId ?? UNIDENTIFIED_TURN, reason);
+      return;
+    }
+    if (!isWatchedTurn(turnId)) {
+      return;
+    }
+    claimHandle.claim(turnId ?? UNIDENTIFIED_TURN);
+    notifySafely(reason);
   }
 
   unsubscribe = agentManager.subscribe(
     (event) => {
-      if (stopped) {
+      if (fired) {
         return;
       }
-
       if (event.type === "agent_state") {
-        observeState(event.agent);
+        handleLifecycle(event.agent.lifecycle);
         return;
       }
-
       if (event.type === "timeline_replacement") {
         return;
       }
-
-      if (event.event.type === "turn_started") {
-        hasSeenTurn = true;
-        hasSeenRunning = true;
-        return;
-      }
-
-      if (event.event.type === "turn_completed" || event.event.type === "turn_canceled") {
-        // Replacing a turn keeps the child running through the displaced turn's
-        // cancellation. The task settles only when the child becomes idle.
-        if (agentManager.getAgent(childAgentId)?.lifecycle !== "idle") return;
-        if (event.event.type === "turn_completed" && hasSeenRunning) {
-          notifySafely("finished");
-        } else if (event.event.type === "turn_canceled" && hasSeenTurn) {
-          notifySafely("was canceled");
-        }
-        return;
-      }
-
-      if (event.event.type === "permission_requested") {
-        // A permission pause is an intermediate checkpoint. Forget the run
-        // observed before it so an idle state during follow-up startup cannot
-        // masquerade as the final completion.
-        hasSeenRunning = false;
-        if (!notifiedPermissionRequestIds.has(event.event.request.id)) {
-          notifiedPermissionRequestIds.add(event.event.request.id);
-          notifySafely("needs permission", {
-            terminal: false,
-            permissionRequest: event.event.request,
-          });
-        }
-        return;
-      }
-
-      if (event.event.type === "permission_resolved") {
-        notifiedPermissionRequestIds.delete(event.event.requestId);
-        const childAgent = agentManager.getAgent(childAgentId);
-        if (childAgent?.pendingPermissions.size === 0) {
-          hasSeenRunning = childAgent.lifecycle === "running";
-        }
+      if (event.type === "agent_stream") {
+        handleStreamEvent(event.event);
       }
     },
     { agentId: childAgentId, replayState: false },
@@ -696,14 +1137,94 @@ export function setupFinishNotification(params: SetupFinishNotificationParams): 
   // Do NOT treat an immediate "idle" as "finished" — the agent may
   // not have started yet (streamAgent sets a pending run before
   // transitioning to "running").
+  // A watch is armed before the dispatch that loads the child, so "not in
+  // memory yet" is the normal case here and must not retire it. Subscriptions
+  // are keyed by agent id and survive the load.
   const childSnapshot = agentManager.getAgent(childAgentId);
-  if (!childSnapshot || childSnapshot.lifecycle === "closed") {
-    stop();
-    return stop;
+  if (childSnapshot?.lifecycle === "closed") {
+    fired = true;
+    detach();
+    cancelled = true;
+    return { cancel: detach, bindTurn: () => undefined, willNotifyCaller: () => false };
   }
-  if (childSnapshot.lifecycle === "running" && !waitForTurnStart) {
-    hasSeenTurn = true;
+  void mailbox
+    .armWatch(callerAgentId, {
+      id: watchId,
+      childAgentId,
+      turnId: expectedTurnId ?? null,
+      armedAt: new Date().toISOString(),
+    })
+    .catch((error: unknown) => {
+      logger.error({ err: error, childAgentId, callerAgentId }, "Failed to persist finish watch");
+    });
+  if (childSnapshot?.lifecycle === "running") {
     hasSeenRunning = true;
+  } else if (childSnapshot?.lifecycle === "error" && watch !== "next-turn") {
+    notifySafely("errored");
   }
-  return stop;
+  if (expectedTurnId && childSnapshot && childSnapshot.activeForegroundTurnId !== expectedTurnId) {
+    // The turn we were handed is already over; its terminal event is gone.
+    claimHandle.claim(expectedTurnId);
+    notifySafely("finished");
+  }
+
+  return {
+    cancel() {
+      if (fired) {
+        return;
+      }
+      if (terminalQueued) {
+        detach();
+        return;
+      }
+      fired = true;
+      cancelled = true;
+      release();
+    },
+    bindTurn(turnId: string | null) {
+      if (fired || bound) {
+        return;
+      }
+      bound = true;
+      watchedTurnId = turnId;
+      const bufferedKey = bufferedTurnKey(terminalBeforeBind, turnId);
+      const buffered = bufferedKey ? terminalBeforeBind.get(bufferedKey) : undefined;
+      terminalBeforeBind.clear();
+      if (bufferedKey) claimHandle.claim(bufferedKey);
+      claimHandle.bind(turnId);
+      if (buffered) {
+        notifySafely(buffered);
+      }
+    },
+    willNotifyCaller() {
+      return !cancelled;
+    },
+  };
+}
+
+const NO_CLAIM: CallerTurnHandle = { bind() {}, claim() {}, release() {} };
+
+/** Only a prompt's own watch claims turns; the creation watch never does. */
+function registerCallerClaim(
+  agentManager: AgentManager,
+  childAgentId: string,
+  callerAgentId: string,
+  watch: "next-turn" | "any-idle",
+): CallerTurnHandle {
+  return watch === "next-turn"
+    ? callerTurnClaims(agentManager, childAgentId, callerAgentId).register()
+    : NO_CLAIM;
+}
+
+/** Which buffered terminal event belongs to the turn a next-turn watch was just bound to. */
+function bufferedTurnKey(
+  terminalBeforeBind: ReadonlyMap<string, FinishNotificationReason>,
+  turnId: string | null,
+): string | undefined {
+  if (!turnId) {
+    // Unknown id: the caller's turn is whichever one ended while arming.
+    return terminalBeforeBind.keys().next().value;
+  }
+  if (terminalBeforeBind.has(turnId)) return turnId;
+  return terminalBeforeBind.has(UNIDENTIFIED_TURN) ? UNIDENTIFIED_TURN : undefined;
 }

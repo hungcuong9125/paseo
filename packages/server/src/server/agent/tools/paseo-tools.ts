@@ -67,13 +67,16 @@ import {
   sanitizePermissionRequest,
   serializeSnapshotWithMetadata,
   toScheduleSummary,
+  waitForAgentWithTimeout,
 } from "../mcp-shared.js";
 import {
-  type PromptDispatchDisposition,
+  isMailboxEnabled,
   sendPromptToAgent,
   setupFinishNotification,
   waitForAgentRunStartWithTimeout,
+  type FinishNotificationRegistration,
 } from "../agent-prompt.js";
+import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import { respondToAgentPermission } from "../permission-response.js";
 import {
   archiveAgentCommand,
@@ -588,6 +591,125 @@ function resolveChildAgentCwd(params: {
   }
 
   return resolvePathFromBase(params.parentCwd, requestedCwd);
+}
+
+async function defaultsToNotifyOnFinish(
+  agentStorage: AgentStorage,
+  callerAgentId: string | undefined,
+  targetAgentId: string,
+): Promise<boolean> {
+  if (!callerAgentId) {
+    return false;
+  }
+  const callerRecord = await agentStorage.get(callerAgentId);
+  return getParentAgentIdFromLabels(callerRecord?.labels) !== targetAgentId;
+}
+
+/**
+ * Names the turn a dispatch just opened so the watch armed before it reports
+ * that turn and no other. Waiting for the run to start is what makes the id
+ * readable; when the wait expires the watch falls back to "the next turn to
+ * end is mine", which is still better than never firing.
+ */
+function promptNotificationContext(agentManager: AgentManager, agentId: string, prompt: string) {
+  const receiver = agentManager.getAgent(agentId);
+  return {
+    existingTurnId: receiver?.activeForegroundTurnId ?? null,
+    // OMP submits these commands as prompts even though its transport calls them out-of-band.
+    ompPromptCommand:
+      receiver?.provider === "omp" && /^\/(?:follow-up|steer)(?:\s|$)/.test(prompt.trim()),
+  };
+}
+
+function notificationDispatchResult(
+  disposition: Awaited<ReturnType<typeof sendPromptToAgent>>["disposition"],
+  ompPromptCommand: boolean,
+) {
+  if (disposition === "queued") return false;
+  if (disposition === "out_of_band" && ompPromptCommand) return "steered";
+  return disposition;
+}
+
+async function bindFinishNotificationToDispatchedTurn(
+  agentManager: AgentManager,
+  agentId: string,
+  registration: FinishNotificationRegistration,
+  logger: Logger,
+): Promise<void> {
+  try {
+    await waitForAgentRunStartWithTimeout(agentManager, agentId);
+  } catch (error) {
+    logger.debug({ err: error, agentId }, "Run start failed before binding finish watch");
+    registration.cancel();
+    throw error;
+  }
+  registration.bindTurn(agentManager.getAgent(agentId)?.activeForegroundTurnId ?? null);
+}
+
+async function resolveBlockingSendResult(input: {
+  agentManager: AgentManager;
+  agentStorage: AgentStorage;
+  agentId: string;
+  callerAgentId: string | undefined;
+  wantsNotification: boolean;
+  logger: Logger;
+}): Promise<Record<string, unknown>> {
+  const result = await waitForAgentWithTimeout(input.agentManager, input.agentId, {
+    waitForActive: true,
+  });
+
+  // A wait holding a permission request did not time out — the child is parked
+  // until this caller answers it. Arming a watch there tells the caller to stop
+  // polling and move on, leaving the child blocked on the one thing only it can
+  // resolve.
+  const lateNotification = armLateFinishNotification({
+    agentManager: input.agentManager,
+    agentStorage: input.agentStorage,
+    agentId: input.agentId,
+    callerAgentId: input.callerAgentId,
+    wanted: input.wantsNotification && result.status === "running" && !result.permission,
+    logger: input.logger,
+  });
+
+  return {
+    success: true,
+    status: result.status,
+    lastMessage: result.lastMessage,
+    permission: sanitizePermissionRequest(result.permission),
+    ...(lateNotification?.willNotifyCaller()
+      ? {
+          guidance:
+            "The wait timed out but the agent is still running. You will be notified when it finishes; do not poll.",
+        }
+      : {}),
+  };
+}
+
+/**
+ * A blocking wait giving up does not mean the caller stopped caring. Without a
+ * watch on the turn still in flight its result reaches nobody: the caller ends
+ * its turn on the timeout message and sits idle while the child works on.
+ */
+function armLateFinishNotification(input: {
+  agentManager: AgentManager;
+  agentStorage: AgentStorage;
+  agentId: string;
+  callerAgentId: string | undefined;
+  wanted: boolean;
+  logger: Logger;
+}): FinishNotificationRegistration | null {
+  if (!input.wanted || !input.callerAgentId) {
+    return null;
+  }
+  return setupFinishNotification({
+    agentManager: input.agentManager,
+    agentStorage: input.agentStorage,
+    childAgentId: input.agentId,
+    callerAgentId: input.callerAgentId,
+    watch: "next-turn",
+    expectedTurnId: input.agentManager.getAgent(input.agentId)?.activeForegroundTurnId ?? null,
+    logger: input.logger,
+  });
 }
 
 const TerminalSummarySchema = z.object({
@@ -1155,11 +1277,11 @@ function createToolCatalog(
   const agentToAgentInputSchema = {
     ...canonicalCreateAgentFields,
     notifyOnFinish: z
-      .boolean()
+      .union([z.boolean(), z.literal("every-turn")])
       .optional()
       .default(true)
       .describe(
-        "Get notified when the created agent finishes, errors, or needs permission. Set false only for truly fire-and-forget agents.",
+        'Get notified when the created agent finishes, errors, or needs permission. "every-turn" also notifies you each time the agent ends a turn you did not prompt (woken by its own agents, a schedule, or a person), until it is archived. Set false only for truly fire-and-forget agents.',
       ),
   };
   const canonicalTopLevelInputSchema = {
@@ -1232,8 +1354,14 @@ function createToolCatalog(
     .object(legacyTopLevelCreateAgentInputSchema)
     .strict();
   const commonSendAgentPromptInputSchema = {
+    background: z
+      .boolean()
+      .optional()
+      .describe(
+        "Return after dispatch instead of waiting for completion. Defaults to true for agent callers.",
+      ),
     activeTurnBehavior: ActiveTurnBehaviorSchema.optional().describe(
-      'How to send into a running turn: "steer" joins it, falling back to interrupt when unavailable; "interrupt" replaces it. Defaults to steer for agent callers and interrupt otherwise.',
+      'How to send into a running turn when mailbox delivery does not apply: "steer" joins it, falling back to interrupt when unavailable; "interrupt" replaces it. Defaults to interrupt. Mailbox-enabled recipients queue agent messages instead.',
     ),
     agentId: z.string(),
     prompt: z.string(),
@@ -1561,7 +1689,7 @@ function createToolCatalog(
     async (args: unknown) => {
       const resolvedArgs = await resolveCreateAgentToolArgs(args);
       const { parsedArgs, worktree } = resolvedArgs;
-      let notifyOnFinish: boolean;
+      let notifyOnFinish: boolean | "every-turn";
       if (resolvedArgs.kind === "agent-scoped") {
         notifyOnFinish = parsedArgs.notifyOnFinish;
       } else {
@@ -1971,6 +2099,127 @@ function createToolCatalog(
   const PROMPTED_AGENT_NOTIFICATION_GUIDANCE =
     "You will get notified when the prompted agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.";
 
+  /**
+   * The mailbox arms a fresh watch when the prompt's own turn starts, so the
+   * watch armed before sending is dropped; it would report whatever turn is
+   * running now. Its existence still says whether the caller asked to hear back.
+   */
+  function queuedSendResponse(
+    agentId: string,
+    position: number,
+    prearmedWatch: FinishNotificationRegistration | null,
+  ) {
+    prearmedWatch?.cancel();
+    const willNotify = prearmedWatch !== null;
+    const guidance = `The agent is busy, so your prompt waits in its mailbox (position ${position}) and is delivered when its current turn ends.`;
+    return {
+      content: [],
+      structuredContent: ensureValidJson({
+        success: true,
+        status: agentManager.getAgent(agentId)?.lifecycle ?? "idle",
+        lastMessage: null,
+        permission: null,
+        guidance: willNotify ? `${guidance} ${PROMPTED_AGENT_NOTIFICATION_GUIDANCE}` : guidance,
+      }),
+    };
+  }
+
+  function senderOptions(shouldNotifyOnFinish: boolean) {
+    return {
+      sender: { kind: "agent" as const, agentId: callerAgentId ?? null },
+      ...(shouldNotifyOnFinish && callerAgentId ? { notifyCallerAgentId: callerAgentId } : {}),
+    };
+  }
+
+  async function dispatchPromptWithFinishNotification(params: {
+    agentId: string;
+    prompt: string;
+    sessionMode?: string;
+    background: boolean;
+    activeTurnBehavior: z.infer<typeof ActiveTurnBehaviorSchema>;
+    notifyOnFinish?: boolean;
+    logger: Logger;
+  }) {
+    const wantsNotification =
+      params.notifyOnFinish ??
+      (await defaultsToNotifyOnFinish(agentStorage, callerAgentId, params.agentId));
+    const shouldNotifyOnFinish = Boolean(callerAgentId && wantsNotification && params.background);
+    let confirmDispatch!: (
+      result: import("../agent-prompt.js").PromptDispatchDisposition | false,
+    ) => void;
+    const dispatchResult = new Promise<
+      import("../agent-prompt.js").PromptDispatchDisposition | false
+    >((resolve) => {
+      confirmDispatch = resolve;
+    });
+    const { existingTurnId, ompPromptCommand } = promptNotificationContext(
+      agentManager,
+      params.agentId,
+      params.prompt,
+    );
+    const finishNotification =
+      shouldNotifyOnFinish && callerAgentId
+        ? setupFinishNotification({
+            agentManager,
+            agentStorage,
+            childAgentId: params.agentId,
+            callerAgentId,
+            watch: ompPromptCommand ? "any-idle" : "next-turn",
+            dispatchResult,
+            logger: params.logger,
+          })
+        : null;
+
+    let dispatch: Awaited<ReturnType<typeof sendPromptToAgent>>;
+    try {
+      dispatch = await sendPromptToAgent({
+        agentManager,
+        agentStorage,
+        agentId: params.agentId,
+        prompt: params.prompt,
+        source: callerAgentId ? { kind: "agent-message", agentId: callerAgentId } : undefined,
+        sessionMode: params.sessionMode,
+        activeTurnBehavior: params.activeTurnBehavior,
+        ...senderOptions(shouldNotifyOnFinish),
+        logger: params.logger,
+      });
+    } catch (error) {
+      confirmDispatch(false);
+      finishNotification?.cancel();
+      throw error;
+    }
+    confirmDispatch(notificationDispatchResult(dispatch.disposition, ompPromptCommand));
+
+    if (dispatch.disposition === "queued") {
+      return {
+        disposition: "queued" as const,
+        response: queuedSendResponse(params.agentId, dispatch.position, finishNotification),
+      };
+    }
+    if (dispatch.disposition === "out_of_band") {
+      if (!ompPromptCommand) finishNotification?.cancel();
+    } else if (finishNotification && dispatch.disposition === "steered") {
+      finishNotification.bindTurn(existingTurnId);
+    } else if (finishNotification) {
+      await bindFinishNotificationToDispatchedTurn(
+        agentManager,
+        params.agentId,
+        finishNotification,
+        params.logger,
+      );
+    }
+    if (dispatch.disposition === "turn_started" && !finishNotification) {
+      await waitForAgentRunStartWithTimeout(agentManager, params.agentId);
+    }
+
+    return {
+      disposition: "dispatched" as const,
+      dispatchDisposition: dispatch.disposition,
+      wantsNotification,
+      finishNotification,
+    };
+  }
+
   registerTool(
     "send_agent_prompt",
     {
@@ -1989,81 +2238,58 @@ function createToolCatalog(
       agentId,
       prompt,
       sessionMode,
-      notifyOnFinish = Boolean(callerAgentId),
-      activeTurnBehavior = callerAgentId ? "steer" : "interrupt",
+      background = Boolean(callerAgentId),
+      notifyOnFinish,
+      activeTurnBehavior = "interrupt",
     }) => {
-      let stopNotification: (() => void) | undefined;
-      let acceptDispatch!: (result: PromptDispatchDisposition | false) => void;
-      const dispatchResult = new Promise<PromptDispatchDisposition | false>((resolve) => {
-        acceptDispatch = resolve;
-      });
-      const notifying = Boolean(callerAgentId && notifyOnFinish);
-      if (callerAgentId && notifyOnFinish) {
-        stopNotification = setupFinishNotification({
-          agentManager,
-          agentStorage,
-          childAgentId: agentId,
-          callerAgentId,
-          waitForTurnStart: false,
-          dispatchResult,
-          logger: childLogger,
-        });
-      }
-      function confirmDispatch(disposition: PromptDispatchDisposition): void {
-        // A new turn must ignore outcomes from the displaced turn. Its iterator
-        // has not started yet, so rearm here; steering keeps the early observer.
-        if (disposition !== "turn_started") {
-          acceptDispatch(disposition);
-          return;
-        }
-        acceptDispatch(disposition);
-        if (!callerAgentId || !notifyOnFinish) return;
-        stopNotification?.();
-        stopNotification = setupFinishNotification({
-          agentManager,
-          agentStorage,
-          childAgentId: agentId,
-          callerAgentId,
-          waitForTurnStart: true,
-          logger: childLogger,
-        });
-      }
-
-      const { disposition } = await sendPromptToAgent({
-        agentManager,
-        agentStorage,
+      const dispatched = await dispatchPromptWithFinishNotification({
         agentId,
         prompt,
-        source: callerAgentId ? { kind: "agent-message", agentId: callerAgentId } : undefined,
         sessionMode,
         activeTurnBehavior,
-        onDispatch: confirmDispatch,
+        background,
+        notifyOnFinish,
         logger: childLogger,
       }).catch((error) => {
-        acceptDispatch(false);
-        stopNotification?.();
         if (error instanceof AgentNotFoundError) {
           throw new PaseoToolInputError(error.message);
         }
         throw error;
       });
+      if (dispatched.disposition === "queued") return dispatched.response;
 
-      // Return once the provider has accepted the turn, so the status reports it running.
-      if (disposition === "turn_started") {
-        await waitForAgentRunStartWithTimeout(agentManager, agentId).catch((error) => {
-          stopNotification?.();
-          throw error;
-        });
+      // If not running in background, wait for completion
+      if (!background) {
+        return {
+          content: [],
+          structuredContent: ensureValidJson(
+            await resolveBlockingSendResult({
+              agentManager,
+              agentStorage,
+              agentId,
+              callerAgentId,
+              wantsNotification: dispatched.wantsNotification,
+              logger: childLogger,
+            }),
+          ),
+        };
       }
+
+      // The dispatch helper has already waited for the run start.
       const currentSnapshot = agentManager.getAgent(agentId);
 
       const responseData = {
         success: true,
-        disposition,
+        disposition: dispatched.dispatchDisposition,
         status: currentSnapshot?.lifecycle ?? "idle",
-        guidance: notifying
-          ? PROMPTED_AGENT_NOTIFICATION_GUIDANCE
-          : "Dispatch acknowledged. Observe completion using get_agent_status/get_agent_activity or SDK/RPC subscriptions and wait APIs.",
+        lastMessage: null,
+        permission: null,
+        // Read the watch, not the request. An out-of-band prompt opens no turn
+        // and cancels it, and promising a notification there leaves the caller
+        // waiting on something that will never arrive.
+        ...(dispatched.finishNotification?.willNotifyCaller()
+          ? { guidance: PROMPTED_AGENT_NOTIFICATION_GUIDANCE }
+          : {}),
       };
       const validJson = ensureValidJson(responseData);
 
@@ -2198,18 +2424,44 @@ function createToolCatalog(
     "cancel_agent",
     {
       title: "Cancel agent run",
-      description: "Abort the agent's current run but keep the agent alive for future tasks.",
+      description:
+        "Abort the agent's current run but keep the agent alive for future tasks. Refused when the target agent has a mailbox: only a person can stop its turn, and prompts sent with send_agent_prompt wait in its mailbox until the turn ends.",
       inputSchema: {
         agentId: z.string(),
       },
       outputSchema: {
         success: z.boolean(),
+        error: z.string().optional(),
       },
     },
     async ({ agentId }) => {
+      if (callerAgentId) {
+        const callerRecord = await agentStorage.get(callerAgentId);
+        if (getParentAgentIdFromLabels(callerRecord?.labels) === agentId) {
+          return {
+            content: [],
+            structuredContent: ensureValidJson({
+              success: false,
+              error: "A subagent cannot cancel its parent agent's run.",
+            }),
+          };
+        }
+      }
+      if (callerAgentId && (await isMailboxEnabled(agentManager, agentId))) {
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            success: false,
+            error: `Agent ${agentId} has a mailbox, so only a person can stop its turn. Prompts sent with send_agent_prompt wait in its mailbox and are delivered when the turn ends.`,
+          }),
+        };
+      }
+      // Reached only for a target without a mailbox or a caller that is not an agent; holding
+      // mail stays a person's Stop.
       const { cancelled } = await cancelAgentRunCommand(
         { agentManager, logger: childLogger },
         agentId,
+        { pauseMailbox: false },
       );
       return {
         content: [],

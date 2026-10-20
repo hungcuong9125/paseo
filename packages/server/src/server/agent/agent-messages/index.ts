@@ -29,7 +29,7 @@ interface AgentMessage {
   text: string;
 }
 
-function escapeXml(value: string): string {
+export function escapeXml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => {
     switch (character) {
       case "&":

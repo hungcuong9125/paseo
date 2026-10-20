@@ -12,7 +12,10 @@ import { tmpdir } from "node:os";
 import { z } from "zod";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
-import { createAgentMcpServer as createAgentMcpServerWithDependencies } from "./mcp-server.js";
+import { createAgentMcpServer as createMcpServer } from "./mcp-server.js";
+import { createAgentMailbox } from "./agent-prompt.js";
+import type { AgentMailbox } from "./agent-mailbox/service.js";
+import { MemoryMailboxStore } from "./agent-mailbox/store.js";
 import { AgentManager, type ManagedAgent } from "./agent-manager.js";
 import { AgentStorage, type StoredAgentRecord } from "./agent-storage.js";
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
@@ -74,6 +77,28 @@ import type { BrowserToolsBroker, BrowserToolsExecuteInput } from "../browser-to
 import type { BrowserToolsResponsePayload } from "../browser-tools/errors.js";
 import { readPaseoWorktreeMetadata } from "../../utils/worktree-metadata.js";
 import { createWorkspaceProvisioningService } from "../session/workspace-provisioning/workspace-provisioning-service.js";
+
+function createAgentMcpServer(options: Parameters<typeof createMcpServer>[0]) {
+  if (
+    typeof options.agentManager.getMailbox === "function" &&
+    typeof options.agentManager.setMailbox === "function" &&
+    !options.agentManager.getMailbox()
+  ) {
+    options.agentManager.setMailbox(
+      createAgentMailbox({
+        agentManager: options.agentManager,
+        agentStorage: options.agentStorage,
+        store: new MemoryMailboxStore(),
+        resolvePolicy: async () => ({ enabled: false, resumeOnStartup: false }),
+        logger: options.logger,
+      }),
+    );
+  }
+  return createMcpServer({
+    workspaceRegistry: { get: async () => null, list: async () => [], upsert: async () => {} },
+    ...options,
+  });
+}
 
 const REPO_CWD = resolvePath("/tmp/repo");
 const TARGET_CWD = resolvePath("/tmp/target");
@@ -221,7 +246,12 @@ interface TestDeps {
 }
 
 function buildAgentManagerSpies() {
+  let mailbox: AgentMailbox | null = null;
   return {
+    getMailbox: vi.fn(() => mailbox),
+    setMailbox: vi.fn((next: AgentMailbox | null) => {
+      mailbox = next;
+    }),
     createAgent: vi.fn(),
     waitForAgentEvent: vi.fn().mockResolvedValue({
       status: "idle",
@@ -840,12 +870,6 @@ function createPaseoWorktreeForMcpTest(options: {
 }
 
 // Typed in-memory workspace port for catalogue tests without workspace setup.
-function createAgentMcpServer(options: Parameters<typeof createAgentMcpServerWithDependencies>[0]) {
-  return createAgentMcpServerWithDependencies({
-    workspaceRegistry: { get: async () => null, list: async () => [], upsert: async () => {} },
-    ...options,
-  });
-}
 
 describe("bundled Paseo skill", () => {
   it("documents only advertised create_workspace input names", async () => {
@@ -4261,9 +4285,98 @@ class HeldTurnAgentClient implements AgentClient {
   }
 }
 
+describe("cancel_agent MCP tool", () => {
+  const logger = createTestLogger();
+
+  function familyDeps() {
+    const deps = createTestDeps();
+    const running = (id: string) =>
+      ({ id, cwd: process.cwd(), lifecycle: "running" }) as ManagedAgent;
+    deps.spies.agentManager.getAgent.mockImplementation((agentId: string) => running(agentId));
+    deps.spies.agentManager.hasInFlightRun.mockReturnValue(true);
+    deps.spies.agentManager.cancelAgentRun.mockResolvedValue({ status: "settled" });
+    deps.spies.agentStorage.get.mockImplementation(async (agentId: string) =>
+      agentId === "child-agent" ? { labels: { [PARENT_AGENT_ID_LABEL]: "parent-agent" } } : null,
+    );
+    return deps;
+  }
+
+  it("refuses a subagent cancelling its parent's run", async () => {
+    const deps = familyDeps();
+    const server = await createAgentMcpServer({
+      agentManager: deps.agentManager,
+      agentStorage: deps.agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "child-agent",
+      logger,
+    });
+
+    const response = await invokeToolWithParsedInput(registeredTool(server, "cancel_agent"), {
+      agentId: "parent-agent",
+    });
+
+    expect(response.structuredContent).toEqual({
+      success: false,
+      error: "A subagent cannot cancel its parent agent's run.",
+    });
+    expect(deps.spies.agentManager.cancelAgentRun).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["its parent", "parent-agent"],
+    ["an unrelated agent", "stranger-agent"],
+  ])("refuses %s cancelling a run of an agent with a mailbox", async (_label, caller) => {
+    const deps = familyDeps();
+    deps.agentManager.setMailbox(
+      createAgentMailbox({
+        agentManager: deps.agentManager,
+        agentStorage: deps.agentStorage,
+        store: new MemoryMailboxStore(),
+        resolvePolicy: async () => ({ enabled: true, resumeOnStartup: false }),
+        logger,
+      }),
+    );
+    const server = await createAgentMcpServer({
+      agentManager: deps.agentManager,
+      agentStorage: deps.agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: caller,
+      logger,
+    });
+
+    const response = await invokeToolWithParsedInput(registeredTool(server, "cancel_agent"), {
+      agentId: "child-agent",
+    });
+
+    expect(response.structuredContent).toEqual({
+      success: false,
+      error: expect.stringContaining("only a person can stop its turn"),
+    });
+    expect(deps.spies.agentManager.cancelAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("lets a parent cancel its subagent's run", async () => {
+    const deps = familyDeps();
+    const server = await createAgentMcpServer({
+      agentManager: deps.agentManager,
+      agentStorage: deps.agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "parent-agent",
+      logger,
+    });
+
+    const response = await invokeToolWithParsedInput(registeredTool(server, "cancel_agent"), {
+      agentId: "child-agent",
+    });
+
+    expect(response.structuredContent).toEqual({ success: true });
+    expect(deps.spies.agentManager.cancelAgentRun).toHaveBeenCalledWith("child-agent");
+  });
+});
+
 describe("send_agent_prompt MCP tool", () => {
   it.each([
-    { agentScoped: true, behavior: undefined, available: true, steered: true },
+    { agentScoped: true, behavior: undefined, available: true, steered: false },
     { agentScoped: true, behavior: "interrupt", available: true, steered: false },
     { agentScoped: true, behavior: "steer", available: true, steered: true },
     { agentScoped: false, behavior: undefined, available: true, steered: false },
@@ -4300,12 +4413,14 @@ describe("send_agent_prompt MCP tool", () => {
         await invokeToolWithParsedInput(tool, {
           agentId: child.id,
           prompt: "Original work",
+          background: true,
           notifyOnFinish: false,
         });
         const originalTurn = manager.getAgent(child.id)!.activeTurnId;
         const response = await invokeToolWithParsedInput(tool, {
           agentId: child.id,
           prompt: "New message",
+          background: true,
           notifyOnFinish: false,
           ...(behavior ? { activeTurnBehavior: behavior } : {}),
         });
@@ -4367,6 +4482,7 @@ describe("send_agent_prompt MCP tool", () => {
         const sending = send({
           agentId: child.id,
           prompt: "New message",
+          activeTurnBehavior: "steer",
           notifyOnFinish: true,
         });
         if (rejected) {
@@ -4446,6 +4562,7 @@ describe("send_agent_prompt MCP tool", () => {
         const sending = send({
           agentId: child.id,
           prompt: "New message",
+          activeTurnBehavior: "steer",
           notifyOnFinish: true,
         });
         expect(await sending).toMatchObject({
@@ -4554,6 +4671,82 @@ describe("send_agent_prompt MCP tool", () => {
   const logger = createTestLogger();
   const existingCwd = process.cwd();
 
+  function busyAgentWithMailbox(deps: TestDeps) {
+    const busy = {
+      id: "busy-agent",
+      cwd: existingCwd,
+      lifecycle: "running",
+      currentModeId: null,
+      availableModes: [],
+      config: { title: "Busy" },
+    } as ManagedAgent;
+    deps.spies.agentManager.getAgent.mockImplementation((agentId: string) =>
+      agentId === "busy-agent" ? busy : null,
+    );
+    deps.spies.agentManager.hasInFlightRun.mockImplementation(
+      (agentId: string) => agentId === "busy-agent",
+    );
+    const mailbox = createAgentMailbox({
+      agentManager: deps.agentManager,
+      agentStorage: deps.agentStorage,
+      store: new MemoryMailboxStore(),
+      resolvePolicy: async () => ({ enabled: true, resumeOnStartup: false }),
+      logger,
+    });
+    deps.agentManager.setMailbox(mailbox);
+    return mailbox;
+  }
+
+  it("answers a queued background prompt at once and promises the finish notification", async () => {
+    const deps = createTestDeps();
+    const mailbox = busyAgentWithMailbox(deps);
+    const server = await createAgentMcpServer({
+      agentManager: deps.agentManager,
+      agentStorage: deps.agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      callerAgentId: "peer-agent",
+      logger,
+    });
+
+    const response = await invokeToolWithParsedInput(registeredTool(server, "send_agent_prompt"), {
+      agentId: "busy-agent",
+      prompt: "Review my change",
+    });
+
+    expect(response.structuredContent).toMatchObject({ success: true, status: "running" });
+    expect(response.structuredContent.guidance).toContain("waits in its mailbox (position 1)");
+    expect(response.structuredContent.guidance).toContain("You will get notified");
+    expect(deps.spies.agentManager.streamAgent).not.toHaveBeenCalled();
+    expect(deps.spies.agentManager.waitForAgentRunStart).not.toHaveBeenCalled();
+    const [entry] = await mailbox.listEntries("busy-agent");
+    expect(entry).toMatchObject({
+      source: { kind: "agent", senderAgentId: "peer-agent" },
+      notifyCallerAgentId: "peer-agent",
+    });
+    mailbox.stop();
+  });
+
+  it("does not block a top-level caller on a queued prompt", async () => {
+    const deps = createTestDeps();
+    const mailbox = busyAgentWithMailbox(deps);
+    const server = await createAgentMcpServer({
+      agentManager: deps.agentManager,
+      agentStorage: deps.agentStorage,
+      providerSnapshotManager: createOpenCodeManager().manager,
+      logger,
+    });
+
+    const response = await invokeToolWithParsedInput(registeredTool(server, "send_agent_prompt"), {
+      agentId: "busy-agent",
+      prompt: "Status?",
+    });
+
+    expect(response.structuredContent.guidance).toContain("waits in its mailbox (position 1)");
+    expect(deps.spies.agentManager.waitForAgentEvent).not.toHaveBeenCalled();
+    expect(deps.spies.agentManager.waitForAgentRunStart).not.toHaveBeenCalled();
+    mailbox.stop();
+  });
+
   it("defaults agent-scoped prompts to background finish notifications", async () => {
     const { agentManager, agentStorage, spies } = createTestDeps();
     const parentAgent = {
@@ -4608,7 +4801,7 @@ describe("send_agent_prompt MCP tool", () => {
     );
   });
 
-  it("acknowledges top-level prompts without a completion wait", async () => {
+  it("acknowledges top-level background prompts without a completion wait", async () => {
     const { agentManager, agentStorage, spies } = createTestDeps();
     spies.agentManager.getAgent.mockReturnValue({
       id: "child-agent",
@@ -4639,7 +4832,7 @@ describe("send_agent_prompt MCP tool", () => {
       notifyOnFinish: false,
     });
 
-    await tool.handler(parsed.data as Record<string, unknown>);
+    await tool.handler({ ...parsed.data, background: true });
 
     expect(spies.agentManager.subscribe).not.toHaveBeenCalled();
     expect(spies.agentManager.waitForAgentEvent).not.toHaveBeenCalled();
@@ -4824,11 +5017,10 @@ describe("send_agent_prompt MCP tool", () => {
             text: "Ongoing task",
           });
           expect(parentClient.sessions[0]!.prompts).toHaveLength(0);
+          expect(response.structuredContent).not.toHaveProperty("guidance");
           childClient.sessions[0]!.finishTurn("Ongoing task done");
-          await vi.waitFor(() => {
-            expect(parentClient.sessions[0]!.prompts).toHaveLength(1);
-            expect(parentClient.sessions[0]!.prompts[0]).toContain("finished.");
-          });
+          await vi.waitFor(() => expect(agentManager.getAgent(child.id)?.lifecycle).toBe("idle"));
+          expect(parentClient.sessions[0]!.prompts).toHaveLength(0);
         } else {
           childClient.sessions[0]!.rejectNextTurnStart(new Error("Requested turn could not start"));
           await expect(
@@ -4860,6 +5052,15 @@ describe("send_agent_prompt MCP tool", () => {
       registry: storage,
       logger,
     });
+    agentManager.setMailbox(
+      createAgentMailbox({
+        agentManager,
+        agentStorage: storage,
+        store: new MemoryMailboxStore(),
+        resolvePolicy: async () => ({ enabled: false, resumeOnStartup: false }),
+        logger,
+      }),
+    );
 
     try {
       const parent = await agentManager.createAgent(
@@ -4891,7 +5092,7 @@ describe("send_agent_prompt MCP tool", () => {
         guidance:
           "You will get notified when the prompted agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.",
       });
-      expect(response.structuredContent).not.toHaveProperty("lastMessage");
+      expect(response.structuredContent.lastMessage).toBeNull();
 
       childClient.sessions[0]!.finishTurn();
 

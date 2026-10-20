@@ -215,10 +215,19 @@ export function runPluginClientBundle(
       if (!isComponentType(contribution.Component)) {
         throw new Error(`Screen ${normalizedId} is not a component`);
       }
+      const { HeaderRight } = contribution;
+      if (HeaderRight !== undefined && !isComponentType(HeaderRight)) {
+        throw new Error(`Screen ${normalizedId} HeaderRight is not a component`);
+      }
       surfaceIds.add(normalizedId);
       return register(
         collector.surfaces,
-        { id: normalizedId, title, Component: contribution.Component },
+        {
+          id: normalizedId,
+          title,
+          Component: contribution.Component,
+          ...(HeaderRight ? { HeaderRight } : {}),
+        },
         () => surfaceIds.delete(normalizedId),
       );
     },

@@ -78,6 +78,28 @@ Permission requests are notification checkpoints, not the end of that subscripti
 The permission notification includes the normalized request plus the child and request IDs, so the caller can inspect it and respond without fetching agent status.
 A watched child that closes before its finish event also notifies the caller so delegated work cannot disappear silently during archive or workspace teardown.
 
+`create_agent` with `notifyOnFinish: "every-turn"` arms a standing watch instead: the caller also hears about every turn the child ends without being prompted by the caller (woken by its own agents, a schedule, or a person), until the child closes or either side is archived. A turn the caller prompted is reported once, by that prompt's watch. A standing notice still waiting in the caller's mailbox is replaced by the child's next one, and the watch is re-armed after a restart.
+
+## Mailbox
+
+With its mailbox on (config: [data-model.md](data-model.md#2-daemon-configuration)), an agent's
+turn is never replaced or steered by another agent, its parent included, or by a schedule. Their
+prompts wait while it runs, has mail waiting, or is paused, and arrive in order as one
+`<paseo-system>` prompt of `<paseo-mailbox-item>` blocks when it goes idle. Only a person interrupts
+it: another agent's `cancel_agent` is refused with an error saying so. An agent with the mailbox
+off is interrupted and cancelled as before by any agent, so a Lead with a mailbox can still
+redirect Peers that have none. No caller-side switch exists.
+
+A person's Stop pauses the mailbox before cancelling the turn. The person's next prompt lifts the
+pause and runs at once, and waiting mail follows that turn. The parent's next prompt also lifts the
+pause and gives held items fresh attempts, but it queues behind the waiting mail. Internal replacement, Hub interrupts, and an
+agent's `cancel_agent` never pause. A subagent's `cancel_agent` on its parent is refused whether or
+not the parent has a mailbox. Finish notifications and their watches use the mailbox whether it is
+on or not, so they survive a restart: a leftover watch becomes "was interrupted by a daemon
+restart", and a waiting permission notice is rewritten as expired. Mail starts a turn at boot only
+with `resumeOnStartup`. Archive keeps waiting mail but drops the pause and the watches, so an
+empty mailbox disappears; deleting the agent removes it.
+
 ## Provider-managed child agents
 
 Some providers can create their own child sessions inside one provider runtime. OMP's task tool reports these with `child_session` events; `AgentManager` imports the live provider handle, stamps `paseo.parent-agent-id`, and surfaces the result as a normal subagent in the parent's subagents track.
