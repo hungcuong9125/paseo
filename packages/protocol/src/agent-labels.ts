@@ -1,6 +1,8 @@
 import type { AgentAddress } from "./addresses.js";
 export const PARENT_SERVER_ID_LABEL = "paseo.parent-server-id";
 export const PARENT_AGENT_ID_LABEL = "paseo.parent-agent-id";
+/** "on" or "off"; overrides the provider entry's mailbox setting for one agent. */
+export const MAILBOX_LABEL = "paseo.mailbox";
 const OPEN_AGENT_TAB_LABEL_PREFIX = "paseo.open-agent-tab.";
 
 export function getOpenAgentTabLabel(clientId: string): string {
@@ -50,4 +52,13 @@ export function getParentAddressFromLabels(
 }
 export function parentAddressLabels(parent: AgentAddress): Record<string, string> {
   return { [PARENT_AGENT_ID_LABEL]: parent.agentId, [PARENT_SERVER_ID_LABEL]: parent.serverId };
+}
+
+export function getMailboxLabelSetting(
+  labels: Record<string, unknown> | null | undefined,
+): boolean | null {
+  const value = labels?.[MAILBOX_LABEL];
+  if (value === "on") return true;
+  if (value === "off") return false;
+  return null;
 }

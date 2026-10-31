@@ -2,6 +2,108 @@ import { expect, test } from "vitest";
 import { createAgentMessageDelivery, parseAgentMessages } from "./index.js";
 import type { AgentPromptInput } from "../agent-sdk-types.js";
 
+test("durable admission must finish before a queued receipt is returned", async () => {
+  let save!: () => void;
+  const saving = new Promise<void>((resolve) => {
+    save = resolve;
+  });
+  let acknowledged = false;
+  let dispatched = false;
+  const delivery = createAgentMessageDelivery({
+    admission: {
+      enqueue: async (message) => {
+        await saving;
+        return {
+          status: "queued",
+          messageId: message.messageId,
+          durable: true,
+          dispatched: new Promise<"turn_started">(() => {}),
+        };
+      },
+      hasPending: () => true,
+      waitForDispatch: async () => {},
+    },
+    dispatch: async () => {
+      dispatched = true;
+      return "steered";
+    },
+    onError: (error) => {
+      throw error;
+    },
+  });
+  const receipt = Promise.resolve(
+    delivery.enqueue({
+      recipientId: "parent",
+      messageId: "saved",
+      source: { kind: "agent-message", agentId: "child" },
+      prompt: "result",
+    }),
+  ).then((value) => {
+    acknowledged = true;
+    return value;
+  });
+  await Promise.resolve();
+  expect(acknowledged).toBe(false);
+  save();
+  await expect(receipt).resolves.toMatchObject({
+    status: "queued",
+    messageId: "saved",
+    durable: true,
+  });
+  await delivery.close();
+  expect(dispatched).toBe(false);
+});
+
+test("completion wait includes a durable admission still writing when the wait starts", async () => {
+  const saving = Promise.withResolvers<void>();
+  const dispatch = Promise.withResolvers<void>();
+  const checked = Promise.withResolvers<void>();
+  let persisted = false;
+  let observedPersisted = false;
+  const delivery = createAgentMessageDelivery({
+    admission: {
+      enqueue: async (message) => {
+        await saving.promise;
+        persisted = true;
+        return {
+          status: "queued",
+          messageId: message.messageId,
+          durable: true,
+          dispatched: dispatch.promise.then(() => "turn_started" as const),
+        };
+      },
+      hasPending: () => persisted,
+      waitForDispatch: async () => {
+        observedPersisted = persisted;
+        checked.resolve();
+        if (persisted) await dispatch.promise;
+      },
+    },
+    dispatch: async () => {
+      throw new Error("Unexpected in-memory dispatch");
+    },
+    onError: (error) => {
+      throw error;
+    },
+  });
+  const receipt = delivery.enqueue({
+    recipientId: "parent",
+    prompt: "work",
+    source: { kind: "agent-message", agentId: "child" },
+  });
+  const waiting = delivery.waitForDispatch("parent", new AbortController().signal);
+  try {
+    saving.resolve();
+    await receipt;
+    await checked.promise;
+    expect(observedPersisted).toBe(true);
+  } finally {
+    dispatch.resolve();
+    await waiting;
+    await delivery.close();
+  }
+});
+
 function createClock() {
   let now = 0;
   const jobs = new Map<() => void, number>();
@@ -23,6 +125,73 @@ function createClock() {
   };
 }
 
+test("a failed durable admission returns no receipt, stays out of the memory queue, and is no wait's error", async () => {
+  const dispatched: string[] = [];
+  const delivery = createAgentMessageDelivery({
+    admission: {
+      enqueue: async () => {
+        throw new Error("disk full");
+      },
+      hasPending: () => false,
+      waitForDispatch: async () => {},
+    },
+    dispatch: async (request) => {
+      dispatched.push(...request.messageIds);
+      return "steered";
+    },
+    onError: (error) => {
+      throw error;
+    },
+  });
+
+  const failing = delivery.enqueue({
+    recipientId: "parent",
+    messageId: "lost",
+    source: { kind: "agent-message", agentId: "child" },
+    prompt: "result",
+  });
+  const waiting = delivery.waitForDispatch("parent", new AbortController().signal);
+
+  await expect(failing).rejects.toThrow("disk full");
+  await expect(waiting).resolves.toBeUndefined();
+  expect(delivery.hasPending("parent")).toBe(false);
+  await delivery.close();
+  expect(dispatched).toEqual([]);
+});
+
+test("a recipient without a mailbox keeps the two-second in-memory batch", async () => {
+  const clock = createClock();
+  const sent: string[] = [];
+  const delivery = createAgentMessageDelivery({
+    admission: {
+      enqueue: async () => null,
+      hasPending: () => false,
+      waitForDispatch: async () => {},
+    },
+    schedule: clock.schedule,
+    dispatch: async (request) => {
+      sent.push(...request.messageIds);
+      return "steered";
+    },
+    onError: (error) => {
+      throw error;
+    },
+  });
+
+  const receipt = await delivery.enqueue({
+    recipientId: "parent",
+    messageId: "report",
+    source: { kind: "agent-message", agentId: "child" },
+    prompt: "result",
+  });
+
+  expect(receipt.durable).toBeUndefined();
+  expect(sent).toEqual([]);
+  clock.advance(2000);
+  await expect(receipt.dispatched).resolves.toBe("steered");
+  expect(sent).toEqual(["report"]);
+});
+
 test("a queued child report and completion reach the recipient in one steer after two quiet seconds", async () => {
   const clock = createClock();
   const sent: Array<{ recipientId: string; prompt: AgentPromptInput }> = [];
@@ -36,7 +205,7 @@ test("a queued child report and completion reach the recipient in one steer afte
       throw error;
     },
   });
-  const receipt = delivery.enqueue({
+  const receipt = await delivery.enqueue({
     recipientId: "parent",
     messageId: "report",
     prompt: "Results <ready>",
@@ -45,7 +214,7 @@ test("a queued child report and completion reach the recipient in one steer afte
   expect(receipt).toMatchObject({ status: "queued", messageId: "report" });
   expect(sent).toEqual([]);
   clock.advance(1000);
-  delivery.enqueue({
+  await delivery.enqueue({
     recipientId: "parent",
     messageId: "finish",
     prompt: "Worker finished",
@@ -93,19 +262,26 @@ test("recipient timers are independent, later messages form another batch, and c
     },
   });
   const source = { kind: "agent-message" as const, agentId: "worker" };
-  const a = delivery.enqueue({ recipientId: "a", messageId: "first", source, prompt: "one" });
+  const a = await delivery.enqueue({ recipientId: "a", messageId: "first", source, prompt: "one" });
   clock.advance(1000);
-  const b = delivery.enqueue({ recipientId: "b", messageId: "independent", source, prompt: "two" });
+  const b = await delivery.enqueue({
+    recipientId: "b",
+    messageId: "independent",
+    source,
+    prompt: "two",
+  });
   clock.advance(1000);
   await a.dispatched;
   expect(sent).toEqual(["a:first"]);
-  delivery.enqueue({ recipientId: "a", messageId: "later", source, prompt: "three" });
+  await delivery.enqueue({ recipientId: "a", messageId: "later", source, prompt: "three" });
   clock.advance(1000);
   await b.dispatched;
   expect(sent).toEqual(["a:first", "b:independent"]);
   await delivery.close();
   expect(sent).toEqual(["a:first", "b:independent", "a:later"]);
-  expect(() => delivery.enqueue({ recipientId: "a", source, prompt: "closed" })).toThrow("closed");
+  await expect(delivery.enqueue({ recipientId: "a", source, prompt: "closed" })).rejects.toThrow(
+    "closed",
+  );
 });
 
 test("explicit interrupt and conflicting session modes retain ordered dispatch boundaries", async () => {
@@ -125,28 +301,28 @@ test("explicit interrupt and conflicting session modes retain ordered dispatch b
     },
   });
   const source = { kind: "agent-message" as const, agentId: "worker" };
-  delivery.enqueue({
+  await delivery.enqueue({
     recipientId: "parent",
     source,
     prompt: "interrupt",
     messageId: "interrupt",
     activeTurnBehavior: "interrupt",
   });
-  delivery.enqueue({
+  await delivery.enqueue({
     recipientId: "parent",
     source,
     prompt: "review",
     messageId: "review",
     sessionMode: "plan",
   });
-  delivery.enqueue({
+  await delivery.enqueue({
     recipientId: "parent",
     source,
     prompt: "execute",
     messageId: "execute",
     sessionMode: "full-access",
   });
-  delivery.enqueue({
+  await delivery.enqueue({
     recipientId: "parent",
     source: { kind: "agent-notification", agentId: "worker", event: "finished" },
     prompt: "done",
@@ -189,7 +365,7 @@ test("dispatch failures reject waits before and after flush and do not poison la
     source: { kind: "agent-message" as const, agentId: "worker" },
     prompt: "report",
   };
-  const bad = delivery.enqueue({ ...message, messageId: "bad" });
+  const bad = await delivery.enqueue({ ...message, messageId: "bad" });
   const before = expect(
     delivery.waitForDispatch("parent", new AbortController().signal),
   ).rejects.toBe(failed);
@@ -198,7 +374,7 @@ test("dispatch failures reject waits before and after flush and do not poison la
     delivery.waitForDispatch("parent", new AbortController().signal),
   ).rejects.toBe(failed);
   await Promise.all([before, after, expect(bad.dispatched).rejects.toBe(failed)]);
-  const next = delivery.enqueue({ ...message, messageId: "next" });
+  const next = await delivery.enqueue({ ...message, messageId: "next" });
   await delivery.close();
   await expect(next.dispatched).resolves.toBe("steered");
   expect(errors).toEqual([failed]);
@@ -213,7 +389,7 @@ test("canceling a completion wait leaves queued delivery intact", async () => {
       throw error;
     },
   });
-  const receipt = delivery.enqueue({
+  const receipt = await delivery.enqueue({
     recipientId: "parent",
     source: { kind: "agent-message", agentId: "worker" },
     prompt: "report",
@@ -239,13 +415,13 @@ test("batches retain each sender's attachment context and image order", async ()
   });
   const firstImage = { type: "image" as const, data: "Zmlyc3Q=", mimeType: "image/png" };
   const secondImage = { type: "image" as const, data: "c2Vjb25k", mimeType: "image/png" };
-  delivery.enqueue({
+  await delivery.enqueue({
     recipientId: "parent",
     messageId: "first",
     source: { kind: "agent-message", agentId: "one" },
     prompt: [{ type: "text", text: "First" }, firstImage],
   });
-  delivery.enqueue({
+  await delivery.enqueue({
     recipientId: "parent",
     messageId: "second",
     source: { kind: "agent-message", agentId: "two" },
@@ -301,7 +477,7 @@ test("runtime safety sees queued messages until provider dispatch settles", asyn
     },
   });
   expect(delivery.hasPending("parent")).toBe(false);
-  delivery.enqueue({
+  await delivery.enqueue({
     recipientId: "parent",
     prompt: "finished",
     source: { kind: "agent-message", agentId: "child" },

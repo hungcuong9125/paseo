@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentPromptInput, AgentPromptContentBlock } from "../agent-sdk-types.js";
 import { prepareAgentMessage, type AgentPromptSource } from "./envelope.js";
 
-interface Message {
+export interface Message {
   recipientId: string;
   messageId?: string;
   source: AgentPromptSource;
@@ -15,7 +15,9 @@ interface Message {
   beforeDispatch?: () => void;
   onDispatch?: (disposition: PromptDispatchDisposition) => void;
 }
-interface Receipt {
+export interface Receipt {
+  /** The recipient's mailbox has accepted responsibility for replay after restart. */
+  durable?: boolean;
   status: "queued";
   messageId: string;
   dispatched: Promise<PromptDispatchDisposition>;
@@ -35,14 +37,20 @@ interface DispatchRequest {
   unarchive: boolean;
   onDispatch(disposition: PromptDispatchDisposition): void;
 }
+export interface DurableAdmission {
+  enqueue(message: Message & { messageId: string }): Promise<Receipt | null>;
+  hasPending(recipientId: string): boolean;
+  waitForDispatch(recipientId: string, signal: AbortSignal): Promise<void>;
+}
 interface Dependencies {
+  admission?: DurableAdmission;
   dispatch(request: DispatchRequest): Promise<PromptDispatchDisposition>;
   onError(error: unknown, request: DispatchRequest): void;
   /** Return a cancellation function. Production uses the daemon's event loop. */
   schedule?: (delayMs: number, callback: () => void) => () => void;
 }
 export interface AgentMessageDelivery {
-  enqueue(message: Message): Receipt;
+  enqueue(message: Message): Promise<Receipt>;
   /** Queued messages and provider dispatches still owned by this recipient. */
   hasPending(recipientId: string): boolean;
   /** Stop admission, flush pending messages, and await provider dispatch acknowledgments. */
@@ -61,6 +69,7 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
     });
   const pending = new Map<string, { messages: Admitted[]; cancel(): void }>();
   const dispatching = new Map<string, Promise<void>>();
+  const admissions = new Map<string, Set<Promise<Receipt>>>();
   let closed = false;
   let closing: Promise<void> | undefined;
 
@@ -139,28 +148,50 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
     if (group.length) dispatch(recipientId, group);
   }
 
+  function enqueueInMemory(message: Message): Receipt {
+    let resolve!: Admitted["resolve"];
+    let reject!: Admitted["reject"];
+    const dispatched = new Promise<PromptDispatchDisposition>((accepted, failed) => {
+      resolve = accepted;
+      reject = failed;
+    });
+    void dispatched.catch(() => undefined);
+    const receipt: Receipt = {
+      status: "queued",
+      messageId: message.messageId ?? randomUUID(),
+      dispatched,
+    };
+    const entry = pending.get(message.recipientId) ?? { messages: [], cancel: () => {} };
+    entry.cancel();
+    entry.messages.push({ ...message, receipt, resolve, reject });
+    entry.cancel = schedule(2000, () => flush(message.recipientId));
+    pending.set(message.recipientId, entry);
+    return receipt;
+  }
+
   return {
-    hasPending: (recipientId) => pending.has(recipientId) || dispatching.has(recipientId),
+    hasPending: (recipientId) =>
+      admissions.has(recipientId) ||
+      pending.has(recipientId) ||
+      dispatching.has(recipientId) ||
+      Boolean(dependencies.admission?.hasPending(recipientId)),
     enqueue(message) {
-      if (closed) throw new Error("Agent message delivery is closed");
-      let resolve!: Admitted["resolve"];
-      let reject!: Admitted["reject"];
-      const dispatched = new Promise<PromptDispatchDisposition>((accepted, failed) => {
-        resolve = accepted;
-        reject = failed;
-      });
-      void dispatched.catch(() => undefined);
-      const receipt: Receipt = {
-        status: "queued",
-        messageId: message.messageId ?? randomUUID(),
-        dispatched,
-      };
-      const entry = pending.get(message.recipientId) ?? { messages: [], cancel: () => {} };
-      entry.cancel();
-      entry.messages.push({ ...message, receipt, resolve, reject });
-      entry.cancel = schedule(2000, () => flush(message.recipientId));
-      pending.set(message.recipientId, entry);
-      return receipt;
+      if (closed) return Promise.reject(new Error("Agent message delivery is closed"));
+      const accepting = (async () => {
+        const normalized = { ...message, messageId: message.messageId ?? randomUUID() };
+        const durable = await dependencies.admission?.enqueue(normalized);
+        return durable ?? enqueueInMemory(normalized);
+      })();
+      const group = admissions.get(message.recipientId) ?? new Set<Promise<Receipt>>();
+      group.add(accepting);
+      admissions.set(message.recipientId, group);
+      void accepting
+        .finally(() => {
+          group.delete(accepting);
+          if (!group.size) admissions.delete(message.recipientId);
+        })
+        .catch(() => undefined);
+      return accepting;
     },
     async waitForDispatch(recipientId, signal) {
       signal.throwIfAborted();
@@ -173,7 +204,24 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
       });
       try {
         await Promise.race([
-          Promise.all([dispatching.get(recipientId), ...admitted]),
+          Promise.all([
+            dispatching.get(recipientId),
+            ...admitted,
+            // A failed admission is its sender's error. A durable receipt's dispatch is
+            // covered by the admission's own wait, which also sees mail from before a restart.
+            ...[...(admissions.get(recipientId) ?? [])].map((receipt) =>
+              receipt.then(
+                (value) => (value.durable ? undefined : value.dispatched),
+                () => undefined,
+              ),
+            ),
+            (async () => {
+              // Queue counts become visible only after admission's durable write.
+              await Promise.allSettled(admissions.get(recipientId) ?? []);
+              signal.throwIfAborted();
+              await dependencies.admission?.waitForDispatch(recipientId, signal);
+            })(),
+          ]),
           cancellation,
         ]);
       } finally {
@@ -183,9 +231,14 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
     close() {
       if (closing) return closing;
       closed = true;
-      for (const recipientId of pending.keys()) flush(recipientId);
-      // Each failure is reported and rejects its receipts; shutdown still drains other recipients.
-      closing = Promise.allSettled(dispatching.values()).then(() => undefined);
+      closing = (async () => {
+        // Finish durable writes, not mailbox turns: a paused recipient must not block shutdown.
+        const writes: Promise<Receipt>[] = [];
+        for (const group of admissions.values()) writes.push(...group);
+        await Promise.allSettled(writes);
+        for (const recipientId of pending.keys()) flush(recipientId);
+        await Promise.allSettled(dispatching.values());
+      })();
       return closing;
     },
   };

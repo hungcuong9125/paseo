@@ -1,8 +1,18 @@
-import { prepareAgentMessage, type AgentPromptSource } from "./agent-messages/index.js";
+import {
+  escapeXml,
+  formatAgentMessage,
+  formatSystemNotificationPrompt,
+  parseAgentMessage,
+  prepareAgentMessage,
+  type AgentPromptSource,
+} from "./agent-messages/index.js";
 import type { Logger } from "pino";
 
 import type { AgentPromptInput, AgentRunOptions } from "./agent-sdk-types.js";
 import type { AgentManager, ManagedAgent } from "./agent-manager.js";
+import { AgentMailbox, type MailboxDelivery } from "./agent-mailbox/service.js";
+import type { MailboxPolicy } from "./agent-mailbox/policy.js";
+import type { MailboxStore } from "./agent-mailbox/store.js";
 import type { AgentStorage } from "./agent-storage.js";
 import { ensureAgentLoaded } from "./agent-loading.js";
 import { isStaleProviderSessionError } from "./stale-provider-session-error.js";
@@ -31,9 +41,24 @@ export interface StartAgentRunOptions {
   runOptions?: AgentRunOptions;
   /** Ask the provider to deny permissions blocking this steer. */
   clearPendingPermissions?: boolean;
+  /** Called with the id of each turn this dispatch's own run starts. */
+  onTurnStarted?: (turnId: string) => void;
 }
 
 export type PromptDispatchDisposition = "out_of_band" | "steered" | "turn_started";
+
+/**
+ * Who is behind a prompt that reaches {@link sendPromptToAgent}. A person may
+ * always cut in and lifts their own earlier stop. Agents never come through
+ * here: their messages enter the recipient's mailbox by way of the message
+ * delivery, and schedules by way of the mailbox's own admission.
+ */
+export type PromptSender =
+  | { kind: "human" }
+  /** The daemon acting by itself, such as resuming after a restart. */
+  | { kind: "daemon" }
+  /** The mailbox handing over mail it already held. */
+  | { kind: "mailbox" };
 
 async function steerOrReplaceActiveRun(
   agentManager: AgentRunController,
@@ -82,9 +107,14 @@ async function startOrReplaceRun(
 
 async function drainAgentRunIterator(
   iterator: AsyncGenerator<import("./agent-sdk-types.js").AgentStreamEvent>,
+  onTurnStarted?: (turnId: string) => void,
 ): Promise<void> {
-  for await (const _ of iterator) {
-    // Events are broadcast via AgentManager subscribers.
+  // Events are broadcast via AgentManager subscribers; only this run's own
+  // turn start is read here.
+  for await (const event of iterator) {
+    if (event.type === "turn_started" && event.turnId) {
+      onTurnStarted?.(event.turnId);
+    }
   }
 }
 
@@ -157,7 +187,7 @@ async function startAgentRunInner(
   void (async () => {
     try {
       try {
-        await drainAgentRunIterator(iterator);
+        await drainAgentRunIterator(iterator, options?.onTurnStarted);
       } catch (error) {
         if (!isStaleProviderSessionError(error)) throw error;
         logger.info(
@@ -166,7 +196,7 @@ async function startAgentRunInner(
         );
         await agentManager.reloadAgentSession(agentId);
         const retry = await startOrReplaceRun(agentManager, agentId, prompt, options);
-        await drainAgentRunIterator(retry.iterator);
+        await drainAgentRunIterator(retry.iterator, options?.onTurnStarted);
       }
       logger.trace(
         {
@@ -230,6 +260,15 @@ export interface SendPromptToAgentParams {
   unarchive?: boolean;
   /** See {@link StartAgentRunOptions.clearPendingPermissions}. */
   clearPendingPermissions?: boolean;
+  /**
+   * Default true, which cancels the agent's in-flight turn and takes its place.
+   * The mailbox passes false: it only hands over mail once the agent is idle.
+   */
+  replaceRunning?: boolean;
+  /** Defaults to a person, which keeps every existing entrypoint's behavior. */
+  sender?: PromptSender;
+  /** See {@link StartAgentRunOptions.onTurnStarted}. */
+  onTurnStarted?: (turnId: string) => void;
   logger: Logger;
 }
 
@@ -353,13 +392,36 @@ export async function sendPreparedPromptToAgent(
     throw error;
   }
 
+  const sender = params.sender ?? { kind: "human" as const };
+  if (sender.kind === "mailbox") {
+    return await dispatchPrompt(params);
+  }
+  const mailbox = params.agentManager.getMailbox?.();
+  if (!mailbox) {
+    return await dispatchPrompt(params);
+  }
+  if (sender.kind === "human") {
+    // A person prompting is the cue that their earlier stop is over.
+    await mailbox.resume(params.agentId);
+  }
+  const result = await dispatchPrompt(params);
+  // Kicked after the turn exists, so waiting mail follows it instead of
+  // starting first and being replaced. This also drains mail a restart left.
+  void mailbox.kick(params.agentId);
+  return result;
+}
+
+async function dispatchPrompt(
+  params: Omit<SendPromptToAgentParams, "source" | "messageId">,
+): Promise<{ disposition: PromptDispatchDisposition }> {
   if (params.sessionMode) {
     await params.agentManager.setAgentMode(params.agentId, params.sessionMode);
   }
 
   return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
-    replaceRunning: true,
+    replaceRunning: params.replaceRunning ?? true,
     onDispatch: params.onDispatch,
+    onTurnStarted: params.onTurnStarted,
     activeTurnBehavior: params.activeTurnBehavior,
     clearPendingPermissions: params.clearPendingPermissions,
     runOptions: params.runOptions,
@@ -400,4 +462,95 @@ export async function startCreatedAgentInitialPrompt(
     throw new Error(`Agent ${params.agentId} not found`);
   }
   return refreshedSnapshot;
+}
+
+export interface CreateAgentMailboxParams {
+  agentManager: AgentManager;
+  agentStorage: AgentStorage;
+  store: MailboxStore;
+  resolvePolicy: (agentId: string) => Promise<MailboxPolicy>;
+  logger: Logger;
+}
+
+export function createAgentMailbox(params: CreateAgentMailboxParams): AgentMailbox {
+  const { agentManager, agentStorage, logger } = params;
+  return new AgentMailbox({
+    store: params.store,
+    agentManager,
+    agentStorage,
+    resolvePolicy: params.resolvePolicy,
+    logger: logger.child({ module: "agent-mailbox" }),
+    deliver: (delivery) => deliverMailboxBatch({ agentManager, agentStorage, logger }, delivery),
+  });
+}
+
+/** Whether prompts from agents and schedules wait in this agent's mailbox. */
+export async function isMailboxEnabled(
+  agentManager: Pick<AgentManager, "getMailbox">,
+  agentId: string,
+): Promise<boolean> {
+  const mailbox = agentManager.getMailbox?.();
+  return mailbox ? (await mailbox.resolvePolicy(agentId)).enabled : false;
+}
+
+/** The text a mailbox stores for a prompt that arrives wrapped as a plain system notice. */
+export function unwrapSystemEnvelope(text: string): string {
+  const match = /^<paseo-system>\n([\s\S]*)\n<\/paseo-system>$/.exec(text);
+  return match?.[1] ?? text;
+}
+
+function renderMailboxDelivery(delivery: MailboxDelivery): string {
+  const items = delivery.entries.map((entry) => {
+    const attributes = [
+      `id="${escapeXml(entry.id)}"`,
+      `from="${escapeXml(describeMailboxSource(entry))}"`,
+    ];
+    if (entry.source.kind === "agent" && entry.source.title) {
+      attributes.push(`title="${escapeXml(entry.source.title)}"`);
+    }
+    if (entry.redelivered) {
+      attributes.push(`redelivered="true"`);
+    }
+    const notification =
+      entry.source.kind === "notification" ? parseAgentMessage(entry.prompt.text) : null;
+    const body = notification ? formatAgentMessage(notification) : escapeXml(entry.prompt.text);
+    return `<paseo-mailbox-item ${attributes.join(" ")}>\n${body}\n</paseo-mailbox-item>`;
+  });
+  return formatSystemNotificationPrompt(items.join("\n\n"));
+}
+
+function describeMailboxSource(entry: MailboxDelivery["entries"][number]): string {
+  switch (entry.source.kind) {
+    case "agent": {
+      const { senderAgentId, serverId } = entry.source;
+      if (!senderAgentId) return "agent";
+      return serverId ? `agent:${serverId}/${senderAgentId}` : `agent:${senderAgentId}`;
+    }
+    case "schedule":
+      return `schedule:${entry.source.scheduleId}`;
+    case "notification":
+      return `notification:${entry.source.childAgentId}`;
+    case "restart":
+      return "daemon";
+  }
+}
+
+async function deliverMailboxBatch(
+  deps: { agentManager: AgentManager; agentStorage: AgentStorage; logger: Logger },
+  delivery: MailboxDelivery,
+): Promise<PromptDispatchDisposition> {
+  const { disposition } = await sendPreparedPromptToAgent({
+    agentManager: deps.agentManager,
+    agentStorage: deps.agentStorage,
+    agentId: delivery.agentId,
+    // Already an envelope: a prepared prompt is not reclassified as human input.
+    prompt: renderMailboxDelivery(delivery),
+    ...(delivery.sessionMode ? { sessionMode: delivery.sessionMode } : {}),
+    sender: { kind: "mailbox" },
+    unarchive: false,
+    replaceRunning: false,
+    onTurnStarted: delivery.bindTurn,
+    logger: deps.logger,
+  });
+  return disposition;
 }

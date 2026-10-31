@@ -176,100 +176,44 @@ Permission requests are notification checkpoints, not the end of that subscripti
 The permission notification includes the normalized request plus the child and request IDs, so the caller can inspect it and respond without fetching agent status.
 A watched child that closes before its finish event also notifies the caller so delegated work cannot disappear silently during archive or workspace teardown.
 
-## Provider-managed child agents
+`create_agent` with `notifyOnFinish: "every-turn"` registers the same subscription with `everyTurn`: it keeps reporting each turn the child ends, whoever started it, until the child closes, its host is lost, or the caller is archived. One subscription sees a turn once, so a later prompt from the caller to that child registers nothing more and its turn is not reported twice. The subscription is stored and resumes after a restart; turns that ended while the daemon was down are not reported.
 
-Some providers can create their own child sessions inside one provider runtime. OMP's task tool reports these with `child_session` events; `AgentManager` imports the live provider handle, stamps `paseo.parent-agent-id`, and surfaces the result as a normal subagent in the parent's subagents track.
+## Mailbox
 
-The provider still owns the underlying runtime. Paseo keeps an agent record so the child can be opened, tracked, archived, and cascaded with the parent, but prompts and history hydration route through the provider adapter for that native child handle.
+With its mailbox on (config: [data-model.md](data-model.md#2-daemon-configuration)), an agent's
+turn is never replaced or steered by another agent, its parent included, or by a schedule. Their
+prompts, and the finish notifications addressed to it, wait while it runs, has mail waiting, or is
+paused, and arrive in order as one `<paseo-system>` prompt of `<paseo-mailbox-item>` blocks when it
+goes idle. Only a person interrupts it: another agent's `cancel_agent` is refused with an error
+saying so, and `update_agent` refuses an agent's change to the `paseo.mailbox` label. An agent with
+the mailbox off keeps the upstream behavior: agent callers steer by default and any agent may
+cancel it, so a Lead with a mailbox can still redirect Peers that have none. No caller-side switch
+exists.
 
-## Background workspaces
+The mailbox joins the message delivery as its durable admission
+(`agent/agent-mailbox/admission.ts`). Message delivery answers an enqueue only after admission has
+finished, so for a recipient with a mailbox the receipt (`durable: true`) means the item is on disk,
+and a failed write is an error, never a receipt. A durable receipt also settles a finish
+subscription at once: the mailbox, not the subscription, replays the notice after a restart. A
+recipient without a mailbox, or an archived one, gets the upstream two-second in-memory batch.
+Completion waits (`waitForDispatch`) include mail still waiting in the mailbox, also after a
+restart, so a parent never hears that a child finished before the child had read what was sent to
+it.
 
-`workspace.background` controls discovery only. Background workspaces contain ordinary durable
-agents and terminals: provider history, plugin hooks, parentage, archive, and restart recovery
-keep their normal behavior. Visibility is creation-only; selecting an existing workspace cannot
-change it. New workspaces default to false, inherit the caller workspace's value when an agent
-creates one without an override, and accept explicit true or false.
+A person's Stop pauses the mailbox before cancelling the turn. The person's next prompt lifts the
+pause and runs at once, and waiting mail follows that turn. The parent's next message also lifts the
+pause and gives held items fresh attempts, but it queues behind the waiting mail. Internal
+replacement, Hub interrupts, the daemon's own restart-recovery prompt, and an agent's
+`cancel_agent` never pause or lift it. A subagent's `cancel_agent` on its parent is refused whether
+or not the parent has a mailbox. A waiting permission notice is rewritten as expired after a
+restart. Mail starts a turn at boot only with the entry's `resumeOnStartup`; the daemon-wide
+restart recovery of agents that were mid-turn is a separate upstream setting, and mail waits behind
+the turn it starts. Archive keeps waiting mail but drops the pause, so an empty mailbox disappears;
+deleting the agent removes it.
 
-The daemon derives agent discovery from workspace ownership. Default workspace and agent lists,
-including History requests, exclude background work; `filter.includeBackground` includes it.
-Exact-ID operations bypass discovery filtering. The app replicates both kinds and filters only
-its sidebar with **Show background**, so direct navigation and restored tabs remain available.
-
-Sequenced directories keep complete canonical collections. A filtered read must never replace
-those collections with its subset. Inclusive and default observations have distinct cursor
-scopes, so changing scope requires a fresh snapshot rather than reusing an incomplete cache.
-Clients gate creation and inclusive discovery on `features.backgroundWorkspaces`.
-
-### Private daemon helpers
-
-Branch-name and commit-message generators still use private disposable internal runtimes.
-`AgentManager` does not persist them or their provider sessions, excludes them from public
-discovery and plugin hooks, and drops their timelines on archive. An archived helper retains
-its exact-ID result briefly to cover completion before a waiter attaches. This internal
-lifecycle is separate from public workspace visibility and is not a public creation option.
-
-## Archive
-
-Archive is a **soft delete**: the agent record stays on disk with `archivedAt` set, the runtime is closed, and the agent disappears from active lists. Archive is **global** — it lives on the server and propagates to every connected client.
-
-Archive sets `archivedAt`, invokes the provider's native archive hook, and cascades to managed
-children.
-
-`create_agent_request` can opt an agent into `autoArchive`. In that mode the daemon archives the agent after the first terminal turn event (`turn_completed`, `turn_failed`, or `turn_canceled`). When the agent owns an isolated workspace, auto-archive archives that workspace too; the managed worktree is removed when its final workspace reference is gone.
-
-Archiving runs through `AgentManager.archiveAgent` (`packages/server/src/server/agent/agent-manager.ts`):
-
-1. Snapshot the current session into the registry
-2. Set `archivedAt` and normalize `lastStatus` away from `running`/`initializing`
-3. Notify subscribers
-4. Close the runtime (kills the process if still running)
-5. **Resolve children** — detach cross-workspace and open-tab children; cascade-archive the rest recursively
-
-Cascade is what keeps subagent fleets from outliving their orchestrator.
-
-Workspace archive is a separate lifecycle. Archiving or removing a worktree can close a surviving
-agent record without setting the agent's `archivedAt`, while its `workspaceId` still points at the
-archived workspace. History navigation must not infer workspace lifecycle from `agent.archivedAt`
-or mutate either lifecycle. The workspace route asks the daemon for authoritative recovery state;
-only the route's explicit Unarchive or Restore action changes the archived workspace.
-
-History navigation opens the selected agent without changing either archive state. Workspace
-**Restore** recovers only the workspace; the selected archived agent stays open with its callout.
-The agent's **Unarchive** runs the provider's native unarchive hook before interactive resume and
-history hydration. Other archived agents stay archived.
-
-Opening an agent is a navigation choice, independent of whether its details are cached. The
-layout retains that choice across reload while the panel fetches the agent from the daemon.
-Once the daemon reports the agent active, its tab follows normal archive propagation again.
-An empty active list cannot cancel an explicit History selection. Agent-detail loading does
-not own selection or release the explicit open.
-
-Persisted resume, native restore, and both live and stored-only archive enter the same per-agent
-lifecycle queue. Resume chooses its history or interactive purpose from the durable record after
-entering that queue. Shutdown must finish before the manager releases runtime ownership; a failed
-close retains the runtime for cleanup and blocks replacement through that close operation.
-
-Authoritative timeline catch-up can use a runtime-only `history` resume purpose. The retained
-history session contains only the read results and must release its provider process once replay
-finishes. Codex reads the persisted thread and child histories on a temporary app-server and never
-loads, resumes, or unarchives a native thread, including legacy records whose native archive failed.
-ACP providers spawn the CLI, replay the session through `session/load`, and terminate the process
-before returning. Interactive resume remains responsible for repairing a provider session archived
-outside Paseo while its Paseo agent is active.
-
-Provider session connection owns every process it spawns until the session is registered with
-`AgentManager`. If initialization, persisted-session resume, or initial history hydration fails,
-`connect()` must dispose that process before rethrowing; the manager cannot clean up a session it never
-received.
-
-## Tabs vs archive
-
-These are two distinct concepts that used to be conflated:
-
-| Concept                    | Scope      | Triggers                   |
-| -------------------------- | ---------- | -------------------------- |
-| **Tab** (workspace layout) | Per-client | User opens/closes a view   |
-| **Archive** (lifecycle)    | Global     | Explicit lifecycle gesture |
+-------------------------- | ---------- | -------------------------- |
+| **Tab** (workspace layout) | Per-client | User opens/closes a view |
+| **Archive** (lifecycle) | Global | Explicit lifecycle gesture |
 
 Closing a tab on a **root agent** still archives — the tab is the agent's home, so closing it means "I'm done with this agent." A confirm dialog protects against archiving a running agent by accident.
 

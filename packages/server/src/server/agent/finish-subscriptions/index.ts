@@ -20,6 +20,16 @@ export interface FinishSubscription {
   serverId?: string;
   /** Creation subscriptions stop reporting after the child is detached. */
   requireParentOwnership?: boolean;
+  /**
+   * Report every turn the child ends, not only the first, until the child is
+   * closed or unreachable or the caller is archived. One subscription sees each
+   * turn once, so a later one-shot prompt to the same child adds nothing to it.
+   */
+  everyTurn?: boolean;
+  /** Recovery follows live turns after the first acknowledged report. */
+  reportedTurn?: boolean;
+  /** Dormant legacy transfer: source cleanup must commit before observation starts. */
+  legacyWatchId?: string;
 }
 export interface FinishSubscriptionStore {
   list(): Promise<FinishSubscription[]>;
@@ -167,6 +177,11 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
     if (result.status === "permission") return "needs permission";
     return result.reason ?? "finished";
   }
+  /** An every-turn subscription ends with the child, or with the host that could show it. */
+  function continuesAfter(result: FinishObservationResult): boolean {
+    const reason = reasonFor(result);
+    return !["host unreachable", "host removed", "is unavailable", "was closed"].includes(reason);
+  }
   async function deliver(
     record: FinishSubscription,
     result: FinishObservationResult,
@@ -182,7 +197,7 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
       if (signal.aborted) return false;
       if (request && permissions.has(request.id)) continue;
       const title = result.final?.title ?? record.childAgentId;
-      const receipt = deps.messages().enqueue({
+      const receipt = await deps.messages().enqueue({
         recipientId: record.callerAgentId,
         prompt: formatFinishNotificationBody({
           childAgentId: record.childAgentId,
@@ -202,6 +217,12 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
         activeTurnBehavior: "steer",
         unarchive: false,
       });
+      if (receipt.durable) {
+        // The recipient's mailbox has it on disk and replays it after a restart. Waiting for
+        // the turn would keep this subscription, and so a second report, alive across one.
+        if (request) permissions.add(request.id);
+        continue;
+      }
       acknowledgments.push(
         receipt.dispatched.then(() => {
           if (request) permissions.add(request.id);
@@ -214,6 +235,32 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
     if (reason !== "needs permission") return true;
     return false;
   }
+  function isReportedBaseline(
+    record: FinishSubscription,
+    result: FinishObservationResult,
+  ): boolean {
+    return Boolean(
+      result.initial &&
+      record.everyTurn &&
+      record.reportedTurn &&
+      result.status !== "permission" &&
+      continuesAfter(result),
+    );
+  }
+
+  async function checkpointReportedTurn(watch: Watch, record: FinishSubscription): Promise<void> {
+    if (record.reportedTurn) return;
+    // Retry checkpoint writes without enqueueing the accepted notice again.
+    await serialize(async () => {
+      if (watch.controller.signal.aborted) return;
+      for (const intent of watch.records) {
+        await deps.store.put({ ...intent, reportedTurn: true });
+        intent.reportedTurn = true;
+      }
+    });
+    record.reportedTurn = true;
+  }
+
   async function run(watch: Watch, group: Set<Watch>): Promise<void> {
     const signal = watch.controller.signal;
     if (!(await watch.decision) || signal.aborted) return;
@@ -222,6 +269,8 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
       requireParentOwnership: watch.records.every(
         (intent) => intent.requireParentOwnership === true,
       ),
+      everyTurn: watch.records.every((intent) => intent.everyTurn === true),
+      reportedTurn: watch.records.some((intent) => intent.reportedTurn === true),
     };
     const permissions = new Set<string>();
     let observation: FinishObservationSession | undefined;
@@ -274,7 +323,19 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
             stop(watch, group);
             return;
           }
+          if (isReportedBaseline(record, pending)) {
+            pending = undefined;
+            continue;
+          }
           if (!acknowledged) acknowledged = await deliver(record, pending, permissions, signal);
+          if (acknowledged && record.everyTurn && continuesAfter(pending)) {
+            await checkpointReportedTurn(watch, record);
+            acknowledged = false;
+            pending = undefined;
+            retries = 0;
+            warned = false;
+            continue;
+          }
           if (acknowledged) {
             // A removal failure retries only the commit, never the already accepted callback.
             await remove(watch);
@@ -307,7 +368,10 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
     hasPendingForCaller(agentId) {
       if (recovering || registering.has(agentId)) return true;
       for (const group of watches.values()) {
-        for (const watch of group) if (watch.records[0]!.callerAgentId === agentId) return true;
+        for (const watch of group) {
+          if (watch.records[0]!.callerAgentId === agentId && !watch.records[0]!.everyTurn)
+            return true;
+        }
       }
       return false;
     },
@@ -315,6 +379,7 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
       serialize(async () => {
         const groups = new Map<string, FinishSubscription[]>();
         for (const record of await deps.store.list()) {
+          if (record.legacyWatchId) continue;
           const records = groups.get(key(record)) ?? [];
           records.push(record);
           groups.set(key(record), records);
@@ -326,6 +391,19 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
       registering.set(input.callerAgentId, (registering.get(input.callerAgentId) ?? 0) + 1);
       return serialize(async () => {
         if (closed) throw new Error("Finish subscriptions are closed");
+        const probe = {
+          ...input,
+          serverId: input.serverId === deps.serverId ? undefined : input.serverId,
+        };
+        if (
+          !input.everyTurn &&
+          [...(watches.get(key(probe as FinishSubscription)) ?? [])].some(
+            (existing) => !existing.pending && existing.records.every((record) => record.everyTurn),
+          )
+        ) {
+          // The every-turn subscription for this pair reports this prompt's turn as well.
+          return { accept() {}, reject: async () => {} } satisfies FinishRegistration;
+        }
         const record: FinishSubscription = {
           ...input,
           serverId: input.serverId === deps.serverId ? undefined : input.serverId,

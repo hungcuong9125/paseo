@@ -26,6 +26,12 @@ function FailingSurface() {
   if (failed) throw new Error("old render exploded");
   return <Text>Old surface mounted</Text>;
 }
+function Thrower(): never {
+  throw new Error("header exploded");
+}
+function renderNothing() {
+  return null;
+}
 function CorrectedSurface() {
   return <Text>Corrected surface</Text>;
 }
@@ -82,5 +88,33 @@ describe("SurfaceErrorBoundary", () => {
 
     expect(container.textContent).toBe("Corrected surface");
     expect(oldSurfaceCleanups).toBe(1);
+  });
+
+  it("renders a custom fallback so a failing slot leaves its siblings intact", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const container = document.createElement("div");
+    containers.push(container);
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+
+    await act(async () => {
+      root.render(
+        <>
+          <SurfaceErrorBoundary
+            installation={oldInstallation}
+            Surface={Thrower}
+            renderError={renderNothing}
+          >
+            <Thrower />
+          </SurfaceErrorBoundary>
+          <Text>Header sibling</Text>
+        </>,
+      );
+    });
+
+    expect(container.textContent).toBe("Header sibling");
   });
 });

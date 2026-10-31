@@ -1,6 +1,8 @@
 import type { WaitForFinishResult } from "@getpaseo/client/internal/daemon-client";
 
 export type FinishObservationResult = WaitForFinishResult & {
+  /** Settled baseline from wait(), not a newly observed turn. */
+  initial?: boolean;
   reason?: "was canceled" | "host unreachable" | "host removed";
 };
 
@@ -34,13 +36,13 @@ export function createObservationBuffer(signal: AbortSignal) {
           (request) => !resolvedBeforeInitial.has(request.id),
         );
         if (pendingPermissions.length)
-          push({ ...result, final: { ...result.final, pendingPermissions } });
+          push({ ...result, initial: true, final: { ...result.final, pendingPermissions } });
       } else if (
         !terminal &&
         result.final?.status !== "running" &&
         result.final?.status !== "initializing"
       )
-        push(result);
+        push({ ...result, initial: true });
       resolvedBeforeInitial.clear();
     },
     push,

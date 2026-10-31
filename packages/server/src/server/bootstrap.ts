@@ -1,5 +1,9 @@
 import { createRestartRecovery } from "./agent/restart-recovery/index.js";
-import { sendPromptToAgent } from "./agent/agent-prompt.js";
+import { createAgentMailbox, sendPromptToAgent } from "./agent/agent-prompt.js";
+import { DISABLED_MAILBOX_POLICY, resolveMailboxPolicy } from "./agent/agent-mailbox/policy.js";
+import { FileMailboxStore } from "./agent/agent-mailbox/store.js";
+import type { AgentMailbox } from "./agent/agent-mailbox/service.js";
+import { migrateStandingWatches } from "./agent/agent-mailbox/migrate-standing-watches.js";
 import { createIdleRuntimeCleanup } from "./agent/idle-runtime-cleanup/index.js";
 import {
   createFinishSubscriptions,
@@ -236,7 +240,7 @@ import {
   createAgentCommand,
   type CreateAgentCommandDependencies,
 } from "./agent/create-agent/create.js";
-import { archiveAgentCommand, cancelAgentRunCommand } from "./agent/lifecycle-command.js";
+import { archiveAgentCommand, interruptAgentRunAutomatically } from "./agent/lifecycle-command.js";
 import { CreateAgentLifecycleDispatch } from "./agent/create-agent-lifecycle-dispatch.js";
 import {
   HubRelationshipController,
@@ -561,6 +565,34 @@ function mountWebUi(app: express.Application, config: PaseoDaemonConfig, logger:
 
 function resolveExpressTrustProxySetting(config: PaseoDaemonConfig): true | string[] {
   return config.trustedProxies ?? ["loopback"];
+}
+
+/** Mailbox settings are read once at boot; a change takes a daemon restart. */
+function createDaemonMailbox(params: {
+  config: PaseoDaemonConfig;
+  agentManager: AgentManager;
+  agentStorage: AgentStorage;
+  logger: Logger;
+}): AgentMailbox {
+  const { config, agentStorage, logger } = params;
+  const globalSettings = config.configReload?.startupPersisted.agents?.mailbox;
+  return createAgentMailbox({
+    agentManager: params.agentManager,
+    agentStorage,
+    store: new FileMailboxStore(path.join(config.paseoHome, "mailbox"), logger),
+    resolvePolicy: async (agentId) => {
+      const record = await agentStorage.get(agentId);
+      if (!record) {
+        return DISABLED_MAILBOX_POLICY;
+      }
+      return resolveMailboxPolicy({
+        labels: record.labels,
+        providerSettings: config.providerOverrides?.[record.provider]?.mailbox,
+        globalSettings,
+      });
+    },
+    logger,
+  });
 }
 
 function createInitialRelayConfig(config: ResolvedDaemonSettings): MutableDaemonConfig["relay"] {
@@ -1052,12 +1084,28 @@ export async function createPaseoDaemon(
     }),
     eligible: async (record) =>
       !record.workspaceId || !(await workspaceRegistry?.get(record.workspaceId))?.archivedAt,
+    // The daemon resuming by itself is not a person's prompt: it must not lift their stop.
     dispatch: (agentId, prompt) =>
-      sendPromptToAgent({ agentId, prompt, agentManager, agentStorage, logger, unarchive: false }),
+      sendPromptToAgent({
+        agentId,
+        prompt,
+        agentManager,
+        agentStorage,
+        logger,
+        unarchive: false,
+        sender: { kind: "daemon" },
+      }),
     report: (agentId, err) => logger.error({ agentId, err }, "Agent restart recovery failed"),
   });
   await restartRecovery.prepareStartup();
   logger.info({ elapsed: elapsed() }, "Agent storage initialized");
+  const mailbox = createDaemonMailbox({ config, agentManager, agentStorage, logger });
+  agentManager.setMailbox(mailbox);
+  const agentsWithMail = await mailbox.recover();
+  logger.info(
+    { elapsed: elapsed(), agentsWithMail: agentsWithMail.length },
+    "Agent mailboxes recovered",
+  );
   await bootstrapWorkspaceRegistries({
     serverId,
     paseoHome: config.paseoHome,
@@ -1375,7 +1423,8 @@ export async function createPaseoDaemon(
         agentManager,
         agentStorage,
         createAgent,
-        interruptAgent: (agentId) => cancelAgentRunCommand({ agentManager, logger }, agentId),
+        interruptAgent: (agentId) =>
+          interruptAgentRunAutomatically({ agentManager, logger }, agentId),
         archiveWorkspace: archiveWorkspaceByIdExternal,
         cleanupFailedCreate: (input) =>
           hubAgentLifecycle.cleanupCreatedWorktreeAfterFailedAgentCreate(input),
@@ -1475,8 +1524,9 @@ export async function createPaseoDaemon(
   );
   logger.info({ elapsed: elapsed() }, "Preparing voice and MCP runtime");
 
+  const finishSubscriptionStore = createJsonFinishSubscriptionStore(config.paseoHome);
   const finishSubscriptions = createFinishSubscriptions({
-    store: createJsonFinishSubscriptionStore(config.paseoHome),
+    store: finishSubscriptionStore,
     serverId,
     logger,
     messages: () => {
@@ -1891,6 +1941,7 @@ export async function createPaseoDaemon(
             await pluginRuntime.start();
             providerSnapshotManager.settlePluginProviders();
             restartRecovery.resumePending();
+            await migrateStandingWatches(mailbox, finishSubscriptionStore, logger);
             await finishSubscriptions.start();
             wsServer.beginAcceptingConnections();
             const relaySecurityLogger = logger.child({ module: "relay-security" });
@@ -1948,6 +1999,9 @@ export async function createPaseoDaemon(
       // model loading doesn't block the server from accepting connections.
       speechService.start();
       scriptHealthMonitor.start();
+      void mailbox.resumeOnStartup(agentsWithMail).catch((error: unknown) => {
+        logger.error({ err: error }, "Failed to resume agent mailboxes on startup");
+      });
     } catch (error) {
       localCredential = null;
       await deleteLocalCredential(config.paseoHome);
@@ -1982,6 +2036,8 @@ export async function createPaseoDaemon(
     await idleRuntimeCleanup.close();
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
+    // No new mail turn may start from here on; what arrives still reaches the disk.
+    mailbox.stop();
     await finishSubscriptions.close();
     await wsServer?.agentMessages.close();
     agentManager.prepareForShutdown();
@@ -1993,6 +2049,7 @@ export async function createPaseoDaemon(
       label: "drain plugin lifecycle events",
     }).catch((error) => logger.warn({ err: error }, "Plugin lifecycle events did not finish"));
     await agentManager.flushForShutdown().catch(() => undefined);
+    await mailbox.flush();
     detachAgentStoragePersistence();
     await agentStorage.flush().catch(() => undefined);
     await agentProviderRuntime.shutdown();

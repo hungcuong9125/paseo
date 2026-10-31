@@ -8,7 +8,11 @@ import type { AgentSessionConfig } from "../agent/agent-sdk-types.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import { curateAgentActivity } from "../agent/activity-curator.js";
 import { ensureAgentLoaded } from "../agent/agent-loading.js";
-import { startAgentRun, type AgentRunController } from "../agent/agent-prompt.js";
+import {
+  startAgentRun,
+  unwrapSystemEnvelope,
+  type AgentRunController,
+} from "../agent/agent-prompt.js";
 import { resolveCreateAgentTitles } from "../agent/create-agent-title.js";
 import { type BoundCreateAgentCommand, formatProviderModel } from "../agent/create-agent/create.js";
 import type { PersistedWorkspaceRecord } from "../workspace-registry.js";
@@ -242,7 +246,8 @@ type ScheduleAgentManager = Pick<
     | "runAgent"
     | "waitForAgentEvent"
     | "waitForAgentClose"
-  >;
+  > &
+  Partial<Pick<AgentManager, "getMailbox">>;
 
 interface ScheduleWorkspaceCreateInput {
   cwd: string;
@@ -924,49 +929,81 @@ export class ScheduleService {
     requireSchedule(updatedSchedule, params.scheduleId);
   }
 
+  private async executeAgentTargetSchedule(
+    schedule: StoredSchedule,
+    agentId: string,
+    runId: string,
+  ): Promise<ScheduleExecutionResult> {
+    const wrappedPrompt = formatSystemNotificationPrompt(buildScheduleFireBody(schedule, runId));
+    const record = await this.agentStorage.get(agentId);
+    if (!record) {
+      throw new ScheduleTargetGoneError(`Agent ${agentId} no longer exists`);
+    }
+    if (record.archivedAt) {
+      throw new ScheduleTargetGoneError(`Agent ${agentId} is archived`);
+    }
+
+    const agent = await ensureAgentLoaded(agentId, {
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      logger: this.logger,
+    });
+    const mailbox = this.agentManager.getMailbox?.() ?? null;
+    const hasMailbox = mailbox !== null && (await mailbox.resolvePolicy(agent.id)).enabled;
+    if (this.agentManager.hasInFlightRun(agent.id) && !hasMailbox) {
+      throw new Error(`Agent ${agent.id} already has an active run`);
+    }
+    const startRun = () =>
+      startAgentRun(this.agentManager, agent.id, wrappedPrompt, this.logger, {
+        replaceRunning: !hasMailbox,
+        activeTurnBehavior: "steer",
+      });
+    if (mailbox && hasMailbox) {
+      // With a mailbox a fire never cuts into a turn: it waits there until the turn ends.
+      const admission = await mailbox.admit(
+        agent.id,
+        {
+          source: { kind: "schedule", scheduleId: schedule.id },
+          text: unwrapSystemEnvelope(wrappedPrompt),
+        },
+        startRun,
+      );
+      if (admission.status === "queued") {
+        // The run is done once the fire is on disk; its turn reports through the
+        // agent's own timeline when it happens.
+        return {
+          agentId: agent.id,
+          output: `Agent ${agent.id} was busy; the schedule fire waits in its mailbox (position ${admission.position}).`,
+        };
+      }
+    } else {
+      await startRun();
+    }
+    const waitResult = await this.agentManager.waitForAgentEvent(agent.id, {
+      waitForActive: true,
+    });
+    if (waitResult.permission) {
+      throw new Error(`Scheduled agent ${agent.id} is waiting for permission`);
+    }
+    if (waitResult.status === "error") {
+      throw new Error(waitResult.lastMessage ?? `Scheduled agent ${agent.id} failed`);
+    }
+    return {
+      agentId: agent.id,
+      output: buildRunOutput({
+        output: null,
+        timelineText: "",
+        finalText: waitResult.lastMessage ?? "",
+      }),
+    };
+  }
+
   private async executeSchedule(
     schedule: StoredSchedule,
     runId: string,
   ): Promise<ScheduleExecutionResult> {
     if (schedule.target.type === "agent") {
-      const wrappedPrompt = formatSystemNotificationPrompt(buildScheduleFireBody(schedule, runId));
-      const record = await this.agentStorage.get(schedule.target.agentId);
-      if (!record) {
-        throw new ScheduleTargetGoneError(`Agent ${schedule.target.agentId} no longer exists`);
-      }
-      if (record.archivedAt) {
-        throw new ScheduleTargetGoneError(`Agent ${schedule.target.agentId} is archived`);
-      }
-
-      const agent = await ensureAgentLoaded(schedule.target.agentId, {
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        logger: this.logger,
-      });
-      if (this.agentManager.hasInFlightRun(agent.id)) {
-        throw new Error(`Agent ${agent.id} already has an active run`);
-      }
-      await startAgentRun(this.agentManager, agent.id, wrappedPrompt, this.logger, {
-        replaceRunning: true,
-        activeTurnBehavior: "steer",
-      });
-      const waitResult = await this.agentManager.waitForAgentEvent(agent.id, {
-        waitForActive: true,
-      });
-      if (waitResult.permission) {
-        throw new Error(`Scheduled agent ${agent.id} is waiting for permission`);
-      }
-      if (waitResult.status === "error") {
-        throw new Error(waitResult.lastMessage ?? `Scheduled agent ${agent.id} failed`);
-      }
-      return {
-        agentId: agent.id,
-        output: buildRunOutput({
-          output: null,
-          timelineText: "",
-          finalText: waitResult.lastMessage ?? "",
-        }),
-      };
+      return await this.executeAgentTargetSchedule(schedule, schedule.target.agentId, runId);
     }
 
     const config = schedule.target.type === "new-agent" ? schedule.target.config : null;

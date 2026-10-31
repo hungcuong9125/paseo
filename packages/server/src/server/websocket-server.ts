@@ -11,6 +11,7 @@ import {
   sendPreparedPromptToAgent,
   waitForAgentRunStartWithTimeout,
 } from "./agent/agent-prompt.js";
+import { createMailboxAdmission } from "./agent/agent-mailbox/admission.js";
 import { createToolHosts } from "./agent/host-operations/index.js";
 import { HOST_ROUTE_OPCODE } from "@getpaseo/protocol/binary-frames/index";
 import { DaemonLinkEndpoint, VirtualHostSocket } from "./connected-hosts/index.js";
@@ -713,11 +714,16 @@ export class VoiceAssistantWebSocketServer {
     this.agentManager = agentManager;
     this.agentStorage = agentStorage;
     this.agentMessages = createAgentMessageDelivery({
+      // A recipient with a mailbox gets agent messages and finish notices there, on disk,
+      // instead of through the steer below.
+      admission: createMailboxAdmission({ agentManager, agentStorage, serverId }),
       dispatch: async (batch) => {
         const { disposition } = await sendPreparedPromptToAgent({
           agentManager,
           agentStorage,
           agentId: batch.recipientId,
+          // An agent's message is not a person's prompt: it does not lift their stop.
+          sender: { kind: "daemon" },
           prompt: batch.prompt,
           activeTurnBehavior: batch.activeTurnBehavior,
           sessionMode: batch.sessionMode,

@@ -14,7 +14,12 @@ import { join } from "node:path";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentManager } from "./agent-manager.js";
-import { waitForAgentRunStartWithTimeout } from "./agent-prompt.js";
+import {
+  sendPreparedPromptToAgent,
+  sendPromptToAgent,
+  waitForAgentRunStartWithTimeout,
+} from "./agent-prompt.js";
+import type { AgentStorage } from "./agent-storage.js";
 import type {
   AgentClient,
   AgentRunResult,
@@ -374,4 +379,85 @@ test("schedule trigger identity survives the provider assigning a message ID", (
   expect(projectAgentMessages({ type: "user_message", text })).toEqual(
     projectAgentMessages({ type: "user_message", text, messageId: "provider-message" }),
   );
+});
+
+function promptRoutingFixture() {
+  const calls: string[] = [];
+  const mailbox = {
+    resume: vi.fn(async () => {
+      calls.push("resume");
+    }),
+    kick: vi.fn(async () => {
+      calls.push("kick");
+    }),
+  };
+  const agentManager = {
+    getAgent: vi.fn(() => ({ id: "lead", provider: "codex", lifecycle: "idle" })),
+    getMailbox: vi.fn(() => mailbox),
+    tryRunOutOfBand: vi.fn(async () => false),
+    reloadStalePluginSession: vi.fn(async () => undefined),
+    hasInFlightRun: vi.fn(() => false),
+    replaceAgentRun: vi.fn(async () => (async function* empty() {})()),
+    steerOrReplaceActiveTurn: vi.fn(),
+    streamAgent: vi.fn(() => {
+      calls.push("stream");
+      return (async function* empty() {})();
+    }),
+  };
+  const agentStorage = { get: vi.fn(async () => ({ id: "lead", archivedAt: null })) };
+  return {
+    calls,
+    mailbox,
+    agentManager,
+    params: {
+      agentManager: agentManager as unknown as AgentManager,
+      agentStorage: agentStorage as unknown as AgentStorage,
+      agentId: "lead",
+      prompt: "hello",
+      logger: createTestLogger(),
+    },
+  };
+}
+
+test("a person's prompt lifts their earlier stop, then drains what waited behind the new turn", async () => {
+  const { calls, params } = promptRoutingFixture();
+
+  await sendPromptToAgent(params);
+
+  expect(calls).toEqual(["resume", "stream", "kick"]);
+});
+
+test("a prompt the daemon sends by itself does not lift a person's stop", async () => {
+  const { calls, mailbox, params } = promptRoutingFixture();
+
+  await sendPreparedPromptToAgent({ ...params, sender: { kind: "daemon" } });
+
+  expect(mailbox.resume).not.toHaveBeenCalled();
+  expect(calls).toEqual(["stream", "kick"]);
+});
+
+test("mail the mailbox hands over neither resumes nor kicks itself", async () => {
+  const { calls, mailbox, agentManager, params } = promptRoutingFixture();
+  agentManager.hasInFlightRun.mockReturnValue(true);
+
+  await sendPreparedPromptToAgent({
+    ...params,
+    sender: { kind: "mailbox" },
+    replaceRunning: false,
+  });
+
+  expect(mailbox.resume).not.toHaveBeenCalled();
+  expect(mailbox.kick).not.toHaveBeenCalled();
+  // Never replaces the run it found: the mailbox only delivers into an idle agent.
+  expect(agentManager.replaceAgentRun).not.toHaveBeenCalled();
+  expect(calls).toEqual(["stream"]);
+});
+
+test("an agent manager without a mailbox keeps the upstream dispatch", async () => {
+  const { calls, agentManager, params } = promptRoutingFixture();
+  agentManager.getMailbox = undefined as never;
+
+  await sendPromptToAgent(params);
+
+  expect(calls).toEqual(["stream"]);
 });

@@ -61,6 +61,7 @@ import {
 import { buildArchivedAgentRecord, type ArchivedStoredAgentRecord } from "./agent-archive.js";
 import { toStoredAgentRecord } from "./agent-projections.js";
 import type { StoredAgentRecord, AgentStorage } from "./agent-storage.js";
+import type { AgentMailbox } from "./agent-mailbox/service.js";
 import type { AgentOwner } from "./agent-owner.js";
 import {
   InMemoryAgentTimelineStore,
@@ -796,6 +797,7 @@ export class AgentManager {
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
   private readonly beforeSteerUnavailableFallback?: AgentManagerOptions["beforeSteerUnavailableFallback"];
   private acceptingAgentRegistrations = true;
+  private mailbox: AgentMailbox | null = null;
 
   constructor(options: AgentManagerOptions) {
     this.pluginLifecycle = options.pluginLifecycle;
@@ -894,6 +896,14 @@ export class AgentManager {
 
   prepareForShutdown(): void {
     this.acceptingAgentRegistrations = false;
+  }
+
+  setMailbox(mailbox: AgentMailbox | null): void {
+    this.mailbox = mailbox;
+  }
+
+  getMailbox(): AgentMailbox | null {
+    return this.mailbox ?? null;
   }
 
   setPaseoToolsEnabled(enabled: boolean): void {
@@ -2127,7 +2137,17 @@ export class AgentManager {
         archivedAt: archivedRecord.archivedAt,
       });
     }
+    await this.clearArchivedMailbox(record.id);
     return archivedRecord;
+  }
+
+  /** Mail outlives an archive; the stop flag and the watches do not. */
+  private async clearArchivedMailbox(agentId: string): Promise<void> {
+    try {
+      await this.mailbox?.onAgentArchived(agentId);
+    } catch (error) {
+      this.logger.warn({ err: error, agentId }, "Failed to clear archived agent's mailbox");
+    }
   }
 
   private async fireAgentArchived(agentId: string): Promise<void> {
@@ -3536,6 +3556,7 @@ export class AgentManager {
   async deleteAgentState(agentId: string): Promise<void> {
     this.discardRetainedAgentState(agentId);
     await this.deleteCommittedTimeline(agentId);
+    await this.mailbox?.deleteAgent(agentId);
   }
 
   notifyAgentRemoved(agent: Pick<StoredAgentRecord, "id" | "workspaceId" | "internal">): void {

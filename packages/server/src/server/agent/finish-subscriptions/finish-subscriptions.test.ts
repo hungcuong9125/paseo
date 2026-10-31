@@ -1,9 +1,11 @@
 import { createIdleRuntimeCleanup } from "../idle-runtime-cleanup/index.js";
+import { openFinishObservation } from "./internal/observation-stream.js";
+import type { HostObservation } from "../host-operations/index.js";
 import { HostObservationError } from "../host-operations/index.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import type { WaitForFinishResult } from "@getpaseo/client/internal/daemon-client";
 import type { AgentMessageDelivery } from "../agent-messages/index.js";
 import { buildStoredAgentPayload } from "../agent-projections.js";
@@ -49,13 +51,16 @@ class Observation implements FinishObservation {
 class Delivery implements AgentMessageDelivery {
   prompts: string[] = [];
   acknowledgments: Array<ReturnType<typeof deferred<"steered">>> = [];
-  enqueue(message: Parameters<AgentMessageDelivery["enqueue"]>[0]) {
+  /** The recipient's mailbox saves the notice to disk before it answers. */
+  durable = false;
+  async enqueue(message: Parameters<AgentMessageDelivery["enqueue"]>[0]) {
     this.prompts.push(String(message.prompt));
     const acknowledgment = deferred<"steered">();
     this.acknowledgments.push(acknowledgment);
     return {
       status: "queued" as const,
       messageId: "notification",
+      ...(this.durable ? { durable: true } : {}),
       dispatched: acknowledgment.promise,
     };
   }
@@ -68,7 +73,12 @@ afterEach(async () => {
   for (const service of services.splice(0)) await service.close();
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
 });
-async function scenario(directory?: string, removalFailures = 0, retryDelayMs = 1) {
+async function scenario(
+  directory?: string,
+  removalFailures = 0,
+  retryDelayMs = 1,
+  open?: FinishObservation["open"],
+) {
   const home = directory ?? (await mkdtemp(join(tmpdir(), "finish-recovery-")));
   if (!directory) homes.push(home);
   const durableStore = createJsonFinishSubscriptionStore(home);
@@ -88,7 +98,7 @@ async function scenario(directory?: string, removalFailures = 0, retryDelayMs = 
   const service = createFinishSubscriptions({
     store,
     messages: () => delivery,
-    open: observation.open.bind(observation),
+    open: open ?? observation.open.bind(observation),
     callerIsActive: async () => active,
     serverId: "origin",
     logger: createTestLogger(),
@@ -496,4 +506,178 @@ test("finish recovery protects callers before durable intent has loaded", async 
   await starting;
   expect(recovered.hasPendingForCaller("parent")).toBe(true);
   expect(recovered.hasPendingForCaller("unrelated")).toBe(false);
+});
+
+test("a notice saved in the caller's mailbox settles the subscription without waiting for its turn", async () => {
+  const first = await scenario();
+  first.delivery.durable = true;
+  await first.service.register(intent);
+  await until(() => first.observation.waits.length === 1);
+  first.observation.waits[0]!.result.resolve(outcome());
+  await until(() => first.delivery.prompts.length === 1);
+  // The acknowledgment never comes: the caller is busy for hours. The mailbox keeps the notice.
+  await expect.poll(async () => (await first.store.list()).length).toBe(0);
+  await first.service.close();
+  const restarted = await scenario(first.home);
+  expect(restarted.observation.waits).toHaveLength(0);
+  expect(restarted.delivery.prompts).toHaveLength(0);
+});
+
+test("an every-turn subscription reports each turn the child ends until the child is closed", async () => {
+  const state = await scenario();
+  await state.service.register({ ...intent, everyTurn: true });
+  await until(() => state.observation.waits.length === 1);
+  state.observation.waits[0]!.result.resolve(outcome("idle"));
+  await until(() => state.delivery.prompts.length === 1);
+  expect(state.delivery.prompts[0]).toContain("finished");
+  state.delivery.acknowledgments[0]!.resolve("steered");
+  expect(await state.store.list()).toHaveLength(1);
+
+  await until(() => state.observation.waits.length === 2);
+  state.observation.waits[1]!.result.resolve(outcome("error"));
+  await until(() => state.delivery.prompts.length === 2);
+  expect(state.delivery.prompts[1]).toContain("errored");
+  state.delivery.acknowledgments[1]!.resolve("steered");
+
+  await until(() => state.observation.waits.length === 3);
+  state.observation.waits[2]!.result.resolve(outcome("closed"));
+  await until(() => state.delivery.prompts.length === 3);
+  expect(state.delivery.prompts[2]).toContain("was closed");
+  state.delivery.acknowledgments[2]!.resolve("steered");
+  await expect.poll(async () => (await state.store.list()).length).toBe(0);
+});
+
+test("a one-shot prompt to a child under an every-turn subscription adds no second report", async () => {
+  const state = await scenario();
+  await state.service.register({ ...intent, everyTurn: true });
+  await until(() => state.observation.waits.length === 1);
+
+  const registration = await state.service.register(intent, true);
+  registration.accept();
+  await registration.reject();
+
+  expect(await state.store.list()).toHaveLength(1);
+  state.observation.waits[0]!.result.resolve(outcome("idle"));
+  await until(() => state.delivery.prompts.length === 1);
+  state.delivery.acknowledgments[0]!.resolve("steered");
+  await until(() => state.observation.waits.length === 2);
+  expect(state.delivery.prompts).toHaveLength(1);
+  expect(await state.store.list()).toHaveLength(1);
+});
+
+test("every-turn recovery ignores the settled initial snapshot but reports a new identical turn", async () => {
+  const first = await scenario();
+  first.delivery.durable = true;
+  await first.service.register({ ...intent, everyTurn: true });
+  await until(() => first.observation.waits.length === 1);
+  const initial = { ...outcome("idle"), initial: true };
+  first.observation.waits[0]!.result.resolve(initial);
+  await until(() => first.observation.waits.length === 2);
+  expect(first.delivery.prompts).toHaveLength(1);
+  await first.service.close();
+
+  const restarted = await scenario(first.home);
+  restarted.delivery.durable = true;
+  await until(() => restarted.observation.waits.length === 1);
+  restarted.observation.waits[0]!.result.resolve(initial);
+  await until(() => restarted.observation.waits.length === 2);
+  expect(restarted.delivery.prompts).toHaveLength(0);
+  restarted.observation.waits[1]!.result.resolve(outcome("idle"));
+  await until(() => restarted.delivery.prompts.length === 1);
+  expect(restarted.delivery.prompts).toEqual(first.delivery.prompts);
+});
+
+test("real observation and JSON recovery do not replay an acknowledged baseline", async () => {
+  function source() {
+    let handler!: Parameters<HostObservation["observe"]>[1];
+    let reads = 0;
+    const host: HostObservation = {
+      wait: async () => outcome("idle"),
+      observe: async (_id, listener) => {
+        handler = listener;
+        return async () => {};
+      },
+    };
+    const open: FinishObservation["open"] = async (record, signal) => {
+      const session = await openFinishObservation(
+        { use: async (_server, action) => action(host) },
+        record,
+        signal,
+      );
+      return {
+        ...session,
+        next: () => {
+          reads++;
+          return session.next();
+        },
+      };
+    };
+    return {
+      open,
+      get reads() {
+        return reads;
+      },
+      finish() {
+        const result = outcome("idle");
+        handler(
+          result.final,
+          { type: "turn_completed", provider: "codex", turnId: "new-turn" },
+          result.lastMessage,
+        );
+      },
+    };
+  }
+  const original = source();
+  const first = await scenario(undefined, 0, 1, original.open);
+  first.delivery.durable = true;
+  await first.service.register({ ...intent, everyTurn: true });
+  await until(() => original.reads === 2);
+  expect(first.delivery.prompts).toHaveLength(1);
+  await first.service.close();
+
+  const recovered = source();
+  const restarted = await scenario(first.home, 0, 1, recovered.open);
+  restarted.delivery.durable = true;
+  await until(() => recovered.reads === 2);
+  expect(restarted.delivery.prompts).toHaveLength(0);
+  recovered.finish();
+  await until(() => restarted.delivery.prompts.length === 1);
+  expect(restarted.delivery.prompts).toEqual(first.delivery.prompts);
+});
+
+test("a failed every-turn checkpoint retries storage without another notice", async () => {
+  const state = await scenario();
+  state.delivery.durable = true;
+  await state.service.register({ ...intent, everyTurn: true });
+  await until(() => state.observation.waits.length === 1);
+  vi.spyOn(state.store, "put").mockRejectedValueOnce(new Error("Disk full"));
+  state.observation.waits[0]!.result.resolve(outcome("idle"));
+  await until(() => state.observation.waits.length === 2);
+  expect(state.delivery.prompts).toHaveLength(1);
+  expect(await state.store.list()).toEqual([expect.objectContaining({ reportedTurn: true })]);
+});
+
+test("an unfinished legacy transfer stays dormant after recovery", async () => {
+  const first = await scenario();
+  await first.store.put({ ...intent, id: "imported", everyTurn: true, legacyWatchId: "old-watch" });
+  await first.service.close();
+  const restarted = await scenario(first.home);
+  expect(restarted.observation.waits).toHaveLength(0);
+  expect(restarted.delivery.prompts).toHaveLength(0);
+  expect(await restarted.store.list()).toEqual([
+    { ...intent, id: "imported", everyTurn: true, legacyWatchId: "old-watch" },
+  ]);
+});
+
+test("an every-turn subscription survives a restart and keeps reporting", async () => {
+  const first = await scenario();
+  await first.service.register({ ...intent, everyTurn: true });
+  await first.service.close();
+  const restarted = await scenario(first.home);
+  await until(() => restarted.observation.waits.length === 1);
+  restarted.observation.waits[0]!.result.resolve(outcome("idle"));
+  await until(() => restarted.delivery.prompts.length === 1);
+  expect(await restarted.store.list()).toEqual([
+    expect.objectContaining({ everyTurn: true, callerAgentId: "parent" }),
+  ]);
 });

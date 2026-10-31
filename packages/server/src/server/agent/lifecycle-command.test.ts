@@ -7,6 +7,7 @@ import {
   archiveAgentCommand,
   cancelAgentRunCommand,
   detachAgentCommand,
+  interruptAgentRunAutomatically,
   setAgentModeCommand,
   updateAgentCommand,
   type LifecycleAgentSnapshot,
@@ -45,8 +46,18 @@ class FakeLifecycleAgentManager implements LifecycleAgentManager {
   inFlightAgentIds = new Set<string>();
   readonly settledDuringCancellationAgentIds = new Set<string>();
   readonly rejectedCancellationAgentIds = new Set<string>();
+  /** Mailbox pauses and run cancellations, in the order they happened. */
+  readonly stopSteps: string[] = [];
 
   constructor(private readonly storage: FakeLifecycleAgentStorage) {}
+
+  getMailbox() {
+    return {
+      pause: async (agentId: string) => {
+        this.stopSteps.push(`pause:${agentId}`);
+      },
+    };
+  }
 
   getAgent(agentId: string): LifecycleAgentSnapshot | null {
     return this.liveAgents.get(agentId) ?? null;
@@ -58,6 +69,7 @@ class FakeLifecycleAgentManager implements LifecycleAgentManager {
 
   async cancelAgentRun(agentId: string) {
     this.cancelledAgentIds.push(agentId);
+    this.stopSteps.push(`cancel:${agentId}`);
     if (this.settledDuringCancellationAgentIds.delete(agentId)) {
       this.inFlightAgentIds.delete(agentId);
       return { status: "not_running" } as const;
@@ -177,6 +189,38 @@ describe("agent lifecycle commands", () => {
       cancelled: true,
     });
     expect(manager.cancelledAgentIds).toEqual(["agent-1"]);
+  });
+
+  test("a stop holds the agent's mailbox before its turn is cancelled", async () => {
+    const manager = new FakeLifecycleAgentManager(new FakeLifecycleAgentStorage());
+    manager.liveAgents.set("agent-1", managedAgent("agent-1", "running"));
+    manager.inFlightAgentIds.add("agent-1");
+
+    await cancelAgentRunCommand({ agentManager: manager, logger }, "agent-1");
+
+    expect(manager.stopSteps).toEqual(["pause:agent-1", "cancel:agent-1"]);
+  });
+
+  test("a cancel that asks not to pause leaves the mailbox draining", async () => {
+    const manager = new FakeLifecycleAgentManager(new FakeLifecycleAgentStorage());
+    manager.liveAgents.set("agent-1", managedAgent("agent-1", "running"));
+    manager.inFlightAgentIds.add("agent-1");
+
+    await cancelAgentRunCommand({ agentManager: manager, logger }, "agent-1", {
+      pauseMailbox: false,
+    });
+
+    expect(manager.stopSteps).toEqual(["cancel:agent-1"]);
+  });
+
+  test("an automatic interrupt, such as the Hub's, leaves the mailbox draining", async () => {
+    const manager = new FakeLifecycleAgentManager(new FakeLifecycleAgentStorage());
+    manager.liveAgents.set("agent-1", managedAgent("agent-1", "running"));
+    manager.inFlightAgentIds.add("agent-1");
+
+    await interruptAgentRunAutomatically({ agentManager: manager, logger }, "agent-1");
+
+    expect(manager.stopSteps).toEqual(["cancel:agent-1"]);
   });
 
   test("accepts a stop when the run settles during cancellation", async () => {

@@ -43,6 +43,10 @@ const pluginThemeMapping = (theme: Theme) => ({
 });
 const ThemedX = withUnistyles(X);
 
+function renderNothing() {
+  return null;
+}
+
 function routeParam(value: string | string[] | undefined): string {
   return typeof value === "string" ? value : "";
 }
@@ -190,9 +194,27 @@ export function PluginSurfaceScreen() {
       ) : null,
     [filterHosts, identity, params, pluginId, serverId],
   );
+  const HeaderRightSlot = surface?.HeaderRight;
   const headerRight = useMemo(
     () => (
       <>
+        {HeaderRightSlot && plugin && client ? (
+          <SurfaceErrorBoundary
+            key={`header/${serverId}/${pluginId}/${contributionId}`}
+            installation={plugin}
+            Surface={HeaderRightSlot}
+            renderError={renderNothing}
+          >
+            <ThemedSurfaceRenderer
+              Surface={HeaderRightSlot}
+              plugin={plugin}
+              host={host}
+              layout={layout}
+              params={params}
+              uniProps={pluginThemeMapping}
+            />
+          </SurfaceErrorBoundary>
+        ) : null}
         {hostFilter}
         <HeaderToggleButton
           accessibilityLabel="Close plugin"
@@ -206,7 +228,19 @@ export function PluginSurfaceScreen() {
         </HeaderToggleButton>
       </>
     ),
-    [close, hostFilter],
+    [
+      HeaderRightSlot,
+      client,
+      close,
+      contributionId,
+      hostFilter,
+      host,
+      layout,
+      params,
+      plugin,
+      pluginId,
+      serverId,
+    ],
   );
 
   return (

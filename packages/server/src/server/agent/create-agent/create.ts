@@ -75,7 +75,8 @@ export interface CreateAgentFromMcpInput {
   mode?: string;
   unattended?: boolean;
   promptFailure?: CreateAgentPromptFailureMode;
-  notifyOnFinish: boolean;
+  /** "every-turn" keeps reporting each turn the child ends, not only the first. */
+  notifyOnFinish: boolean | "every-turn";
   internal?: boolean;
   detached?: boolean;
   owner?: AgentOwner;
@@ -186,6 +187,7 @@ export async function createAgentCommand(
             childAgentId: snapshot.id,
             callerAgentId: input.callerAgentId,
             requireParentOwnership: !(input.detached ?? false),
+            ...(input.notifyOnFinish === "every-turn" ? { everyTurn: true } : {}),
           },
           true,
         )

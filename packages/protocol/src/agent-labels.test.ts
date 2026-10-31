@@ -1,10 +1,12 @@
 import { describe, expect, test } from "vitest";
 import {
+  getMailboxLabelSetting,
   getParentAgentIdFromLabels,
   getOpenAgentTabLabel,
   hasOpenAgentTab,
   isDelegatedAgent,
   isOpenAgentTabLabel,
+  MAILBOX_LABEL,
   PARENT_AGENT_ID_LABEL,
 } from "./agent-labels.js";
 
@@ -35,5 +37,15 @@ describe("agent label policy", () => {
     expect(isOpenAgentTabLabel(getOpenAgentTabLabel("client-a"))).toBe(true);
     expect(isOpenAgentTabLabel("paseo.open-agent-tab")).toBe(false);
     expect(isOpenAgentTabLabel("custom.open-agent-tab.client-a")).toBe(false);
+  });
+});
+
+describe("mailbox label", () => {
+  test("reads on and off and ignores anything else", () => {
+    expect(getMailboxLabelSetting({ [MAILBOX_LABEL]: "on" })).toBe(true);
+    expect(getMailboxLabelSetting({ [MAILBOX_LABEL]: "off" })).toBe(false);
+    expect(getMailboxLabelSetting({ [MAILBOX_LABEL]: "yes" })).toBeNull();
+    expect(getMailboxLabelSetting({})).toBeNull();
+    expect(getMailboxLabelSetting(null)).toBeNull();
   });
 });

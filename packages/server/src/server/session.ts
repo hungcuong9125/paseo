@@ -8301,7 +8301,8 @@ export class Session {
       let deliveryStatus: "queued" | undefined;
       const send = async () => {
         if (msg.sourceAgentId) {
-          const receipt = this.agentMessages.enqueue({
+          // Accepted only once admission is done; a recipient with a mailbox has it on disk.
+          const receipt = await this.agentMessages.enqueue({
             recipientId: agentId,
             messageId: msg.messageId,
             prompt,
@@ -8319,6 +8320,8 @@ export class Session {
           });
           deliveryStatus = "queued";
           queued();
+          // A mailbox replays what it holds, so its turn may begin hours from now.
+          if (receipt.durable) return;
           await receipt.dispatched;
           return;
         }

@@ -77,10 +77,12 @@ import {
   toScheduleSummary,
 } from "../mcp-shared.js";
 import {
+  isMailboxEnabled,
   type PromptDispatchDisposition,
   sendPromptToAgent,
   waitForAgentRunStartWithTimeout,
 } from "../agent-prompt.js";
+import { MAILBOX_LABEL, getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import { respondToAgentPermission } from "../permission-response.js";
 import {
   archiveAgentCommand,
@@ -1213,11 +1215,11 @@ function createToolCatalog(
   const agentToAgentInputSchema = {
     ...canonicalCreateAgentFields,
     notifyOnFinish: z
-      .boolean()
+      .union([z.boolean(), z.literal("every-turn")])
       .optional()
       .default(true)
       .describe(
-        "Get notified when the created agent finishes, errors, or needs permission. Set false for explicit reporting or no completion callback.",
+        'Get notified when the created agent finishes, errors, or needs permission. "every-turn" keeps notifying you each time the agent ends a turn, also one that its own agents, a schedule, or a person started, until it is closed or you are archived. Set false for explicit reporting or no completion callback.',
       ),
   };
   const canonicalTopLevelInputSchema = {
@@ -1606,7 +1608,7 @@ function createToolCatalog(
     async (args: unknown) => {
       const resolvedArgs = await resolveCreateAgentToolArgs(args);
       const { parsedArgs } = resolvedArgs;
-      let notifyOnFinish: boolean;
+      let notifyOnFinish: boolean | "every-turn";
       if (resolvedArgs.kind === "agent-scoped") {
         notifyOnFinish = parsedArgs.notifyOnFinish;
       } else {
@@ -1941,12 +1943,64 @@ function createToolCatalog(
   const PROMPTED_AGENT_NOTIFICATION_GUIDANCE =
     "You will get notified when the prompted agent finishes, errors, or needs permission. Do not poll for status; continue with other work until the notification arrives.";
 
+  /**
+   * An agent's prompt goes through the recipient's message delivery. The receipt exists
+   * only once admission has finished: for a recipient with a mailbox, that is after the
+   * prompt is on disk.
+   */
+  async function queueAgentMessage(input: {
+    callerAgentId: string;
+    agentId: string;
+    prompt: string;
+    sessionMode: string | undefined;
+    activeTurnBehavior: z.infer<typeof ActiveTurnBehaviorSchema>;
+    notifying: boolean;
+    confirmDispatch: (disposition: PromptDispatchDisposition) => void;
+    rejectNotification: () => void;
+  }) {
+    const receipt = await agentMessages()
+      .enqueue({
+        recipientId: input.agentId,
+        prompt: input.prompt,
+        source: {
+          kind: "agent-message",
+          agentId: input.callerAgentId,
+          title: resolveCallerAgent()?.config.title ?? undefined,
+        },
+        sessionMode: input.sessionMode,
+        activeTurnBehavior: input.activeTurnBehavior,
+        onDispatch: input.confirmDispatch,
+      })
+      .catch((error: unknown) => {
+        input.rejectNotification();
+        throw error;
+      });
+    void receipt.dispatched.catch(() => {
+      input.rejectNotification();
+    });
+    const delivery = receipt.durable
+      ? "Saved in the recipient's mailbox; it is delivered when its current turn ends, and this prompt does not interrupt it."
+      : "Queued for delivery after two quiet seconds.";
+    return {
+      content: [],
+      structuredContent: {
+        success: true,
+        deliveryStatus: receipt.status,
+        messageId: receipt.messageId,
+        status: agentManager.getAgent(input.agentId)?.lifecycle ?? "idle",
+        guidance: input.notifying
+          ? `${delivery} ${PROMPTED_AGENT_NOTIFICATION_GUIDANCE}`
+          : `${delivery} Provider dispatch has not occurred.`,
+      },
+    };
+  }
+
   registerTool(
     "send_agent_prompt",
     {
       title: "Send agent prompt",
       description:
-        "Send a task. Agent callers receive an immediate queued receipt; delivery follows after two quiet seconds per recipient. Completion reports include the target’s last response by default. Paseo supplies caller identity.",
+        "Send a task. Agent callers receive an immediate queued receipt; delivery follows after two quiet seconds per recipient, or when the recipient's current turn ends if it has a mailbox, which nothing interrupts. Completion reports include the target’s last response by default. Paseo supplies caller identity.",
       inputSchema: sendAgentPromptInputSchema,
       outputSchema: {
         success: z.boolean(),
@@ -1993,40 +2047,16 @@ function createToolCatalog(
       }
 
       if (callerAgentId) {
-        const receipt = (() => {
-          try {
-            return agentMessages().enqueue({
-              recipientId: agentId,
-              prompt,
-              source: {
-                kind: "agent-message",
-                agentId: callerAgentId,
-                title: resolveCallerAgent()?.config.title ?? undefined,
-              },
-              sessionMode,
-              activeTurnBehavior,
-              onDispatch: confirmDispatch,
-            });
-          } catch (error) {
-            rejectNotification();
-            throw error;
-          }
-        })();
-        void receipt.dispatched.catch(() => {
-          rejectNotification();
+        return await queueAgentMessage({
+          callerAgentId,
+          agentId,
+          prompt,
+          sessionMode,
+          activeTurnBehavior,
+          notifying,
+          confirmDispatch,
+          rejectNotification,
         });
-        return {
-          content: [],
-          structuredContent: {
-            success: true,
-            deliveryStatus: receipt.status,
-            messageId: receipt.messageId,
-            status: agentManager.getAgent(agentId)?.lifecycle ?? "idle",
-            guidance: notifying
-              ? `Queued for delivery after two quiet seconds. ${PROMPTED_AGENT_NOTIFICATION_GUIDANCE}`
-              : "Queued for delivery after two quiet seconds; provider dispatch has not occurred.",
-          },
-        };
       }
 
       const { disposition } = await sendPromptToAgent({
@@ -2192,18 +2222,43 @@ function createToolCatalog(
     "cancel_agent",
     {
       title: "Cancel agent run",
-      description: "Abort the agent's current run but keep the agent alive for future tasks.",
+      description:
+        "Abort the agent's current run but keep the agent alive for future tasks. Refused when the target agent has a mailbox: only a person can stop its turn, and prompts sent with send_agent_prompt wait in its mailbox until the turn ends.",
       inputSchema: {
         agentId: z.string(),
       },
       outputSchema: {
         success: z.boolean(),
+        error: z.string().optional(),
       },
     },
     async ({ agentId }) => {
+      if (callerAgentId) {
+        const callerRecord = await agentStorage.get(callerAgentId);
+        if (getParentAgentIdFromLabels(callerRecord?.labels) === agentId) {
+          return {
+            content: [],
+            structuredContent: ensureValidJson({
+              success: false,
+              error: "A subagent cannot cancel its parent agent's run.",
+            }),
+          };
+        }
+        if (await isMailboxEnabled(agentManager, agentId)) {
+          return {
+            content: [],
+            structuredContent: ensureValidJson({
+              success: false,
+              error: `Agent ${agentId} has a mailbox, so only a person can stop its turn. Prompts sent with send_agent_prompt wait in its mailbox and are delivered when the turn ends.`,
+            }),
+          };
+        }
+      }
+      // Holding mail stays a person's Stop; an agent caller only reaches a target without a mailbox.
       const { cancelled } = await cancelAgentRunCommand(
         { agentManager, logger: childLogger },
         agentId,
+        { pauseMailbox: !callerAgentId },
       );
       return {
         content: [],
@@ -2280,6 +2335,11 @@ function createToolCatalog(
       },
     },
     async ({ agentId, name, labels, settings }) => {
+      // Whether an agent has a mailbox is a person's or the config's call: an agent that
+      // could turn it off could interrupt the agent it was meant not to.
+      if (callerAgentId && labels && MAILBOX_LABEL in labels) {
+        throw new PaseoToolInputError(`The ${MAILBOX_LABEL} label can only be changed by a person`);
+      }
       if (settings?.modeId !== undefined) {
         await agentManager.setAgentMode(agentId, settings.modeId);
       }

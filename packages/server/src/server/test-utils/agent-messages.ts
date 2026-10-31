@@ -1,3 +1,4 @@
+import { createMailboxAdmission } from "../agent/agent-mailbox/admission.js";
 import { createAgentMessageDelivery } from "../agent/agent-messages/index.js";
 import {
   sendPreparedPromptToAgent,
@@ -14,6 +15,7 @@ export function createTestAgentMessages(params: {
   logger: Logger;
 }) {
   return createAgentMessageDelivery({
+    admission: createMailboxAdmission({ ...params, serverId: "self" }),
     schedule: (_delay, callback) => {
       const timer = setTimeout(callback, 0);
       return () => clearTimeout(timer);
@@ -21,6 +23,7 @@ export function createTestAgentMessages(params: {
     dispatch: async (request) => {
       const result = await sendPreparedPromptToAgent({
         ...params,
+        sender: { kind: "daemon" },
         agentId: request.recipientId,
         prompt: request.prompt,
         sessionMode: request.sessionMode,

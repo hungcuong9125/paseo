@@ -243,6 +243,8 @@ export interface PluginScreenContribution<Text extends PluginText = string> {
   id: string;
   title: PluginScreenTitle<Text>;
   Component: ComponentType<PluginScreenProps>;
+  /** Rendered at the right of the screen header, before the host picker and the close button. */
+  HeaderRight?: ComponentType<PluginScreenProps>;
 }
 
 export interface PluginSurfaceContribution {

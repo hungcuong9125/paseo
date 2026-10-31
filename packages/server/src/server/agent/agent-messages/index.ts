@@ -1,4 +1,5 @@
 export {
+  escapeXml,
   formatAgentMessage,
   parseAgentMessage,
   parseAgentMessages,
